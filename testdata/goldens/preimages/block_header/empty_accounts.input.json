@@ -1,0 +1,12 @@
+{
+  "name": "empty_accounts",
+  "description": "BlockHeader preimage (ADR-009 §4) with no AccountSnapshots. canonical-CBOR([]). Block.Hash = keccak256(preimage).",
+  "anchorHex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "sealedAt": 1700000000,
+  "stateRootHex": "2222222222222222222222222222222222222222222222222222222222222222",
+  "entriesDigestHex": "3333333333333333333333333333333333333333333333333333333333333333",
+  "k": 7,
+  "accounts": [],
+  "cborBytes": 110,
+  "derivedBlockHashHex": "36b833cd85b2bf21bc0695b6c018cf66ba7565b8bd5f82c7783808cb7255a370"
+}

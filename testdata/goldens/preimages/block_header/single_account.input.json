@@ -1,0 +1,18 @@
+{
+  "name": "single_account",
+  "description": "BlockHeader preimage with one AccountSnapshot. Q6 binds per-account chain continuity (PrevBlockRef + PostNonce) under the BLS signature.",
+  "anchorHex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "sealedAt": 1700000000,
+  "stateRootHex": "2222222222222222222222222222222222222222222222222222222222222222",
+  "entriesDigestHex": "3333333333333333333333333333333333333333333333333333333333333333",
+  "k": 7,
+  "accounts": [
+    {
+      "accountIDHex": "4444444444444444444444444444444444444444444444444444444444444444",
+      "prevBlockRefHex": "5555555555555555555555555555555555555555555555555555555555555555",
+      "postNonce": 42
+    }
+  ],
+  "cborBytes": 181,
+  "derivedBlockHashHex": "7ee9a01c94f4dc1705c80c1af1c34b216952a3a458d41e0ed64b139cd80a6133"
+}

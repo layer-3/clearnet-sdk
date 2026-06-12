@@ -1,0 +1,16 @@
+{
+  "name": "transfer_single_asset",
+  "description": "TransferOp payload = canonical CBOR of TransferOp tuple (ADR-009 §4); replaces the deleted hand-rolled op_encoding.go layout.",
+  "opType": "TransferOp",
+  "op": {
+    "assets": [
+      {
+        "amountDec": "1000",
+        "asset": "USDT"
+      }
+    ],
+    "to": "0xBob",
+    "txID": "tx-golden-xfer-1"
+  },
+  "cborBytes": 38
+}

@@ -1,0 +1,11 @@
+{
+  "name": "transfer",
+  "description": "EntryHash preimage = canonical CBOR of BlockEntry tuple (ADR-009 §4). EntryHash = keccak256(preimage). Payload is the CBOR-encoded TransferOp.",
+  "entryType": 1,
+  "entryTypeStr": "OpTransfer",
+  "account": "0xAlice",
+  "nonce": 1,
+  "payloadHex": "837274782d676f6c64656e2d7472616e73666572653078426f6281826455534454c48200c24307a120",
+  "cborBytes": 54,
+  "derivedEntryHashHex": "1e96c85e2b26b2c129db6dc72138a74e95113cf4e6d2a241f17e16f41707e4f7"
+}

@@ -1,0 +1,13 @@
+{
+  "name": "session_close",
+  "description": "SessionCloseOp payload = canonical CBOR of SessionCloseOp tuple.",
+  "opType": "SessionCloseOp",
+  "op": {
+    "cooperative": true,
+    "serviceAmountDec": "500000",
+    "sessionIDHex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "userAmountDec": "1000000",
+    "version": 42
+  },
+  "cborBytes": 54
+}
