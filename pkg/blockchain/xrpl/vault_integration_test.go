@@ -137,6 +137,51 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 	} else if !executed {
 		t.Fatal("withdrawal not reported executed")
 	}
+
+	// ── Rotation flow (current SignerList members authorize the new list) ─────
+	newSigners := make([]sign.Signer, xrplSignerCount)
+	newAddrs := make([]string, xrplSignerCount)
+	for i := range newSigners {
+		newSigners[i] = genEd25519(t) // SignerList members need not be funded accounts
+		newAddrs[i] = mustIdentity(t, newSigners[i]).ClassicAddress
+	}
+
+	rotators := make([]*RotationFinalizer, len(signers))
+	for i, s := range signers {
+		r, err := NewRotationFinalizer(url, vaultID.ClassicAddress, xrplQuorum, s)
+		if err != nil {
+			t.Fatalf("NewRotationFinalizer %d: %v", i, err)
+		}
+		rotators[i] = r
+	}
+
+	rPacked, err := rotators[0].Pack(ctx, newAddrs, xrplQuorum)
+	if err != nil {
+		t.Fatalf("rotation Pack: %v", err)
+	}
+	rBlobs := make([][]byte, 0, len(rotators))
+	for i, r := range rotators {
+		if err := r.Validate(ctx, rPacked, newAddrs, xrplQuorum); err != nil {
+			t.Fatalf("rotation Validate[%d]: %v", i, err)
+		}
+		b, err := r.Sign(ctx, rPacked)
+		if err != nil {
+			t.Fatalf("rotation Sign[%d]: %v", i, err)
+		}
+		rBlobs = append(rBlobs, b)
+	}
+	rRef, err := rotators[0].Submit(ctx, rPacked, rBlobs)
+	if err != nil {
+		t.Fatalf("rotation Submit: %v", err)
+	}
+	h.ledgerAccept(ctx, t)
+	t.Logf("rotation tx %s", rRef.Raw)
+
+	if _, done, err := rotators[0].VerifyRotation(ctx, newAddrs, xrplQuorum); err != nil {
+		t.Fatalf("VerifyRotation: %v", err)
+	} else if !done {
+		t.Fatal("rotation not reported done")
+	}
 }
 
 type fixedTicket uint32

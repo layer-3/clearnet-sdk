@@ -102,6 +102,12 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 		t.Logf("Config already initialized; reusing")
 	}
 
+	// Self-heal: a prior run that died mid-rotation may have left the singleton
+	// Config on the rotated set; restore the fixed set before deposit/withdraw.
+	rotCfg := Config{ChainID: solChainID, Commitment: rpc.CommitmentConfirmed}
+	rotatedSigners := solRotatedSigners(t)
+	ensureFixedSigners(ctx, t, rpcURL, programID, authority, rotCfg, signerPubs, rotatedSigners)
+
 	// ── Deposit flow ──────────────────────────────────────────────────────────
 	dep, err := NewDepositor(rpcURL, programID, depositor, rpc.CommitmentConfirmed)
 	if err != nil {
@@ -161,6 +167,116 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	} else if !executed {
 		t.Fatal("withdrawal not reported executed")
 	}
+
+	// ── Rotation flow ─────────────────────────────────────────────────────────
+	// Config is a singleton, so rotate to the (deterministic) rotated set and
+	// restore the original — both directions exercised. A run that dies between
+	// the two rotations is healed by ensureFixedSigners on the next run.
+	newPubs := pubsBase58(rotatedSigners)
+	origPubs := pubsBase58(signers)
+	runRotation(ctx, t, rpcURL, programID, authority, rotCfg, signers, newPubs, solThreshold)
+	t.Logf("rotated to fresh signer set")
+	runRotation(ctx, t, rpcURL, programID, authority, rotCfg, rotatedSigners, origPubs, solThreshold)
+	t.Logf("restored original signer set")
+}
+
+// runRotation drives one rotation: `current` are the signers that authorize it,
+// `target` the new on-chain set (base58). Fails the test on any step.
+func runRotation(ctx context.Context, t *testing.T, rpcURL string, programID solana.PublicKey, feePayer sign.Signer, cfg Config, current []sign.Signer, target []string, threshold int) {
+	t.Helper()
+	rotators := make([]*RotationFinalizer, len(current))
+	for i, s := range current {
+		r, err := NewRotationFinalizer(rpcURL, programID, s, feePayer, cfg)
+		if err != nil {
+			t.Fatalf("NewRotationFinalizer %d: %v", i, err)
+		}
+		rotators[i] = r
+	}
+	packed, err := rotators[0].Pack(ctx, target, threshold)
+	if err != nil {
+		t.Fatalf("rotation Pack: %v", err)
+	}
+	shares := make([][]byte, 0, len(rotators))
+	for i, r := range rotators {
+		if err := r.Validate(ctx, packed, target, threshold); err != nil {
+			t.Fatalf("rotation Validate[%d]: %v", i, err)
+		}
+		s, err := r.Sign(ctx, packed)
+		if err != nil {
+			t.Fatalf("rotation Sign[%d]: %v", i, err)
+		}
+		shares = append(shares, s)
+	}
+	if _, err := rotators[0].Submit(ctx, packed, shares); err != nil {
+		t.Fatalf("rotation Submit: %v", err)
+	}
+	if _, done, err := rotators[0].VerifyRotation(ctx, target, threshold); err != nil {
+		t.Fatalf("VerifyRotation: %v", err)
+	} else if !done {
+		t.Fatal("rotation not reported done")
+	}
+}
+
+// solRotatedSigners returns the deterministic "rotated" signer set the rotation
+// flow rotates to (distinct from the fixed deposit/withdraw set).
+func solRotatedSigners(t *testing.T) []sign.Signer {
+	t.Helper()
+	out := make([]sign.Signer, solSignerCount)
+	for i := range out {
+		out[i] = fixedEd25519(t, fmt.Sprintf("clearnet-sdk/sol-itest/rotated/%d", i))
+	}
+	return out
+}
+
+// pubsBase58 maps signers to their base58 pubkeys.
+func pubsBase58(signers []sign.Signer) []string {
+	out := make([]string, len(signers))
+	for i, s := range signers {
+		p, _ := solanaPub(s)
+		out[i] = p.String()
+	}
+	return out
+}
+
+// ensureFixedSigners restores the singleton Config to the fixed signer set if a
+// prior run left it on the rotated set. Both sets are deterministic, so recovery
+// is a rotation from the rotated set (whose keys the test holds) back to fixed.
+func ensureFixedSigners(ctx context.Context, t *testing.T, rpcURL string, programID solana.PublicKey, feePayer sign.Signer, cfg Config, fixedPubs []solana.PublicKey, rotated []sign.Signer) {
+	t.Helper()
+	conf, err := fetchConfig(ctx, rpc.New(rpcURL), programID, cfg.Commitment)
+	if err != nil {
+		return // not initialized; Initialize already set the fixed set
+	}
+	want := make([]string, len(fixedPubs))
+	for i := range fixedPubs {
+		want[i] = fixedPubs[i].String()
+	}
+	if sameSignerSet(conf.Signers, want) {
+		return
+	}
+	if sameSignerSet(conf.Signers, pubsBase58(rotated)) {
+		runRotation(ctx, t, rpcURL, programID, feePayer, cfg, rotated, want, solThreshold)
+		t.Logf("self-healed Config back to the fixed signer set")
+		return
+	}
+	t.Fatal("Config in an unrecognized signer state; manual reset needed")
+}
+
+// sameSignerSet reports whether the on-chain signer set equals want (as a set).
+func sameSignerSet(got []solana.PublicKey, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	set := make(map[string]struct{}, len(want))
+	for _, w := range want {
+		set[w] = struct{}{}
+	}
+	for _, g := range got {
+		if _, ok := set[g.String()]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // --- helpers ---

@@ -158,6 +158,52 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	if !executed {
 		t.Fatal("withdrawal not reported executed")
 	}
+
+	// ── Rotation flow (the current quorum authorizes the new signer set) ──────
+	newAddrs := make([]string, integrationSignerCount)
+	for i := range newAddrs {
+		k, err := crypto.GenerateKey()
+		if err != nil {
+			t.Fatalf("gen new signer key: %v", err)
+		}
+		newAddrs[i] = crypto.PubkeyToAddress(k.PublicKey).Hex()
+	}
+
+	rotators := make([]*RotationFinalizer, len(signers))
+	for i, s := range signers {
+		r, err := NewRotationFinalizer(ctx, client, custodyAddr, s, FeeConfig{})
+		if err != nil {
+			t.Fatalf("NewRotationFinalizer %d: %v", i, err)
+		}
+		rotators[i] = r
+	}
+
+	rPacked, err := rotators[0].Pack(ctx, newAddrs, integrationThreshold)
+	if err != nil {
+		t.Fatalf("rotation Pack: %v", err)
+	}
+	rSigs := make([][]byte, 0, len(rotators))
+	for i, r := range rotators {
+		if err := r.Validate(ctx, rPacked, newAddrs, integrationThreshold); err != nil {
+			t.Fatalf("rotation Validate[%d]: %v", i, err)
+		}
+		s, err := r.Sign(ctx, rPacked)
+		if err != nil {
+			t.Fatalf("rotation Sign[%d]: %v", i, err)
+		}
+		rSigs = append(rSigs, s)
+	}
+	rRef, err := rotators[0].Submit(ctx, rPacked, rSigs)
+	if err != nil {
+		t.Fatalf("rotation Submit: %v", err)
+	}
+	t.Logf("rotation tx %s", rRef.Raw)
+
+	if _, done, err := rotators[0].VerifyRotation(ctx, newAddrs, integrationThreshold); err != nil {
+		t.Fatalf("VerifyRotation: %v", err)
+	} else if !done {
+		t.Fatal("rotation not reported done")
+	}
 }
 
 // fundETH sends value from key to addr via a raw anvil tx and waits for it.

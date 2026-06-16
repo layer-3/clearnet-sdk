@@ -112,6 +112,43 @@ type VaultWithdrawalFinalizer interface {
 	VerifyExecution(ctx context.Context, withdrawalID [32]byte) (txHash [32]byte, executed bool, err error)
 }
 
+// SignerRotationFinalizer rotates the vault's authorized signer set. It is the
+// same build→sign→merge→submit→verify shape as VaultWithdrawalFinalizer, but the
+// signed payload commits to the new signer set + threshold + the chain's local
+// replay token (EVM signerNonce, XRPL account sequence, Solana program nonce)
+// rather than a withdrawal. Signature collection (mesh) and submitter selection
+// stay with the caller; the implementation owns the node's signer and the
+// chain-specific authorization supplied at construction.
+//
+// newSigners is the chain-native encoding of the incoming set — EVM/XRPL
+// addresses, BTC 33-byte compressed pubkeys (hex), Solana ed25519 pubkeys (hex)
+// — matching custody's RotationRequest. newThreshold is the new k-of-n quorum.
+//
+// In-place chains (EVM, XRPL, Solana) mutate on-chain signer state at a fixed
+// vault address. BTC has no in-place form: its P2WSH vault address is a function
+// of the signer set, so rotation is a sweep of every old-vault UTXO into the
+// newly-derived vault. The BTC implementation hides that behind the same
+// interface via a vault store supplied at construction (it pivots to the new
+// vault on confirmation); to callers all four chains rotate identically.
+//
+//   - Pack returns the canonical bytes to be signed for this rotation.
+//   - Validate re-derives the trust-bound shape and asserts the packed bytes
+//     match — the Byzantine-packer defense; every node runs it before Sign.
+//   - Sign produces this node's signature over the packed bytes.
+//   - Submit merges the collected signatures against the live (outgoing) signer
+//     set and broadcasts the rotation. Idempotent against an already-applied
+//     rotation.
+//   - VerifyRotation reads canonical chain state to answer "is the set now the
+//     requested one?" — binary (done or not), the signal each node uses to close
+//     the dual-sign window and drop the outgoing key.
+type SignerRotationFinalizer interface {
+	Pack(ctx context.Context, newSigners []string, newThreshold int) ([]byte, error)
+	Validate(ctx context.Context, packed []byte, newSigners []string, newThreshold int) error
+	Sign(ctx context.Context, packed []byte) ([]byte, error)
+	Submit(ctx context.Context, packed []byte, signatures [][]byte) (TxRef, error)
+	VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) (txHash [32]byte, done bool, err error)
+}
+
 // RegistryReader provides read access to the L1 node registry.
 //
 // Naming follows the on-chain `IRegistry` surface:

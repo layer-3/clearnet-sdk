@@ -22,6 +22,9 @@ var (
 	// Fixed-size array types used by the BLS signature ABI encoding.
 	Uint256Arr2 abi.Type
 	Uint256Arr4 abi.Type
+
+	// Dynamic array type used by the signer-rotation digest.
+	AddressArr abi.Type
 )
 
 func init() {
@@ -37,6 +40,7 @@ func init() {
 	Bytes = must("bytes")
 	Uint256Arr2 = must("uint256[2]")
 	Uint256Arr4 = must("uint256[4]")
+	AddressArr = must("address[]")
 }
 
 func must(t string) abi.Type {

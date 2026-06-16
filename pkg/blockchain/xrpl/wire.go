@@ -17,6 +17,7 @@ import (
 	addresscodec "github.com/Peersyst/xrpl-go/address-codec"
 	binarycodec "github.com/Peersyst/xrpl-go/binary-codec"
 	xrplcrypto "github.com/Peersyst/xrpl-go/pkg/crypto"
+	"github.com/Peersyst/xrpl-go/xrpl"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
 
@@ -218,6 +219,91 @@ func ValidateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, 
 	return nil
 }
 
+// rotationAllowedFields is the allowlist of top-level keys a node accepts on a
+// canonical SignerListSet flatTx before signing.
+var rotationAllowedFields = map[string]struct{}{
+	"TransactionType": {}, "Account": {}, "SignerQuorum": {}, "SignerEntries": {},
+	"Sequence": {}, "Fee": {}, "SigningPubKey": {}, "Flags": {},
+}
+
+// validateCanonicalRotation asserts the canonical SignerListSet flatTx rotates
+// the vault to exactly newSigners / newThreshold (each entry weight 1, quorum ==
+// newThreshold), with a fee within the ceiling and no unexpected fields.
+func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []string, newThreshold int, vault string) error {
+	if asString(flat["TransactionType"]) != "SignerListSet" {
+		return fmt.Errorf("xrpl rotation: wrong TransactionType %v", flat["TransactionType"])
+	}
+	if !strings.EqualFold(asString(flat["Account"]), vault) {
+		return fmt.Errorf("xrpl rotation: Account %v != vault %s", flat["Account"], vault)
+	}
+	quorum, ok := uint32Field(flat["SignerQuorum"])
+	if !ok || int(quorum) != newThreshold {
+		return fmt.Errorf("xrpl rotation: SignerQuorum %v != newThreshold %d", flat["SignerQuorum"], newThreshold)
+	}
+	gotSet, err := signerEntryAccounts(flat["SignerEntries"])
+	if err != nil {
+		return err
+	}
+	wantSet := make(map[string]struct{}, len(newSigners))
+	for _, s := range newSigners {
+		wantSet[s] = struct{}{}
+	}
+	if len(gotSet) != len(wantSet) {
+		return fmt.Errorf("xrpl rotation: %d signer entries != %d new signers", len(gotSet), len(wantSet))
+	}
+	for a := range gotSet {
+		if _, ok := wantSet[a]; !ok {
+			return fmt.Errorf("xrpl rotation: unexpected signer entry %s", a)
+		}
+	}
+	fee, ok := uint32Field(flat["Fee"])
+	if !ok {
+		return fmt.Errorf("xrpl rotation: missing or invalid Fee %v", flat["Fee"])
+	}
+	if uint64(fee) > maxAcceptableFeeDrops {
+		return fmt.Errorf("xrpl rotation: Fee %d drops exceeds ceiling %d", fee, maxAcceptableFeeDrops)
+	}
+	for k := range flat {
+		if _, ok := rotationAllowedFields[k]; !ok {
+			return fmt.Errorf("xrpl rotation: unexpected field %q", k)
+		}
+	}
+	return nil
+}
+
+// signerEntryAccounts extracts the set of member accounts from a SignerEntries
+// value (each element is {"SignerEntry": {"Account": ..., "SignerWeight": ...}}),
+// rejecting weights other than 1 and duplicate accounts.
+func signerEntryAccounts(raw any) (map[string]struct{}, error) {
+	entries, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("xrpl rotation: SignerEntries not an array (%T)", raw)
+	}
+	out := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		wrapper, ok := e.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("xrpl rotation: signer entry not an object")
+		}
+		inner, ok := wrapper["SignerEntry"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("xrpl rotation: missing SignerEntry object")
+		}
+		acct := asString(inner["Account"])
+		if acct == "" {
+			return nil, fmt.Errorf("xrpl rotation: signer entry missing Account")
+		}
+		if w, ok := uint32Field(inner["SignerWeight"]); !ok || w != 1 {
+			return nil, fmt.Errorf("xrpl rotation: signer entry %s weight %v != 1", acct, inner["SignerWeight"])
+		}
+		if _, dup := out[acct]; dup {
+			return nil, fmt.Errorf("xrpl rotation: duplicate signer entry %s", acct)
+		}
+		out[acct] = struct{}{}
+	}
+	return out, nil
+}
+
 func asString(v any) string {
 	if s, ok := v.(string); ok {
 		return s
@@ -312,6 +398,26 @@ func CanonicalJSON(flatTx transaction.FlatTransaction) ([]byte, error) {
 	}
 	buf.WriteByte('}')
 	return buf.Bytes(), nil
+}
+
+// combineMultisign trims the collected multi-sign blobs to exactly `threshold`
+// and combines them into one submittable blob. Pack autofilled the multi-sign
+// fee for that count (base × (1 + threshold)), so including extras would
+// under-pay (telINSUF_FEE_P) and waste fee; any threshold of the SignerList's
+// members satisfies the quorum. Shared by the withdrawal and rotation submits.
+func combineMultisign(signatures [][]byte, threshold int) (string, error) {
+	if len(signatures) < threshold {
+		return "", fmt.Errorf("xrpl: have %d signatures, need %d", len(signatures), threshold)
+	}
+	blobs := make([]string, 0, threshold)
+	for _, s := range signatures[:threshold] {
+		blobs = append(blobs, string(s))
+	}
+	final, err := xrpl.Multisign(blobs...)
+	if err != nil {
+		return "", fmt.Errorf("xrpl: combine signatures: %w", err)
+	}
+	return final, nil
 }
 
 // hashHex is the uppercase hex of a 32-byte tx hash (XRPL's display form).

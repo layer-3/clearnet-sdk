@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Peersyst/xrpl-go/xrpl"
 	"github.com/Peersyst/xrpl-go/xrpl/queries/account"
 	"github.com/Peersyst/xrpl-go/xrpl/rpc"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
@@ -116,30 +115,10 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 	return []byte(blob), nil
 }
 
-// merge combines the collected multi-sign blobs into one submittable blob.
-// Exactly `threshold` signatures are included: Pack autofilled the multi-sign
-// fee for that count (base × (1 + threshold)), so including extras would
-// under-pay (telINSUF_FEE_P) and waste fee. Any threshold of the SignerList's
-// members satisfies the quorum.
-func (f *WithdrawalFinalizer) merge(signatures [][]byte) (string, error) {
-	if len(signatures) < f.threshold {
-		return "", fmt.Errorf("xrpl: have %d signatures, need %d", len(signatures), f.threshold)
-	}
-	blobs := make([]string, 0, f.threshold)
-	for _, s := range signatures[:f.threshold] {
-		blobs = append(blobs, string(s))
-	}
-	final, err := xrpl.Multisign(blobs...)
-	if err != nil {
-		return "", fmt.Errorf("xrpl: combine signatures: %w", err)
-	}
-	return final, nil
-}
-
-// Submit combines the collected multi-sign blobs and broadcasts the result,
-// returning the tx reference.
+// Submit combines the collected multi-sign blobs (trimmed to the quorum) and
+// broadcasts the result, returning the tx reference.
 func (f *WithdrawalFinalizer) Submit(_ context.Context, _ []byte, signatures [][]byte) (core.TxRef, error) {
-	merged, err := f.merge(signatures)
+	merged, err := combineMultisign(signatures, f.threshold)
 	if err != nil {
 		return core.TxRef{}, err
 	}

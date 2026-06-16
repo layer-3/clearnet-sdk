@@ -1,13 +1,11 @@
 package evm
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
-	"sort"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -131,58 +129,11 @@ func (f *WithdrawalFinalizer) merge(ctx context.Context, p evmPacked, signatures
 	if err != nil {
 		return nil, err
 	}
-
-	liveSigners, liveThreshold, err := f.liveQuorum(ctx)
+	liveSigners, liveThreshold, err := fetchLiveQuorum(ctx, f.custody)
 	if err != nil {
 		return nil, err
 	}
-	authorized := make(map[common.Address]struct{}, len(liveSigners))
-	for _, a := range liveSigners {
-		authorized[a] = struct{}{}
-	}
-
-	type sigAddr struct {
-		sig  []byte
-		addr common.Address
-	}
-	kept := make([]sigAddr, 0, len(signatures))
-	seen := make(map[common.Address]struct{})
-	for _, s := range signatures {
-		if len(s) != 65 {
-			return nil, fmt.Errorf("signature has wrong length %d", len(s))
-		}
-		pub, err := crypto.SigToPub(digest[:], s)
-		if err != nil {
-			return nil, fmt.Errorf("recover signer: %w", err)
-		}
-		addr := crypto.PubkeyToAddress(*pub)
-		if _, ok := authorized[addr]; !ok {
-			continue // not in the live signer set
-		}
-		if _, dup := seen[addr]; dup {
-			continue
-		}
-		seen[addr] = struct{}{}
-		kept = append(kept, sigAddr{sig: s, addr: addr})
-	}
-	if len(kept) < liveThreshold {
-		return nil, fmt.Errorf("only %d of %d authorized signatures", len(kept), liveThreshold)
-	}
-	// Custody.sol's _verifySignatures stops at `threshold` and rejects extras.
-	kept = kept[:liveThreshold]
-	// Ascending uint160 order == bytes order over [20]byte.
-	sort.Slice(kept, func(i, j int) bool { return bytes.Compare(kept[i].addr[:], kept[j].addr[:]) < 0 })
-
-	sigs := make([][]byte, len(kept))
-	for i, k := range kept {
-		cp := make([]byte, 65)
-		copy(cp, k.sig)
-		if cp[64] < 27 {
-			cp[64] += 27 // shift V {0,1} -> {27,28} at the contract boundary
-		}
-		sigs[i] = cp
-	}
-	return sigs, nil
+	return mergeQuorumSigs(digest, signatures, liveSigners, liveThreshold)
 }
 
 // Submit merges the collected signatures into a contract-ready quorum and
@@ -220,7 +171,7 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, signatu
 	if err != nil {
 		return core.TxRef{}, err
 	}
-	if err := f.applyFees(ctx, opts); err != nil {
+	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
 		return core.TxRef{}, err
 	}
 	if err := f.estimateGas(ctx, opts, to, asset, amount, wid, sigs); err != nil {
@@ -299,30 +250,17 @@ func (f *WithdrawalFinalizer) digest(p evmPacked) (common.Hash, error) {
 	), nil
 }
 
-func (f *WithdrawalFinalizer) liveQuorum(ctx context.Context) ([]common.Address, int, error) {
-	signers, err := f.custody.Signers(&bind.CallOpts{Context: ctx})
-	if err != nil {
-		return nil, 0, fmt.Errorf("read signers: %w", err)
-	}
-	thr, err := f.custody.Threshold(&bind.CallOpts{Context: ctx})
-	if err != nil {
-		return nil, 0, fmt.Errorf("read threshold: %w", err)
-	}
-	if !thr.IsInt64() || thr.Int64() <= 0 || thr.Int64() > int64(len(signers)) {
-		return nil, 0, fmt.Errorf("on-chain threshold %s out of range for %d signers", thr, len(signers))
-	}
-	return signers, int(thr.Int64()), nil
-}
-
-func (f *WithdrawalFinalizer) applyFees(ctx context.Context, opts *bind.TransactOpts) error {
-	tip := gweiToWei(f.fees.TipGwei)
-	cap := gweiToWei(f.fees.CapGwei)
-	head, err := f.client.HeaderByNumber(ctx, nil)
+// applyFees sets EIP-1559 (or legacy) gas pricing on opts from fees, refusing to
+// exceed the configured cap. Shared by the withdrawal and rotation submits.
+func applyFees(ctx context.Context, client *ethclient.Client, fees FeeConfig, opts *bind.TransactOpts) error {
+	tip := gweiToWei(fees.TipGwei)
+	cap := gweiToWei(fees.CapGwei)
+	head, err := client.HeaderByNumber(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("fee head: %w", err)
 	}
 	if head.BaseFee == nil {
-		price, err := f.client.SuggestGasPrice(ctx)
+		price, err := client.SuggestGasPrice(ctx)
 		if err != nil {
 			return fmt.Errorf("suggest gas price: %w", err)
 		}

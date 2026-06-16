@@ -4,8 +4,10 @@ package btc
 
 import (
 	"context"
+	"encoding/hex"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,10 +72,23 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 		t.Fatalf("DepositAddress: %v", err)
 	}
 
-	// Watch the depositor + deposit addresses so listunspent/gettxout see them,
-	// then fund the depositor from the node wallet.
+	// Base vault address — the withdrawal pays change here, and the rotation
+	// sweep later spends it; watch it up front (rescan=false) so the change UTXO
+	// is tracked from creation.
+	baseRedeem, err := RedeemScript(btcThreshold, pubkeys)
+	if err != nil {
+		t.Fatalf("base redeem: %v", err)
+	}
+	baseVault, err := VaultAddress(baseRedeem, net)
+	if err != nil {
+		t.Fatalf("base vault: %v", err)
+	}
+
+	// Watch the depositor + deposit + base-vault addresses so listunspent/gettxout
+	// see them, then fund the depositor from the node wallet.
 	node.importAddress(ctx, t, depositor.DepositorAddress())
 	node.importAddress(ctx, t, depositAddr.EncodeAddress())
+	node.importAddress(ctx, t, baseVault.EncodeAddress())
 	node.sendToAddress(ctx, t, depositor.DepositorAddress(), 1.0) // 1 BTC
 	node.generateToAddress(ctx, t, 1, miner)
 
@@ -129,6 +144,88 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	} else if !executed {
 		t.Fatal("withdrawal not reported executed")
 	}
+
+	// ── Rotation flow (sweep the vault into a new vault; current signers sign) ─
+	newSigners := make([]sign.Signer, btcSignerCount)
+	newPubkeys := make([][]byte, btcSignerCount)
+	newPubHex := make([]string, btcSignerCount)
+	for i := range newSigners {
+		newSigners[i] = genSecpSigner(t)
+		newPubkeys[i] = newSigners[i].PublicKey()
+		newPubHex[i] = hex.EncodeToString(newPubkeys[i])
+	}
+	// Watch the new vault so listunspent sees the swept output.
+	newRedeem, err := RedeemScript(btcThreshold, newPubkeys)
+	if err != nil {
+		t.Fatalf("new redeem: %v", err)
+	}
+	newVaultAddr, err := VaultAddress(newRedeem, net)
+	if err != nil {
+		t.Fatalf("new vault addr: %v", err)
+	}
+	node.importAddress(ctx, t, newVaultAddr.EncodeAddress())
+
+	store := &memVaultStore{pubkeys: pubkeys, threshold: btcThreshold}
+	rotators := make([]*RotationFinalizer, btcSignerCount)
+	for i, s := range signers {
+		r, err := NewRotationFinalizer(net, node, s, store, cfg, account)
+		if err != nil {
+			t.Fatalf("NewRotationFinalizer %d: %v", i, err)
+		}
+		rotators[i] = r
+	}
+
+	rPacked, err := rotators[0].Pack(ctx, newPubHex, btcThreshold)
+	if err != nil {
+		t.Fatalf("rotation Pack: %v", err)
+	}
+	rShares := make([][]byte, 0, len(rotators))
+	for i, r := range rotators {
+		if err := r.Validate(ctx, rPacked, newPubHex, btcThreshold); err != nil {
+			t.Fatalf("rotation Validate[%d]: %v", i, err)
+		}
+		s, err := r.Sign(ctx, rPacked)
+		if err != nil {
+			t.Fatalf("rotation Sign[%d]: %v", i, err)
+		}
+		rShares = append(rShares, s)
+	}
+	rRef, err := rotators[0].Submit(ctx, rPacked, rShares)
+	if err != nil {
+		t.Fatalf("rotation Submit: %v", err)
+	}
+	node.generateToAddress(ctx, t, 1, miner) // confirm the sweep
+	t.Logf("rotation sweep tx %s", rRef.Raw)
+
+	if _, done, err := rotators[0].VerifyRotation(ctx, newPubHex, btcThreshold); err != nil {
+		t.Fatalf("VerifyRotation: %v", err)
+	} else if !done {
+		t.Fatal("rotation not reported done")
+	}
+	// VerifyRotation pivots the store on success.
+	if cur, _, _ := store.Current(ctx); len(cur) != btcSignerCount {
+		t.Fatalf("store not pivoted: %d pubkeys", len(cur))
+	}
+}
+
+// memVaultStore is an in-memory btc.VaultStore for the rotation test.
+type memVaultStore struct {
+	mu        sync.Mutex
+	pubkeys   [][]byte
+	threshold int
+}
+
+func (s *memVaultStore) Current(context.Context) ([][]byte, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pubkeys, s.threshold, nil
+}
+
+func (s *memVaultStore) Pivot(_ context.Context, pubkeys [][]byte, threshold int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pubkeys, s.threshold = pubkeys, threshold
+	return nil
 }
 
 func genSecpSigner(t *testing.T) sign.Signer {
