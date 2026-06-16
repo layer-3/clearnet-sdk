@@ -1,0 +1,39 @@
+# Local devnet for the blockchain integration tests: one node per supported
+# chain. Bring up with `make devnet` (or `docker compose -f devnet/docker-compose.yml up -d`).
+#
+#   anvil    — EVM JSON-RPC at :8545 (the EVM test self-deploys Custody here)
+#   bitcoind — regtest JSON-RPC at :18443 (user/pass: sdk/sdk)
+#   rippled  — standalone JSON-RPC at :5005
+#
+# No per-chain setup needed: every integration test self-provisions against
+# these nodes (fresh keys/accounts/contract each run). See devnet/README.md.
+services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    entrypoint: ["anvil", "--host", "0.0.0.0", "--chain-id", "31337"]
+    ports:
+      - "8545:8545"
+
+  bitcoind:
+    image: ruimarinho/bitcoin-core:24
+    command:
+      - -regtest=1
+      - -server=1
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcuser=sdk
+      - -rpcpassword=sdk
+      - -fallbackfee=0.0002
+      - -txindex=1
+    ports:
+      - "18443:18443"
+
+  rippled:
+    image: xrpllabsofficial/xrpld:latest
+    platform: linux/amd64
+    command: ["-a", "--start"]
+    volumes:
+      - ./rippled.cfg:/opt/ripple/etc/rippled.cfg:ro
+    ports:
+      - "5005:5005"
+      - "6006:6006"

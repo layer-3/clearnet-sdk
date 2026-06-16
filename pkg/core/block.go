@@ -1,8 +1,8 @@
 package core
 
 import (
-	"errors"
 	"bytes"
+	"errors"
 	"fmt"
 	"math/big"
 	"sort"
