@@ -10,7 +10,7 @@ VerifyExecution` itself, so no p2p mesh is needed.
 ## Run
 
 ```sh
-make devnet        # anvil + bitcoind(regtest) + rippled(standalone); blocks until all answer RPC
+make devnet        # anvil + bitcoind + rippled + solana-test-validator; blocks until all answer RPC
 make integration   # go test -tags integration ./pkg/blockchain/...
 make devnet-down
 ```
@@ -35,6 +35,15 @@ wallet, the XRPL genesis master).
   `SignerListSet`s the vault over fresh signer keys, `TicketCreate`s a ticket,
   then deposits and runs the quorum withdrawal. Standalone rippled does not
   auto-close ledgers, so the test calls `ledger_accept` after each submit.
+- **Solana** — the validator preloads the custody program **upgradeable** at its
+  fixed id (`--upgradeable-program`), upgrade authority = the vendored
+  `devnet/sol-upgrade-authority.json`. The test airdrop-funds the authority +
+  depositor, `Initialize`s the Config once (idempotent; gated on the upgrade
+  authority), deposits native SOL, then runs the quorum withdrawal. The Config
+  PDA is a singleton, so the signer set is **fixed** across runs and only the
+  withdrawalID is fresh — re-runs stay clean without a validator restart. The
+  validator image is multi-arch (no `platform:` pin — the Agave validator needs
+  AVX, which isn't emulable on Apple silicon).
 
 ## Optional overrides
 

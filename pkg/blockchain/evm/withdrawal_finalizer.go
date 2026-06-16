@@ -242,6 +242,11 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, merged []byte) (core.T
 	if err != nil {
 		return core.TxRef{}, fmt.Errorf("execute: %w", err)
 	}
+	// Block until mined so the returned ref corresponds to an executed
+	// withdrawal (and a subsequent VerifyExecution observes it).
+	if err := waitMined(ctx, f.client, tx); err != nil {
+		return core.TxRef{}, err
+	}
 	return core.TxRef{Hash: tx.Hash(), Raw: tx.Hash().Hex()}, nil
 }
 

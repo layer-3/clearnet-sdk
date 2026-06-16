@@ -28,6 +28,35 @@ services:
     ports:
       - "18443:18443"
 
+  # Solana validator with the custody program preloaded upgradeable at its fixed
+  # id, upgrade authority = the vendored devnet key (so the test's Initialize,
+  # gated on the upgrade authority, succeeds). NO platform pin: the Agave
+  # validator needs AVX (not emulable on Apple silicon); beeman's image is
+  # multi-arch and pulls the native arm64 build.
+  solana:
+    image: beeman/solana-test-validator:3.1.14
+    # The Agave validator uses io_uring; Docker Desktop's default seccomp
+    # profile blocks io_uring_setup (EPERM) even though the VM kernel supports
+    # it, so the validator aborts. Allow it.
+    # TODO: replace `unconfined` with a scoped profile (Docker default +
+    # io_uring_setup/enter/register) committed at devnet/seccomp.json, so we
+    # don't drop all syscall filtering for the validator container.
+    security_opt:
+      - seccomp=unconfined
+    command:
+      - solana-test-validator
+      - --reset
+      - --quiet
+      - --upgradeable-program
+      - "98eVpih8X9CAcgU9bzNB9V7VtkRrnFZUmqzEnsq7cfmg"
+      - /artifacts/custody.so
+      - "FdnkxpbVrjX9LGTXhQv5z1wkKc1sppJEKLaaVhQc2Z1f"
+    volumes:
+      - ../pkg/blockchain/sol/artifacts/custody.so:/artifacts/custody.so:ro
+    ports:
+      - "8899:8899"
+      - "8900:8900"
+
   rippled:
     image: xrpllabsofficial/xrpld:latest
     platform: linux/amd64

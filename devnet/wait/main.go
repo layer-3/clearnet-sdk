@@ -29,6 +29,8 @@ func main() {
 			body: `{"jsonrpc":"1.0","id":1,"method":"getblockchaininfo","params":[]}`},
 		{name: "rippled", url: envOr("XRPL_RPC_URL", "http://127.0.0.1:5005"),
 			body: `{"method":"server_info","params":[{}]}`},
+		{name: "solana", url: envOr("SOL_RPC_URL", "http://127.0.0.1:8899"),
+			body: `{"jsonrpc":"2.0","id":1,"method":"getHealth"}`},
 	}
 
 	deadline := time.Now().Add(90 * time.Second)
