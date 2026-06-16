@@ -109,12 +109,6 @@ type solPacked struct {
 	WithdrawalID string `json:"withdrawalId"` // 32-byte hex
 }
 
-type solMerged struct {
-	solPacked
-	Pubkeys []string `json:"pubkeys"` // ordered ed25519 pubkeys (base58)
-	Sigs    []string `json:"sigs"`    // parallel signatures (hex)
-}
-
 // Pack resolves the withdrawal target and returns the canonical JSON. Pure.
 func (f *WithdrawalFinalizer) Pack(_ context.Context, op *core.WithdrawalOp, withdrawalID [32]byte) ([]byte, error) {
 	p, err := f.packedFromOp(op, withdrawalID)
@@ -160,37 +154,25 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 	return share, nil
 }
 
-// Merge filters the shares against the live on-chain signer set, orders + trims
-// to the quorum, and returns the merged artifact.
-func (f *WithdrawalFinalizer) Merge(ctx context.Context, packed []byte, shares [][]byte) ([]byte, error) {
-	var p solPacked
-	if err := json.Unmarshal(packed, &p); err != nil {
-		return nil, fmt.Errorf("sol: decode packed: %w", err)
-	}
+// merge filters the shares against the live on-chain signer set and orders +
+// trims them to the quorum, returning the parallel ed25519 pubkeys / signatures.
+func (f *WithdrawalFinalizer) merge(ctx context.Context, shares [][]byte) (pubkeys, sigs [][]byte, err error) {
 	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	pubkeys, sigs, err := assembleQuorum(shares, cfg.Signers, int(cfg.Threshold))
-	if err != nil {
-		return nil, err
-	}
-	m := solMerged{solPacked: p, Pubkeys: make([]string, len(pubkeys)), Sigs: make([]string, len(sigs))}
-	for i := range pubkeys {
-		m.Pubkeys[i] = solana.PublicKeyFromBytes(pubkeys[i]).String()
-		m.Sigs[i] = hex.EncodeToString(sigs[i])
-	}
-	return json.Marshal(m)
+	return assembleQuorum(shares, cfg.Signers, int(cfg.Threshold))
 }
 
-// Submit assembles the Ed25519-precompile + execute transaction and broadcasts
-// it (fee-payer signed), then waits for the Withdrawal PDA to appear.
-func (f *WithdrawalFinalizer) Submit(ctx context.Context, merged []byte) (core.TxRef, error) {
-	var m solMerged
-	if err := json.Unmarshal(merged, &m); err != nil {
-		return core.TxRef{}, fmt.Errorf("sol: decode merged: %w", err)
+// Submit filters + orders the collected shares against the live signer set,
+// assembles the Ed25519-precompile + execute transaction, and broadcasts it
+// (fee-payer signed), then waits for the Withdrawal PDA to appear.
+func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (core.TxRef, error) {
+	var p solPacked
+	if err := json.Unmarshal(packed, &p); err != nil {
+		return core.TxRef{}, fmt.Errorf("sol: decode packed: %w", err)
 	}
-	to, mint, amount, wid, err := decodePacked(m.solPacked)
+	to, mint, amount, wid, err := decodePacked(p)
 	if err != nil {
 		return core.TxRef{}, err
 	}
@@ -198,19 +180,9 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, merged []byte) (core.T
 		return core.TxRef{}, fmt.Errorf("sol: SPL withdrawal not yet supported (native SOL only)")
 	}
 
-	pubkeys := make([][]byte, len(m.Pubkeys))
-	sigs := make([][]byte, len(m.Sigs))
-	for i := range m.Pubkeys {
-		pk, e := solana.PublicKeyFromBase58(m.Pubkeys[i])
-		if e != nil {
-			return core.TxRef{}, fmt.Errorf("sol: bad merged pubkey: %w", e)
-		}
-		pubkeys[i] = pk[:]
-		b, e := hex.DecodeString(m.Sigs[i])
-		if e != nil {
-			return core.TxRef{}, fmt.Errorf("sol: bad merged sig: %w", e)
-		}
-		sigs[i] = b
+	pubkeys, sigs, err := f.merge(ctx, shares)
+	if err != nil {
+		return core.TxRef{}, err
 	}
 
 	digest := WithdrawDigest(f.chainID, f.programID, f.vaultPDA, to, mint, amount, wid)

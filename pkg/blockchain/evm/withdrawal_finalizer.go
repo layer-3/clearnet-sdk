@@ -89,12 +89,6 @@ type evmPacked struct {
 	WithdrawalID string `json:"withdrawalId"` // 32-byte hex
 }
 
-// evmMerged is evmPacked plus the ordered, contract-ready signatures.
-type evmMerged struct {
-	evmPacked
-	Sigs []string `json:"sigs"` // 65-byte sigs, sorted by signer, V ∈ {27,28}, hex
-}
-
 // Pack returns the canonical JSON for the withdrawal. Pure — no chain access.
 func (f *WithdrawalFinalizer) Pack(_ context.Context, op *core.WithdrawalOp, withdrawalID [32]byte) ([]byte, error) {
 	return json.Marshal(packedFromOp(op, withdrawalID))
@@ -128,15 +122,11 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 	return sign.SignEthDigest(ctx, f.signer, digest[:], f.signerAddr)
 }
 
-// Merge filters the collected signatures against the live on-chain signer set,
+// merge filters the collected signatures against the live on-chain signer set,
 // trims to the live threshold, orders them by signer address (Custody.sol
-// requires ascending, no duplicates), shifts V to {27,28}, and returns the
-// merged artifact.
-func (f *WithdrawalFinalizer) Merge(ctx context.Context, packed []byte, signatures [][]byte) ([]byte, error) {
-	var p evmPacked
-	if err := json.Unmarshal(packed, &p); err != nil {
-		return nil, fmt.Errorf("decode packed: %w", err)
-	}
+// requires ascending, no duplicates), and shifts V to {27,28}. It returns the
+// contract-ready signature list.
+func (f *WithdrawalFinalizer) merge(ctx context.Context, p evmPacked, signatures [][]byte) ([][]byte, error) {
 	digest, err := f.digest(p)
 	if err != nil {
 		return nil, err
@@ -183,27 +173,28 @@ func (f *WithdrawalFinalizer) Merge(ctx context.Context, packed []byte, signatur
 	// Ascending uint160 order == bytes order over [20]byte.
 	sort.Slice(kept, func(i, j int) bool { return bytes.Compare(kept[i].addr[:], kept[j].addr[:]) < 0 })
 
-	merged := evmMerged{evmPacked: p, Sigs: make([]string, len(kept))}
+	sigs := make([][]byte, len(kept))
 	for i, k := range kept {
 		cp := make([]byte, 65)
 		copy(cp, k.sig)
 		if cp[64] < 27 {
 			cp[64] += 27 // shift V {0,1} -> {27,28} at the contract boundary
 		}
-		merged.Sigs[i] = hex.EncodeToString(cp)
+		sigs[i] = cp
 	}
-	return json.Marshal(merged)
+	return sigs, nil
 }
 
-// Submit broadcasts the merged artifact via Custody.execute and returns the tx
-// reference. Idempotent: if the withdrawal is already executed it returns the
-// prior tx hash without re-submitting.
-func (f *WithdrawalFinalizer) Submit(ctx context.Context, merged []byte) (core.TxRef, error) {
-	var m evmMerged
-	if err := json.Unmarshal(merged, &m); err != nil {
-		return core.TxRef{}, fmt.Errorf("decode merged: %w", err)
+// Submit merges the collected signatures into a contract-ready quorum and
+// broadcasts it via Custody.execute, returning the tx reference. Idempotent: if
+// the withdrawal is already executed it returns the prior tx hash without
+// re-submitting.
+func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (core.TxRef, error) {
+	var p evmPacked
+	if err := json.Unmarshal(packed, &p); err != nil {
+		return core.TxRef{}, fmt.Errorf("decode packed: %w", err)
 	}
-	wid, err := decodeHex32(m.WithdrawalID)
+	wid, err := decodeHex32(p.WithdrawalID)
 	if err != nil {
 		return core.TxRef{}, err
 	}
@@ -213,19 +204,16 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, merged []byte) (core.T
 		return core.TxRef{Hash: txHash, Raw: common.Hash(txHash).Hex()}, nil
 	}
 
-	to := common.HexToAddress(m.To)
-	asset := common.HexToAddress(m.Asset)
-	amount, ok := new(big.Int).SetString(m.Amount, 10)
-	if !ok {
-		return core.TxRef{}, fmt.Errorf("bad amount %q", m.Amount)
+	sigs, err := f.merge(ctx, p, signatures)
+	if err != nil {
+		return core.TxRef{}, err
 	}
-	sigs := make([][]byte, len(m.Sigs))
-	for i, s := range m.Sigs {
-		b, err := hex.DecodeString(s)
-		if err != nil {
-			return core.TxRef{}, fmt.Errorf("decode sig %d: %w", i, err)
-		}
-		sigs[i] = b
+
+	to := common.HexToAddress(p.To)
+	asset := common.HexToAddress(p.Asset)
+	amount, ok := new(big.Int).SetString(p.Amount, 10)
+	if !ok {
+		return core.TxRef{}, fmt.Errorf("bad amount %q", p.Amount)
 	}
 
 	opts, _, err := signerTransactOpts(ctx, f.client, f.signer)

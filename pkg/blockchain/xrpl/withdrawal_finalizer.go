@@ -35,7 +35,7 @@ type WithdrawalFinalizer struct {
 	vaultAddress string
 	threshold    int
 	signer       sign.Signer
-	id           xrplIdentity
+	id           Identity
 	tickets      TicketProvider
 }
 
@@ -48,7 +48,7 @@ func NewWithdrawalFinalizer(rpcURL, vaultAddress string, threshold int, signer s
 	if err != nil {
 		return nil, fmt.Errorf("xrpl: create rpc config: %w", err)
 	}
-	id, err := deriveIdentity(signer)
+	id, err := DeriveIdentity(signer)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func NewWithdrawalFinalizer(rpcURL, vaultAddress string, threshold int, signer s
 // Pack binds a Ticket and builds the autofilled multi-sign Payment, returning
 // its sorted-key JSON.
 func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte) ([]byte, error) {
-	amount, err := buildAmount(op)
+	amount, err := BuildAmount(op)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +90,7 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 	}
 	flatTx["Sequence"] = uint32(0)
 	delete(flatTx, "LastLedgerSequence")
-	return canonicalJSON(flatTx)
+	return CanonicalJSON(flatTx)
 }
 
 // Validate re-derives the trust-bound shape from the op and asserts the packed
@@ -100,7 +100,7 @@ func (f *WithdrawalFinalizer) Validate(_ context.Context, packed []byte, op *cor
 	if err := json.Unmarshal(packed, &flat); err != nil {
 		return fmt.Errorf("xrpl: decode packed: %w", err)
 	}
-	return validateCanonical(flat, op, withdrawalID, f.vaultAddress)
+	return ValidateCanonical(flat, op, withdrawalID, f.vaultAddress)
 }
 
 // Sign multi-signs the packed Payment and returns this node's blob.
@@ -116,14 +116,14 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 	return []byte(blob), nil
 }
 
-// Merge combines the collected multi-sign blobs into one submittable blob.
+// merge combines the collected multi-sign blobs into one submittable blob.
 // Exactly `threshold` signatures are included: Pack autofilled the multi-sign
 // fee for that count (base × (1 + threshold)), so including extras would
 // under-pay (telINSUF_FEE_P) and waste fee. Any threshold of the SignerList's
 // members satisfies the quorum.
-func (f *WithdrawalFinalizer) Merge(_ context.Context, _ []byte, signatures [][]byte) ([]byte, error) {
+func (f *WithdrawalFinalizer) merge(signatures [][]byte) (string, error) {
 	if len(signatures) < f.threshold {
-		return nil, fmt.Errorf("xrpl: have %d signatures, need %d", len(signatures), f.threshold)
+		return "", fmt.Errorf("xrpl: have %d signatures, need %d", len(signatures), f.threshold)
 	}
 	blobs := make([]string, 0, f.threshold)
 	for _, s := range signatures[:f.threshold] {
@@ -131,14 +131,19 @@ func (f *WithdrawalFinalizer) Merge(_ context.Context, _ []byte, signatures [][]
 	}
 	final, err := xrpl.Multisign(blobs...)
 	if err != nil {
-		return nil, fmt.Errorf("xrpl: combine signatures: %w", err)
+		return "", fmt.Errorf("xrpl: combine signatures: %w", err)
 	}
-	return []byte(final), nil
+	return final, nil
 }
 
-// Submit broadcasts the merged blob and returns the tx reference.
-func (f *WithdrawalFinalizer) Submit(_ context.Context, merged []byte) (core.TxRef, error) {
-	result, err := f.client.SubmitMultisigned(string(merged), false)
+// Submit combines the collected multi-sign blobs and broadcasts the result,
+// returning the tx reference.
+func (f *WithdrawalFinalizer) Submit(_ context.Context, _ []byte, signatures [][]byte) (core.TxRef, error) {
+	merged, err := f.merge(signatures)
+	if err != nil {
+		return core.TxRef{}, err
+	}
+	result, err := f.client.SubmitMultisigned(merged, false)
 	if err != nil {
 		return core.TxRef{}, fmt.Errorf("xrpl: submit_multisigned: %w", err)
 	}

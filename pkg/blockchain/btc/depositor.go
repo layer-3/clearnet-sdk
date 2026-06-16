@@ -3,6 +3,7 @@ package btc
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -62,10 +63,10 @@ func NewDepositor(net *chaincfg.Params, rpc RPC, signer sign.Signer, vaultPubkey
 // DepositorAddress returns the depositor's own P2WPKH funding address.
 func (d *Depositor) DepositorAddress() string { return d.depositAddr.EncodeAddress() }
 
-// Deposit sends `amount` satoshis from the depositor's wallet to the per-account
+// SubmitDeposit sends `amount` satoshis from the depositor's wallet to the per-account
 // deposit address for `account`. asset must be native BTC ("" or "BTC"). Builds,
 // signs (P2WPKH), and broadcasts the funding tx.
-func (d *Depositor) Deposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (core.TxRef, error) {
+func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (core.TxRef, error) {
 	if a := strings.ToUpper(strings.TrimSpace(asset)); a != "" && a != "BTC" {
 		return core.TxRef{}, fmt.Errorf("btc: only native BTC deposits supported, got asset %q", asset)
 	}
@@ -120,6 +121,30 @@ func (d *Depositor) Deposit(ctx context.Context, asset string, amount decimal.De
 		return core.TxRef{}, fmt.Errorf("btc: sendrawtransaction: %w", err)
 	}
 	return core.TxRef{Hash: hash, Raw: txid}, nil
+}
+
+// VerifyDeposit reports the on-chain status of the deposit tx in ref (matched
+// by txid, ref.Raw). Requires the node to resolve the tx (txindex=1, or the tx
+// unspent / in the mempool). A tx the node has never seen — or one reorged out
+// and dropped — reads as DepositAbsent; a mempool tx (0 confs) is DepositPending
+// until it is mined with at least max(1, minConf) confirmations (a deposit is
+// only Confirmed once on chain, consistent with the other chains).
+func (d *Depositor) VerifyDeposit(ctx context.Context, ref core.TxRef, minConf uint64) (core.DepositStatus, error) {
+	raw, err := d.rpc.GetRawTransaction(ctx, ref.Raw)
+	if err != nil {
+		var rpcErr *RPCError
+		if errors.As(err, &rpcErr) && rpcErr.Code == -5 { // RPC_INVALID_ADDRESS_OR_KEY: unknown tx
+			return core.DepositAbsent, nil
+		}
+		return core.DepositAbsent, fmt.Errorf("btc: getrawtransaction: %w", err)
+	}
+	if raw == nil {
+		return core.DepositAbsent, nil
+	}
+	if raw.Confirmations > 0 && raw.Confirmations >= int64(minConf) {
+		return core.DepositConfirmed, nil
+	}
+	return core.DepositPending, nil
 }
 
 // depositorUTXOs filters unspent outputs to the depositor's own address and

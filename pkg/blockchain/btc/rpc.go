@@ -2,6 +2,7 @@ package btc
 
 import (
 	"context"
+	"errors"
 	"strings"
 )
 
@@ -53,10 +54,18 @@ type RawVout struct {
 
 // isAlreadyKnown reports whether a SendRawTransaction error means the tx (or a
 // prior attempt spending the same inputs) is already in the chain/mempool — the
-// UTXO-model analogue of EVM's executed[withdrawalID] guard. Matched on the
-// error text since the concrete RPC client (and its typed error) is caller-
-// supplied.
+// UTXO-model analogue of EVM's executed[withdrawalID] guard. It prefers the
+// typed bitcoind error code (RPC_VERIFY_ALREADY_IN_CHAIN = -27,
+// RPC_VERIFY_ERROR = -25 for spent/missing inputs) when the caller supplies
+// *Client, and falls back to error-text matching for other RPC implementations.
 func isAlreadyKnown(err error) bool {
+	var rpcErr *RPCError
+	if errors.As(err, &rpcErr) {
+		switch rpcErr.Code {
+		case -27, -25:
+			return true
+		}
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "already in block chain") ||
 		strings.Contains(msg, "txn-already-known") ||

@@ -59,37 +59,37 @@ func parseDepositTag(account string) (uint32, error) {
 	return uint32(n), nil
 }
 
-// xrplIdentity is a signer's XRPL classic address + signing pubkey hex.
-type xrplIdentity struct {
-	classicAddress   string
-	signingPubKeyHex string
+// Identity is a signer's XRPL classic address + signing pubkey hex.
+type Identity struct {
+	ClassicAddress   string
+	SigningPubKeyHex string
 }
 
-// deriveIdentity maps a sign.Signer's public key to its XRPL identity.
-func deriveIdentity(s sign.Signer) (xrplIdentity, error) {
+// DeriveIdentity maps a sign.Signer's public key to its XRPL identity.
+func DeriveIdentity(s sign.Signer) (Identity, error) {
 	pub := s.PublicKey()
 	var xrplPub []byte
 	switch s.Algorithm() {
 	case sign.AlgSecp256k1:
 		if len(pub) != 33 {
-			return xrplIdentity{}, fmt.Errorf("xrpl: secp256k1 pubkey must be 33-byte compressed, got %d", len(pub))
+			return Identity{}, fmt.Errorf("xrpl: secp256k1 pubkey must be 33-byte compressed, got %d", len(pub))
 		}
 		xrplPub = pub
 	case sign.AlgEd25519:
 		if len(pub) != 32 {
-			return xrplIdentity{}, fmt.Errorf("xrpl: ed25519 pubkey must be 32 bytes, got %d", len(pub))
+			return Identity{}, fmt.Errorf("xrpl: ed25519 pubkey must be 32 bytes, got %d", len(pub))
 		}
 		// XRPL ed25519 pubkeys take a 0xED prefix.
 		xrplPub = append([]byte{0xED}, pub...)
 	default:
-		return xrplIdentity{}, fmt.Errorf("xrpl: unsupported signer algorithm %q", s.Algorithm())
+		return Identity{}, fmt.Errorf("xrpl: unsupported signer algorithm %q", s.Algorithm())
 	}
 	pubHex := strings.ToUpper(hex.EncodeToString(xrplPub))
 	addr, err := addresscodec.EncodeClassicAddressFromPublicKeyHex(pubHex)
 	if err != nil {
-		return xrplIdentity{}, fmt.Errorf("xrpl: derive classic address: %w", err)
+		return Identity{}, fmt.Errorf("xrpl: derive classic address: %w", err)
 	}
-	return xrplIdentity{classicAddress: addr, signingPubKeyHex: pubHex}, nil
+	return Identity{ClassicAddress: addr, SigningPubKeyHex: pubHex}, nil
 }
 
 // signDigest runs the algorithm-specific signing primitive over the
@@ -110,9 +110,9 @@ func signDigest(ctx context.Context, s sign.Signer, encodedHex string) ([]byte, 
 }
 
 // signMultisig produces this node's multi-sign blob for tx.
-func signMultisig(ctx context.Context, s sign.Signer, id xrplIdentity, tx transaction.FlatTransaction) (string, error) {
+func signMultisig(ctx context.Context, s sign.Signer, id Identity, tx transaction.FlatTransaction) (string, error) {
 	tx["SigningPubKey"] = ""
-	encoded, err := binarycodec.EncodeForMultisigning(tx, id.classicAddress)
+	encoded, err := binarycodec.EncodeForMultisigning(tx, id.ClassicAddress)
 	if err != nil {
 		return "", fmt.Errorf("xrpl: EncodeForMultisigning: %w", err)
 	}
@@ -121,17 +121,17 @@ func signMultisig(ctx context.Context, s sign.Signer, id xrplIdentity, tx transa
 		return "", fmt.Errorf("xrpl: sign: %w", err)
 	}
 	inner := types.Signer{SignerData: types.SignerData{
-		Account:       types.Address(id.classicAddress),
+		Account:       types.Address(id.ClassicAddress),
 		TxnSignature:  strings.ToUpper(hex.EncodeToString(sigBytes)),
-		SigningPubKey: id.signingPubKeyHex,
+		SigningPubKey: id.SigningPubKeyHex,
 	}}
 	tx["Signers"] = []any{inner.Flatten()}
 	return binarycodec.Encode(tx)
 }
 
 // signSingle signs tx as a single-signer transaction and returns the submittable blob.
-func signSingle(ctx context.Context, s sign.Signer, id xrplIdentity, tx transaction.FlatTransaction) (string, error) {
-	tx["SigningPubKey"] = id.signingPubKeyHex
+func signSingle(ctx context.Context, s sign.Signer, id Identity, tx transaction.FlatTransaction) (string, error) {
+	tx["SigningPubKey"] = id.SigningPubKeyHex
 	encoded, err := binarycodec.EncodeForSigning(tx)
 	if err != nil {
 		return "", fmt.Errorf("xrpl: EncodeForSigning: %w", err)
@@ -144,8 +144,8 @@ func signSingle(ctx context.Context, s sign.Signer, id xrplIdentity, tx transact
 	return binarycodec.Encode(tx)
 }
 
-// buildAmount converts a WithdrawalOp into an XRPL CurrencyAmount.
-func buildAmount(op *core.WithdrawalOp) (types.CurrencyAmount, error) {
+// BuildAmount converts a WithdrawalOp into an XRPL CurrencyAmount.
+func BuildAmount(op *core.WithdrawalOp) (types.CurrencyAmount, error) {
 	return currencyAmount(op.L1Asset, op.Amount)
 }
 
@@ -175,8 +175,8 @@ func currencyAmount(asset string, amount decimal.Decimal) (types.CurrencyAmount,
 	return types.IssuedCurrencyAmount{Issuer: types.Address(issuer), Currency: currency, Value: amount.String()}, nil
 }
 
-// validateCanonical asserts the canonical flatTx matches the op.
-func validateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, withdrawalID [32]byte, vault string) error {
+// ValidateCanonical asserts the canonical flatTx matches the op.
+func ValidateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, withdrawalID [32]byte, vault string) error {
 	if asString(flat["TransactionType"]) != "Payment" {
 		return fmt.Errorf("xrpl canonical: wrong TransactionType %v", flat["TransactionType"])
 	}
@@ -186,7 +186,7 @@ func validateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, 
 	if !strings.EqualFold(asString(flat["Destination"]), op.Recipient) {
 		return fmt.Errorf("xrpl canonical: Destination %v != op.Recipient %s", flat["Destination"], op.Recipient)
 	}
-	wantAmount, err := buildAmount(op)
+	wantAmount, err := BuildAmount(op)
 	if err != nil {
 		return fmt.Errorf("xrpl canonical: build expected Amount: %w", err)
 	}
@@ -288,8 +288,8 @@ func uint32Field(raw any) (uint32, bool) {
 	}
 }
 
-// canonicalJSON encodes a FlatTransaction with sorted keys.
-func canonicalJSON(flatTx transaction.FlatTransaction) ([]byte, error) {
+// CanonicalJSON encodes a FlatTransaction with sorted keys.
+func CanonicalJSON(flatTx transaction.FlatTransaction) ([]byte, error) {
 	keys := make([]string, 0, len(flatTx))
 	for k := range flatTx {
 		keys = append(keys, k)

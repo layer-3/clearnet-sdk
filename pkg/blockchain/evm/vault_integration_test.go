@@ -102,7 +102,7 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	account := crypto.PubkeyToAddress(deployerKey.PublicKey)
 	const zeroAsset = "0x0000000000000000000000000000000000000000" // native ETH
 	depositAmt := decimal.NewFromInt(1_000_000_000_000)            // 1e12 wei
-	depRef, err := depositor.Deposit(ctx, zeroAsset, depositAmt, account.Hex())
+	depRef, err := depositor.SubmitDeposit(ctx, zeroAsset, depositAmt, account.Hex())
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
@@ -143,12 +143,8 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 		}
 		sigs = append(sigs, s)
 	}
-	// 3. Merge + Submit (a submitter node).
-	merged, err := finalizers[0].Merge(ctx, packed, sigs)
-	if err != nil {
-		t.Fatalf("Merge: %v", err)
-	}
-	wRef, err := finalizers[0].Submit(ctx, merged)
+	// 3. Submit (a submitter node merges the quorum and broadcasts).
+	wRef, err := finalizers[0].Submit(ctx, packed, sigs)
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}

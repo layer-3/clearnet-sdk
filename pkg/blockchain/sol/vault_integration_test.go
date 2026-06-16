@@ -108,7 +108,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 		t.Fatalf("NewDepositor: %v", err)
 	}
 	const account = "00000000000000000000000000000000000000a1" // 20-byte clearnet addr
-	depRef, err := dep.Deposit(ctx, "SOL", decimal.NewFromInt(100_000_000), account)
+	depRef, err := dep.SubmitDeposit(ctx, "SOL", decimal.NewFromInt(100_000_000), account)
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
@@ -150,11 +150,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 		}
 		shares = append(shares, s)
 	}
-	merged, err := finalizers[0].Merge(ctx, packed, shares)
-	if err != nil {
-		t.Fatalf("Merge: %v", err)
-	}
-	ref, err := finalizers[0].Submit(ctx, merged)
+	ref, err := finalizers[0].Submit(ctx, packed, shares)
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}

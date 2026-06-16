@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -58,9 +59,9 @@ func NewDepositor(rpcURL string, programID solana.PublicKey, signer sign.Signer,
 // DepositorAddress returns the depositor's Solana address.
 func (d *Depositor) DepositorAddress() string { return d.depositorPub.String() }
 
-// Deposit transfers `amount` of `asset` into the vault, crediting clearnet
+// SubmitDeposit transfers `amount` of `asset` into the vault, crediting clearnet
 // `account` (20-byte hex). asset is "" / "SOL" for native or a base58 mint.
-func (d *Depositor) Deposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (core.TxRef, error) {
+func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (core.TxRef, error) {
 	acct, err := parseClearnetAccount(account)
 	if err != nil {
 		return core.TxRef{}, err
@@ -105,6 +106,43 @@ func (d *Depositor) Deposit(ctx context.Context, asset string, amount decimal.De
 		return core.TxRef{}, err
 	}
 	return txRef(sig), nil
+}
+
+// VerifyDeposit reports the on-chain status of the deposit tx in ref (matched by
+// signature, ref.Raw). minConf maps onto Solana's commitment ladder, which has
+// no numeric depth: minConf 0 accepts the optimistic "confirmed" level (~1-2
+// slots), while minConf >= 1 requires "finalized" (irreversible). A failed tx
+// reads as DepositAbsent (it credited nothing).
+func (d *Depositor) VerifyDeposit(ctx context.Context, ref core.TxRef, minConf uint64) (core.DepositStatus, error) {
+	sig, err := solana.SignatureFromBase58(ref.Raw)
+	if err != nil {
+		return core.DepositAbsent, fmt.Errorf("sol: bad signature %q: %w", ref.Raw, err)
+	}
+	out, err := d.client.GetSignatureStatuses(ctx, true, sig)
+	if err != nil {
+		if errors.Is(err, rpc.ErrNotFound) {
+			return core.DepositAbsent, nil
+		}
+		return core.DepositAbsent, fmt.Errorf("sol: signature status: %w", err)
+	}
+	if len(out.Value) == 0 || out.Value[0] == nil {
+		return core.DepositAbsent, nil
+	}
+	st := out.Value[0]
+	if st.Err != nil {
+		return core.DepositAbsent, nil
+	}
+	switch st.ConfirmationStatus {
+	case rpc.ConfirmationStatusFinalized:
+		return core.DepositConfirmed, nil
+	case rpc.ConfirmationStatusConfirmed:
+		if minConf == 0 {
+			return core.DepositConfirmed, nil
+		}
+		return core.DepositPending, nil
+	default:
+		return core.DepositPending, nil
+	}
 }
 
 // parseClearnetAccount decodes a 20-byte clearnet account address from hex

@@ -74,22 +74,22 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 	signerAddrs := make([]string, xrplSignerCount)
 	for i := range signers {
 		signers[i] = genEd25519(t)
-		signerAddrs[i] = mustIdentity(t, signers[i]).classicAddress
+		signerAddrs[i] = mustIdentity(t, signers[i]).ClassicAddress
 	}
 
 	// ── Setup ─────────────────────────────────────────────────────────────────
-	h.fund(ctx, t, master, masterID, vaultID.classicAddress, "1000000000") // 1000 XRP
-	h.fund(ctx, t, master, masterID, depID.classicAddress, "1000000000")   // 1000 XRP
+	h.fund(ctx, t, master, masterID, vaultID.ClassicAddress, "1000000000") // 1000 XRP
+	h.fund(ctx, t, master, masterID, depID.ClassicAddress, "1000000000")   // 1000 XRP
 	h.signerListSet(ctx, t, vault, vaultID, signerAddrs, xrplQuorum)
 	ticketSeq := h.ticketCreate(ctx, t, vault, vaultID)
-	t.Logf("vault %s signer-list set (quorum %d), ticket %d", vaultID.classicAddress, xrplQuorum, ticketSeq)
+	t.Logf("vault %s signer-list set (quorum %d), ticket %d", vaultID.ClassicAddress, xrplQuorum, ticketSeq)
 
 	// ── Deposit flow ──────────────────────────────────────────────────────────
-	dep, err := NewDepositor(url, vaultID.classicAddress, depositor)
+	dep, err := NewDepositor(url, vaultID.ClassicAddress, depositor)
 	if err != nil {
 		t.Fatalf("NewDepositor: %v", err)
 	}
-	depRef, err := dep.Deposit(ctx, "XRP", decimal.NewFromInt(100_000_000), fmt.Sprintf("xrpl-%d", depositTag)) // 100 XRP
+	depRef, err := dep.SubmitDeposit(ctx, "XRP", decimal.NewFromInt(100_000_000), fmt.Sprintf("xrpl-%d", depositTag)) // 100 XRP
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 	// ── Withdrawal flow (quorum in-process) ───────────────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, len(signers))
 	for i, s := range signers {
-		f, err := NewWithdrawalFinalizer(url, vaultID.classicAddress, xrplQuorum, s, fixedTicket(ticketSeq))
+		f, err := NewWithdrawalFinalizer(url, vaultID.ClassicAddress, xrplQuorum, s, fixedTicket(ticketSeq))
 		if err != nil {
 			t.Fatalf("NewWithdrawalFinalizer %d: %v", i, err)
 		}
@@ -108,7 +108,7 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 
 	var wid [32]byte
 	wid[0], wid[31] = 0x12, 0x34
-	op := &core.WithdrawalOp{Recipient: recID.classicAddress, L1Asset: "XRP", Amount: decimal.NewFromInt(50_000_000)} // 50 XRP
+	op := &core.WithdrawalOp{Recipient: recID.ClassicAddress, L1Asset: "XRP", Amount: decimal.NewFromInt(50_000_000)} // 50 XRP
 
 	packed, err := finalizers[0].Pack(ctx, op, wid)
 	if err != nil {
@@ -125,11 +125,7 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 		}
 		blobs = append(blobs, b)
 	}
-	merged, err := finalizers[0].Merge(ctx, packed, blobs)
-	if err != nil {
-		t.Fatalf("Merge: %v", err)
-	}
-	ref, err := finalizers[0].Submit(ctx, merged)
+	ref, err := finalizers[0].Submit(ctx, packed, blobs)
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -157,7 +153,7 @@ type xrplHarness struct {
 
 // submit autofills, single-signs with the given account, submits, and accepts a
 // ledger so the tx validates before the next call reads account state.
-func (h *xrplHarness) submit(ctx context.Context, t *testing.T, s sign.Signer, id xrplIdentity, flatTx transaction.FlatTransaction) {
+func (h *xrplHarness) submit(ctx context.Context, t *testing.T, s sign.Signer, id Identity, flatTx transaction.FlatTransaction) {
 	t.Helper()
 	if err := h.client.Autofill(&flatTx); err != nil {
 		t.Fatalf("autofill: %v", err)
@@ -176,17 +172,17 @@ func (h *xrplHarness) submit(ctx context.Context, t *testing.T, s sign.Signer, i
 	h.ledgerAccept(ctx, t)
 }
 
-func (h *xrplHarness) fund(ctx context.Context, t *testing.T, s sign.Signer, id xrplIdentity, dest, drops string) {
+func (h *xrplHarness) fund(ctx context.Context, t *testing.T, s sign.Signer, id Identity, dest, drops string) {
 	t.Helper()
 	h.submit(ctx, t, s, id, transaction.FlatTransaction{
 		"TransactionType": "Payment",
-		"Account":         id.classicAddress,
+		"Account":         id.ClassicAddress,
 		"Destination":     dest,
 		"Amount":          drops,
 	})
 }
 
-func (h *xrplHarness) signerListSet(ctx context.Context, t *testing.T, s sign.Signer, id xrplIdentity, signerAddrs []string, quorum int) {
+func (h *xrplHarness) signerListSet(ctx context.Context, t *testing.T, s sign.Signer, id Identity, signerAddrs []string, quorum int) {
 	t.Helper()
 	entries := make([]any, len(signerAddrs))
 	for i, a := range signerAddrs {
@@ -194,18 +190,18 @@ func (h *xrplHarness) signerListSet(ctx context.Context, t *testing.T, s sign.Si
 	}
 	h.submit(ctx, t, s, id, transaction.FlatTransaction{
 		"TransactionType": "SignerListSet",
-		"Account":         id.classicAddress,
+		"Account":         id.ClassicAddress,
 		"SignerQuorum":    quorum,
 		"SignerEntries":   entries,
 	})
 }
 
 // ticketCreate creates one Ticket on the account and returns its sequence.
-func (h *xrplHarness) ticketCreate(ctx context.Context, t *testing.T, s sign.Signer, id xrplIdentity) uint32 {
+func (h *xrplHarness) ticketCreate(ctx context.Context, t *testing.T, s sign.Signer, id Identity) uint32 {
 	t.Helper()
 	h.submit(ctx, t, s, id, transaction.FlatTransaction{
 		"TransactionType": "TicketCreate",
-		"Account":         id.classicAddress,
+		"Account":         id.ClassicAddress,
 		"TicketCount":     1,
 	})
 	// Read the created Ticket's sequence from account_objects.
@@ -217,7 +213,7 @@ func (h *xrplHarness) ticketCreate(ctx context.Context, t *testing.T, s sign.Sig
 			} `json:"account_objects"`
 		} `json:"result"`
 	}
-	h.rawRPC(ctx, t, "account_objects", map[string]any{"account": id.classicAddress, "type": "ticket"}, &resp)
+	h.rawRPC(ctx, t, "account_objects", map[string]any{"account": id.ClassicAddress, "type": "ticket"}, &resp)
 	for _, o := range resp.Result.AccountObjects {
 		if o.LedgerEntryType == "Ticket" {
 			return o.TicketSequence
@@ -292,9 +288,9 @@ func masterSigner(t *testing.T) sign.Signer {
 	return sign.NewKeySignerFromECDSA(k)
 }
 
-func mustIdentity(t *testing.T, s sign.Signer) xrplIdentity {
+func mustIdentity(t *testing.T, s sign.Signer) Identity {
 	t.Helper()
-	id, err := deriveIdentity(s)
+	id, err := DeriveIdentity(s)
 	if err != nil {
 		t.Fatalf("derive identity: %v", err)
 	}

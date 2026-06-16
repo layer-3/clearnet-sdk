@@ -43,13 +43,48 @@ type FraudEvidenceSubmitter interface {
 	SubmitWithdrawalFraudEvidence(ctx context.Context, evidence WithdrawalFraudEvidence) error
 }
 
+// DepositStatus is the tri-state result of VerifyDeposit, distinguishing a
+// deposit that settled, one that is still in flight, and one that never landed
+// (or was dropped/reorged out).
+type DepositStatus int
+
+const (
+	// DepositAbsent: no matching deposit transaction is on chain or in the
+	// mempool (never broadcast, dropped, reorged out, or reverted/failed).
+	DepositAbsent DepositStatus = iota
+	// DepositPending: the deposit transaction is observed but not yet final —
+	// in the mempool, or with fewer than the requested confirmations.
+	DepositPending
+	// DepositConfirmed: the deposit transaction is final to the requested depth.
+	DepositConfirmed
+)
+
+func (s DepositStatus) String() string {
+	switch s {
+	case DepositAbsent:
+		return "absent"
+	case DepositPending:
+		return "pending"
+	case DepositConfirmed:
+		return "confirmed"
+	default:
+		return "unknown"
+	}
+}
+
 // VaultDepositor moves funds into the L1 vault. The implementation owns the
 // depositor's signing identity (a sign.Signer supplied at construction) and
 // executes the deposit on its chain: a contract call (EVM), a funding tx to a
 // derived address (BTC), or a tagged Payment (XRPL). It expects only the asset,
 // amount, and crediting clearnet account.
 type VaultDepositor interface {
-	Deposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (TxRef, error)
+	SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (TxRef, error)
+	// VerifyDeposit reports whether the deposit identified by ref (a TxRef
+	// returned by SubmitDeposit) is present and final on chain — a pure read for
+	// replay/audit. minConf is the confirmation depth required for
+	// DepositConfirmed; chains with no numeric depth (Solana) map it onto a
+	// commitment level instead.
+	VerifyDeposit(ctx context.Context, ref TxRef, minConf uint64) (DepositStatus, error)
 }
 
 // VaultWithdrawalFinalizer turns an authorized withdrawal into an on-chain
@@ -63,17 +98,17 @@ type VaultDepositor interface {
 //     packed bytes match — the defense against a Byzantine packer; every node
 //     runs it before Sign.
 //   - Sign produces this node's signature over the packed bytes.
-//   - Merge combines the packed bytes with the collected quorum signatures into
-//     a submittable artifact.
-//   - Submit broadcasts the merged artifact.
+//   - Submit merges the packed bytes with the collected quorum signatures into
+//     a submittable artifact and broadcasts it. It filters the signatures
+//     against the live on-chain signer set and is idempotent against a
+//     withdrawal a peer has already executed.
 //   - VerifyExecution reads canonical chain state to answer "already executed?"
 //     for the retry/finalize loop.
 type VaultWithdrawalFinalizer interface {
 	Pack(ctx context.Context, op *WithdrawalOp, withdrawalID [32]byte) ([]byte, error)
 	Validate(ctx context.Context, packed []byte, op *WithdrawalOp, withdrawalID [32]byte) error
 	Sign(ctx context.Context, packed []byte) ([]byte, error)
-	Merge(ctx context.Context, packed []byte, signatures [][]byte) ([]byte, error)
-	Submit(ctx context.Context, merged []byte) (TxRef, error)
+	Submit(ctx context.Context, packed []byte, signatures [][]byte) (TxRef, error)
 	VerifyExecution(ctx context.Context, withdrawalID [32]byte) (txHash [32]byte, executed bool, err error)
 }
 

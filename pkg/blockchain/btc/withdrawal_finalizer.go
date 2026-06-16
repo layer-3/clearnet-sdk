@@ -262,10 +262,10 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 	return json.Marshal(SigShare{PubKey: hex.EncodeToString(f.signerPub), Sigs: sigs})
 }
 
-// Merge assembles the witness for every input from the collected shares (the
+// merge assembles the witness for every input from the collected shares (the
 // threshold lowest by redeem-script key position) and returns the fully-signed
 // tx serialization.
-func (f *WithdrawalFinalizer) Merge(ctx context.Context, packed []byte, shares [][]byte) ([]byte, error) {
+func (f *WithdrawalFinalizer) merge(ctx context.Context, packed []byte, shares [][]byte) ([]byte, error) {
 	tx, err := deserializeTx(packed)
 	if err != nil {
 		return nil, fmt.Errorf("btc merge: %w", err)
@@ -316,9 +316,13 @@ func (f *WithdrawalFinalizer) Merge(ctx context.Context, packed []byte, shares [
 	return serializeTx(tx)
 }
 
-// Submit broadcasts the merged signed tx, returning its hash. Idempotent on an
-// already-known/spent reply.
-func (f *WithdrawalFinalizer) Submit(ctx context.Context, merged []byte) (core.TxRef, error) {
+// Submit assembles the witnesses from the collected shares and broadcasts the
+// signed tx, returning its hash. Idempotent on an already-known/spent reply.
+func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (core.TxRef, error) {
+	merged, err := f.merge(ctx, packed, shares)
+	if err != nil {
+		return core.TxRef{}, err
+	}
 	tx, err := deserializeTx(merged)
 	if err != nil {
 		return core.TxRef{}, fmt.Errorf("btc submit: %w", err)

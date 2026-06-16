@@ -2,9 +2,12 @@ package evm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
@@ -33,11 +36,11 @@ func NewDepositor(client *ethclient.Client, custodyAddr common.Address, signer s
 	return &Depositor{client: client, custody: custody, custodyAddr: custodyAddr, signer: signer}, nil
 }
 
-// Deposit credits `account` with `amount` of `asset`. For an ERC-20 (asset is a
+// SubmitDeposit credits `account` with `amount` of `asset`. For an ERC-20 (asset is a
 // non-zero hex address) it approves the vault then calls
 // Custody.deposit(account, asset, amount); for the zero address it sends native
 // ETH with msg.value == amount. Blocks until the deposit tx mines.
-func (d *Depositor) Deposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (core.TxRef, error) {
+func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (core.TxRef, error) {
 	assetAddr, err := depositAssetAddress(asset)
 	if err != nil {
 		return core.TxRef{}, err
@@ -90,4 +93,37 @@ func (d *Depositor) Deposit(ctx context.Context, asset string, amount decimal.De
 		return core.TxRef{}, err
 	}
 	return core.TxRef{Hash: tx.Hash(), Raw: tx.Hash().Hex()}, nil
+}
+
+// VerifyDeposit reports the on-chain status of the deposit tx in ref. A reverted
+// deposit (receipt status != 1) reads as DepositAbsent since it credited
+// nothing. Confirmations are counted inclusively (head - blockNumber + 1).
+func (d *Depositor) VerifyDeposit(ctx context.Context, ref core.TxRef, minConf uint64) (core.DepositStatus, error) {
+	hash := common.Hash(ref.Hash)
+	receipt, err := d.client.TransactionReceipt(ctx, hash)
+	if err != nil {
+		if errors.Is(err, ethereum.NotFound) {
+			// No receipt — maybe still pending in the mempool.
+			if _, isPending, perr := d.client.TransactionByHash(ctx, hash); perr == nil && isPending {
+				return core.DepositPending, nil
+			}
+			return core.DepositAbsent, nil
+		}
+		return core.DepositAbsent, fmt.Errorf("evm: tx receipt: %w", err)
+	}
+	if receipt.Status != types.ReceiptStatusSuccessful {
+		return core.DepositAbsent, nil
+	}
+	head, err := d.client.BlockNumber(ctx)
+	if err != nil {
+		return core.DepositPending, fmt.Errorf("evm: block number: %w", err)
+	}
+	var confs uint64
+	if bn := receipt.BlockNumber.Uint64(); head >= bn {
+		confs = head - bn + 1
+	}
+	if confs >= minConf {
+		return core.DepositConfirmed, nil
+	}
+	return core.DepositPending, nil
 }
