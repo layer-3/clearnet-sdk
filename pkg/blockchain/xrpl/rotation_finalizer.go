@@ -54,8 +54,10 @@ func NewRotationFinalizer(rpcURL, vaultAddress string, threshold int, signer sig
 }
 
 // Pack builds the autofilled multi-sign SignerListSet installing newSigners /
-// newThreshold (each member weight 1), returning its sorted-key JSON.
-func (f *RotationFinalizer) Pack(_ context.Context, newSigners []string, newThreshold int) ([]byte, error) {
+// newThreshold (each member weight 1), returning its sorted-key JSON. opID is
+// ignored: XRPL binds rotation replay to the account Sequence (autofilled here),
+// so the operation identity is not embedded in the payload.
+func (f *RotationFinalizer) Pack(_ context.Context, _ [32]byte, newSigners []string, newThreshold int) ([]byte, error) {
 	entries, err := signerEntries(newSigners, newThreshold)
 	if err != nil {
 		return nil, err
@@ -74,7 +76,7 @@ func (f *RotationFinalizer) Pack(_ context.Context, newSigners []string, newThre
 }
 
 // Validate asserts the packed SignerListSet rotates to exactly the requested set.
-func (f *RotationFinalizer) Validate(_ context.Context, packed []byte, newSigners []string, newThreshold int) error {
+func (f *RotationFinalizer) Validate(_ context.Context, _ [32]byte, packed []byte, newSigners []string, newThreshold int) error {
 	var flat transaction.FlatTransaction
 	if err := json.Unmarshal(packed, &flat); err != nil {
 		return fmt.Errorf("xrpl: decode packed: %w", err)

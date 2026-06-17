@@ -175,13 +175,15 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 		rotators[i] = r
 	}
 
-	rPacked, err := rotators[0].Pack(ctx, newPubHex, btcThreshold)
+	var rotID [32]byte
+	rotID[0], rotID[31] = 0xB7, 0x7A
+	rPacked, err := rotators[0].Pack(ctx, rotID, newPubHex, btcThreshold)
 	if err != nil {
 		t.Fatalf("rotation Pack: %v", err)
 	}
 	rShares := make([][]byte, 0, len(rotators))
 	for i, r := range rotators {
-		if err := r.Validate(ctx, rPacked, newPubHex, btcThreshold); err != nil {
+		if err := r.Validate(ctx, rotID, rPacked, newPubHex, btcThreshold); err != nil {
 			t.Fatalf("rotation Validate[%d]: %v", i, err)
 		}
 		s, err := r.Sign(ctx, rPacked)

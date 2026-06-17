@@ -192,13 +192,15 @@ func runRotation(ctx context.Context, t *testing.T, rpcURL string, programID sol
 		}
 		rotators[i] = r
 	}
-	packed, err := rotators[0].Pack(ctx, target, threshold)
+	var rotID [32]byte
+	rotID[0], rotID[31] = 0x50, 0x7A
+	packed, err := rotators[0].Pack(ctx, rotID, target, threshold)
 	if err != nil {
 		t.Fatalf("rotation Pack: %v", err)
 	}
 	shares := make([][]byte, 0, len(rotators))
 	for i, r := range rotators {
-		if err := r.Validate(ctx, packed, target, threshold); err != nil {
+		if err := r.Validate(ctx, rotID, packed, target, threshold); err != nil {
 			t.Fatalf("rotation Validate[%d]: %v", i, err)
 		}
 		s, err := r.Sign(ctx, packed)

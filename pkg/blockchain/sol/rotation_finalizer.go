@@ -86,8 +86,10 @@ type rotPacked struct {
 }
 
 // Pack reads the live signer nonce and returns the canonical JSON for rotating
-// to newSigners / newThreshold.
-func (f *RotationFinalizer) Pack(ctx context.Context, newSigners []string, newThreshold int) ([]byte, error) {
+// to newSigners / newThreshold. opID is ignored: Solana binds rotation replay to
+// the on-chain program signer nonce, so the operation identity is not embedded
+// in the payload.
+func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []string, newThreshold int) ([]byte, error) {
 	pubs, err := parseRotationSigners(newSigners)
 	if err != nil {
 		return nil, err
@@ -110,7 +112,7 @@ func (f *RotationFinalizer) Pack(ctx context.Context, newSigners []string, newTh
 // Validate re-derives the rotation target from newSigners / newThreshold,
 // asserts the packed payload matches it, and re-reads the live nonce to reject a
 // packer that bound a stale or wrong signer nonce.
-func (f *RotationFinalizer) Validate(ctx context.Context, packed []byte, newSigners []string, newThreshold int) error {
+func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []byte, newSigners []string, newThreshold int) error {
 	var got rotPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("sol: decode packed: %w", err)

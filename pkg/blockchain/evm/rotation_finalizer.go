@@ -73,7 +73,9 @@ type evmRotPacked struct {
 
 // Pack reads the live signer nonce and returns the canonical JSON for rotating
 // to newSigners / newThreshold (signers sorted ascending, as Custody requires).
-func (f *RotationFinalizer) Pack(ctx context.Context, newSigners []string, newThreshold int) ([]byte, error) {
+// opID is ignored: EVM binds rotation replay to the on-chain Custody signerNonce,
+// so the operation identity is not embedded in the payload.
+func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []string, newThreshold int) ([]byte, error) {
 	addrs, err := parseSignerAddresses(newSigners)
 	if err != nil {
 		return nil, err
@@ -92,7 +94,7 @@ func (f *RotationFinalizer) Pack(ctx context.Context, newSigners []string, newTh
 // Validate re-derives the rotation target from newSigners / newThreshold and
 // asserts the packed payload matches, including a re-read of the live nonce to
 // reject a packer that bound a stale or wrong signer nonce.
-func (f *RotationFinalizer) Validate(ctx context.Context, packed []byte, newSigners []string, newThreshold int) error {
+func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []byte, newSigners []string, newThreshold int) error {
 	var got evmRotPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("decode packed: %w", err)

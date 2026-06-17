@@ -108,8 +108,10 @@ func (f *RotationFinalizer) newVaultAddress(newSigners []string, newThreshold in
 }
 
 // Pack lists every current-vault UTXO and builds the unsigned sweep: all of them
-// as inputs, a single output paying the new vault the total minus fee.
-func (f *RotationFinalizer) Pack(ctx context.Context, newSigners []string, newThreshold int) ([]byte, error) {
+// as inputs, output 0 paying the new vault the total minus fee, and a final
+// zero-value OP_RETURN carrying opID so an external watcher can attribute the
+// landed sweep to this rotation (and pivot the vault).
+func (f *RotationFinalizer) Pack(ctx context.Context, opID [32]byte, newSigners []string, newThreshold int) ([]byte, error) {
 	cur, err := f.currentVault(ctx)
 	if err != nil {
 		return nil, err
@@ -133,7 +135,7 @@ func (f *RotationFinalizer) Pack(ctx context.Context, newSigners []string, newTh
 	if err != nil {
 		return nil, fmt.Errorf("btc: estimate fee: %w", err)
 	}
-	tx, err := buildSweepTx(utxos, newVault, feeRate)
+	tx, err := buildSweepTx(utxos, newVault, opID, feeRate)
 	if err != nil {
 		return nil, err
 	}
@@ -141,9 +143,10 @@ func (f *RotationFinalizer) Pack(ctx context.Context, newSigners []string, newTh
 }
 
 // Validate re-derives the new vault and asserts the packed sweep pays exactly it
-// from a single output, consumes only current-vault UTXOs, and keeps the implied
-// fee within the ceiling.
-func (f *RotationFinalizer) Validate(ctx context.Context, packed []byte, newSigners []string, newThreshold int) error {
+// from output 0, carries the OP_RETURN(opID) marker as its final output,
+// consumes only current-vault UTXOs, and keeps the implied fee within the
+// ceiling.
+func (f *RotationFinalizer) Validate(ctx context.Context, opID [32]byte, packed []byte, newSigners []string, newThreshold int) error {
 	_, newVaultScript, _, err := f.newVaultAddress(newSigners, newThreshold)
 	if err != nil {
 		return err
@@ -152,11 +155,18 @@ func (f *RotationFinalizer) Validate(ctx context.Context, packed []byte, newSign
 	if err != nil {
 		return fmt.Errorf("btc rotation validate: %w", err)
 	}
-	if len(tx.TxOut) != 1 {
-		return fmt.Errorf("btc rotation validate: expected 1 output, got %d", len(tx.TxOut))
+	if len(tx.TxOut) != 2 {
+		return fmt.Errorf("btc rotation validate: expected 2 outputs (new vault + OP_RETURN), got %d", len(tx.TxOut))
 	}
 	if !bytes.Equal(tx.TxOut[0].PkScript, newVaultScript) {
-		return fmt.Errorf("btc rotation validate: output not paid to the new vault")
+		return fmt.Errorf("btc rotation validate: output 0 not paid to the new vault")
+	}
+	wantMarker, err := txscript.NullDataScript(opID[:])
+	if err != nil {
+		return fmt.Errorf("btc rotation validate: opID marker script: %w", err)
+	}
+	if tx.TxOut[1].Value != 0 || !bytes.Equal(tx.TxOut[1].PkScript, wantMarker) {
+		return fmt.Errorf("btc rotation validate: final output is not OP_RETURN(opID)")
 	}
 	cur, err := f.currentVault(ctx)
 	if err != nil {
@@ -170,7 +180,7 @@ func (f *RotationFinalizer) Validate(ctx context.Context, packed []byte, newSign
 	if fee < 0 {
 		return fmt.Errorf("btc rotation validate: output exceeds inputs (fee %d)", fee)
 	}
-	if cap := EstimateFeeSats(len(tx.TxIn), 1, f.cfg.FeeCapSatPerVByte); f.cfg.FeeCapSatPerVByte > 0 && fee > cap {
+	if cap := EstimateFeeSats(len(tx.TxIn), 2, f.cfg.FeeCapSatPerVByte); f.cfg.FeeCapSatPerVByte > 0 && fee > cap {
 		return fmt.Errorf("btc rotation validate: fee %d exceeds ceiling %d", fee, cap)
 	}
 	return nil
@@ -236,9 +246,12 @@ func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []str
 	return [32]byte{}, true, nil
 }
 
-// buildSweepTx builds the unsigned sweep: every UTXO as an input, a single
-// output paying newVault the total minus the estimated fee.
-func buildSweepTx(utxos []UTXO, newVault btcutil.Address, feeRate int64) (*wire.MsgTx, error) {
+// buildSweepTx builds the unsigned sweep: every UTXO as an input, output 0
+// paying newVault the total minus the estimated fee, and a final zero-value
+// OP_RETURN carrying opID (the rotation marker). The two-output shape — vault as
+// output 0 plus the OP_RETURN — is what a watcher matches to attribute the
+// landed sweep to this rotation.
+func buildSweepTx(utxos []UTXO, newVault btcutil.Address, opID [32]byte, feeRate int64) (*wire.MsgTx, error) {
 	ordered := make([]UTXO, len(utxos))
 	copy(ordered, utxos)
 	sort.Slice(ordered, func(i, j int) bool {
@@ -255,7 +268,7 @@ func buildSweepTx(utxos []UTXO, newVault btcutil.Address, feeRate int64) (*wire.
 		tx.AddTxIn(wire.NewTxIn(op, nil, nil))
 		total += u.Amount
 	}
-	fee := EstimateFeeSats(len(ordered), 1, feeRate)
+	fee := EstimateFeeSats(len(ordered), 2, feeRate)
 	out := total - fee
 	if out < dustThresholdSats {
 		return nil, fmt.Errorf("btc: sweep output %d below dust after fee %d (total %d)", out, fee, total)
@@ -265,6 +278,12 @@ func buildSweepTx(utxos []UTXO, newVault btcutil.Address, feeRate int64) (*wire.
 		return nil, fmt.Errorf("btc: new vault script: %w", err)
 	}
 	tx.AddTxOut(wire.NewTxOut(out, script))
+
+	marker, err := txscript.NullDataScript(opID[:])
+	if err != nil {
+		return nil, fmt.Errorf("btc: opID OP_RETURN script: %w", err)
+	}
+	tx.AddTxOut(wire.NewTxOut(0, marker))
 	return tx, nil
 }
 

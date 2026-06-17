@@ -124,6 +124,14 @@ type VaultWithdrawalFinalizer interface {
 // addresses, BTC 33-byte compressed pubkeys (hex), Solana ed25519 pubkeys (hex)
 // — matching custody's RotationRequest. newThreshold is the new k-of-n quorum.
 //
+// opID is the caller's unique identifier for this rotation operation (custody's
+// RotationRequest.RequestID). In-place chains bind replay protection on-chain
+// (EVM signerNonce, XRPL account sequence, Solana program nonce) and accept opID
+// only to keep one uniform signature — they do not embed it in the packed
+// payload. BTC has no on-chain op record: it embeds opID as an OP_RETURN marker
+// in the sweep so an external watcher can attribute the swept transaction to
+// this rotation. Pass a zero opID when the caller has no watcher to satisfy.
+//
 // In-place chains (EVM, XRPL, Solana) mutate on-chain signer state at a fixed
 // vault address. BTC has no in-place form: its P2WSH vault address is a function
 // of the signer set, so rotation is a sweep of every old-vault UTXO into the
@@ -140,10 +148,11 @@ type VaultWithdrawalFinalizer interface {
 //     rotation.
 //   - VerifyRotation reads canonical chain state to answer "is the set now the
 //     requested one?" — binary (done or not), the signal each node uses to close
-//     the dual-sign window and drop the outgoing key.
+//     the dual-sign window and drop the outgoing key. It is keyed on the new
+//     signer set (not opID), so it stays a direct state read on every chain.
 type SignerRotationFinalizer interface {
-	Pack(ctx context.Context, newSigners []string, newThreshold int) ([]byte, error)
-	Validate(ctx context.Context, packed []byte, newSigners []string, newThreshold int) error
+	Pack(ctx context.Context, opID [32]byte, newSigners []string, newThreshold int) ([]byte, error)
+	Validate(ctx context.Context, opID [32]byte, packed []byte, newSigners []string, newThreshold int) error
 	Sign(ctx context.Context, packed []byte) ([]byte, error)
 	Submit(ctx context.Context, packed []byte, signatures [][]byte) (TxRef, error)
 	VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) (txHash [32]byte, done bool, err error)

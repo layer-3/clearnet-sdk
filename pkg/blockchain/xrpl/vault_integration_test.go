@@ -155,13 +155,15 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 		rotators[i] = r
 	}
 
-	rPacked, err := rotators[0].Pack(ctx, newAddrs, xrplQuorum)
+	var rotID [32]byte
+	rotID[0], rotID[31] = 0x4A, 0x7A
+	rPacked, err := rotators[0].Pack(ctx, rotID, newAddrs, xrplQuorum)
 	if err != nil {
 		t.Fatalf("rotation Pack: %v", err)
 	}
 	rBlobs := make([][]byte, 0, len(rotators))
 	for i, r := range rotators {
-		if err := r.Validate(ctx, rPacked, newAddrs, xrplQuorum); err != nil {
+		if err := r.Validate(ctx, rotID, rPacked, newAddrs, xrplQuorum); err != nil {
 			t.Fatalf("rotation Validate[%d]: %v", i, err)
 		}
 		b, err := r.Sign(ctx, rPacked)

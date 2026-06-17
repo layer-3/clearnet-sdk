@@ -178,13 +178,15 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 		rotators[i] = r
 	}
 
-	rPacked, err := rotators[0].Pack(ctx, newAddrs, integrationThreshold)
+	var rotID [32]byte
+	rotID[0], rotID[31] = 0xE0, 0x7A
+	rPacked, err := rotators[0].Pack(ctx, rotID, newAddrs, integrationThreshold)
 	if err != nil {
 		t.Fatalf("rotation Pack: %v", err)
 	}
 	rSigs := make([][]byte, 0, len(rotators))
 	for i, r := range rotators {
-		if err := r.Validate(ctx, rPacked, newAddrs, integrationThreshold); err != nil {
+		if err := r.Validate(ctx, rotID, rPacked, newAddrs, integrationThreshold); err != nil {
 			t.Fatalf("rotation Validate[%d]: %v", i, err)
 		}
 		s, err := r.Sign(ctx, rPacked)
