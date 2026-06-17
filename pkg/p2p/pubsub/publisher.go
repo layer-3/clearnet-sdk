@@ -13,7 +13,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/layer-3/clearnet-sdk/pkg/cborx"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/log"
 )
 
 // Publisher joins a GossipSub topic and publishes typed payloads to it. It does
@@ -30,14 +30,14 @@ type Publisher struct {
 	host   host.Host
 	topic  *pubsub.Topic
 	name   string
-	logger *slog.Logger
+	logger log.Logger
 }
 
 // NewPublisher joins topic on h and returns a Publisher. The caller owns h and
 // must keep it alive for the Publisher's lifetime.
-func NewPublisher(ctx context.Context, h host.Host, topic string, logger *slog.Logger) (*Publisher, error) {
+func NewPublisher(ctx context.Context, h host.Host, topic string, logger log.Logger) (*Publisher, error) {
 	if logger == nil {
-		logger = slog.Default()
+		logger = log.NewNoopLogger()
 	}
 	ps, err := pubsub.NewGossipSub(ctx, h)
 	if err != nil {
@@ -51,7 +51,7 @@ func NewPublisher(ctx context.Context, h host.Host, topic string, logger *slog.L
 		host:   h,
 		topic:  t,
 		name:   topic,
-		logger: logger.With("component", "p2p-pubsub-publisher", "topic", topic),
+		logger: logger.WithName("p2p-pubsub-publisher").WithKV("topic", topic),
 	}, nil
 }
 

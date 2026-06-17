@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
-	"log/slog"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -15,6 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 
 	"github.com/layer-3/clearnet-sdk/pkg/cborx"
+	"github.com/layer-3/clearnet-sdk/pkg/log"
 	p2pproto "github.com/layer-3/clearnet-sdk/pkg/p2p/protocol"
 )
 
@@ -62,7 +62,7 @@ func (a AllowList) permits(addr common.Address) bool {
 type Server struct {
 	allow  AllowList // normalized
 	onAuth func(network.Conn, Result)
-	logger *slog.Logger
+	logger log.Logger
 }
 
 var _ p2pproto.Registrar = (*Server)(nil)
@@ -73,18 +73,18 @@ var _ p2pproto.Registrar = (*Server)(nil)
 // in its world (e.g. marking the connection so receipt streams pass their
 // gate). The connection is passed (not just the peer ID) so the caller can key
 // auth state per-connection, matching libp2p's connection lifetime.
-func NewServer(allow AllowList, onAuth func(network.Conn, Result), logger *slog.Logger) *Server {
+func NewServer(allow AllowList, onAuth func(network.Conn, Result), logger log.Logger) *Server {
 	if logger == nil {
-		logger = slog.Default()
+		logger = log.NewNoopLogger()
 	}
-	log := logger.With("component", "p2p-auth-server", "protocol", p2pproto.ProtocolAuth)
+	lg := logger.WithName("p2p-auth-server").WithKV("protocol", p2pproto.ProtocolAuth)
 	clean := allow.normalize()
 	if len(allow) > 0 && len(clean) == 0 {
-		log.Error("auth: every allow-list entry is malformed; gate is EMPTY and bypassed", "raw_entries", len(allow))
+		lg.Error("auth: every allow-list entry is malformed; gate is EMPTY and bypassed", "raw_entries", len(allow))
 	} else if len(allow) > len(clean) {
-		log.Warn("auth: dropped malformed allow-list entries", "raw", len(allow), "accepted", len(clean))
+		lg.Warn("auth: dropped malformed allow-list entries", "raw", len(allow), "accepted", len(clean))
 	}
-	return &Server{allow: clean, onAuth: onAuth, logger: log}
+	return &Server{allow: clean, onAuth: onAuth, logger: lg}
 }
 
 // Register installs the auth stream handler on h.

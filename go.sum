@@ -173,6 +173,8 @@ github.com/jbenet/go-temp-err-catcher v0.1.0 h1:zpb3ZH6wIE8Shj2sKS+khgRvf7T7RABo
 github.com/jbenet/go-temp-err-catcher v0.1.0/go.mod h1:0kJRvmDZXNMIiJirNPEYfhpPwbGVtZVWC34vc5WLsDk=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
+github.com/jsternberg/zap-logfmt v1.3.0 h1:z1n1AOHVVydOOVuyphbOKyR4NICDQFiJMn1IK5hVQ5Y=
+github.com/jsternberg/zap-logfmt v1.3.0/go.mod h1:N3DENp9WNmCZxvkBD/eReWwz1149BK6jEN9cQ4fNwZE=
 github.com/kcalvinalvin/anet v0.0.0-20251112173137-d8ddc1f6dbee h1:FPP9HDkBbPyniu+u7FHZg+kKFX1WW0gxOGteJ0h3AJk=
 github.com/kcalvinalvin/anet v0.0.0-20251112173137-d8ddc1f6dbee/go.mod h1:N6sz6HwJAenJ6d+/xmSl0ikfV05ZrVGmjt1ryy/WOtE=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=

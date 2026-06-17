@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/layer-3/clearnet-sdk/pkg/cborx"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/log"
 	p2pproto "github.com/layer-3/clearnet-sdk/pkg/p2p/protocol"
 )
 
@@ -29,19 +29,19 @@ type Client struct {
 	host    host.Host
 	peerID  peer.ID
 	timeout time.Duration
-	logger  *slog.Logger
+	logger  log.Logger
 }
 
 // NewClient creates a Client that submits to peerID over h.
-func NewClient(h host.Host, peerID peer.ID, logger *slog.Logger) *Client {
+func NewClient(h host.Host, peerID peer.ID, logger log.Logger) *Client {
 	if logger == nil {
-		logger = slog.Default()
+		logger = log.NewNoopLogger()
 	}
 	return &Client{
 		host:    h,
 		peerID:  peerID,
 		timeout: defaultTimeout,
-		logger:  logger.With("component", "p2p-receipt-client"),
+		logger:  logger.WithName("p2p-receipt-client"),
 	}
 }
 

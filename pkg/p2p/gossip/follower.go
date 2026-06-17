@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -12,6 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/layer-3/clearnet-sdk/pkg/cborx"
+	"github.com/layer-3/clearnet-sdk/pkg/log"
 )
 
 // Metrics captures Follower counters for ops dashboards.
@@ -42,7 +42,7 @@ type Follower[T any, M message[T]] struct {
 	sub     *pubsub.Subscription
 	topic   *pubsub.Topic
 	name    string
-	logger  *slog.Logger
+	logger  log.Logger
 	metrics *Metrics
 
 	handlerMu sync.RWMutex
@@ -54,9 +54,9 @@ type Follower[T any, M message[T]] struct {
 // reach the consume loop. Call Run to start consuming; register a handler with
 // SetHandler before (or shortly after) Run. The caller owns h and its
 // connectivity.
-func NewFollower[T any, M message[T]](ctx context.Context, h host.Host, topic string, logger *slog.Logger) (*Follower[T, M], error) {
+func NewFollower[T any, M message[T]](ctx context.Context, h host.Host, topic string, logger log.Logger) (*Follower[T, M], error) {
 	if logger == nil {
-		logger = slog.Default()
+		logger = log.NewNoopLogger()
 	}
 	ps, err := pubsub.NewGossipSub(ctx, h)
 	if err != nil {
@@ -65,7 +65,7 @@ func NewFollower[T any, M message[T]](ctx context.Context, h host.Host, topic st
 	f := &Follower[T, M]{
 		host:    h,
 		name:    topic,
-		logger:  logger.With("component", "p2p-gossip-follower", "topic", topic),
+		logger:  logger.WithName("p2p-gossip-follower").WithKV("topic", topic),
 		metrics: &Metrics{},
 	}
 	if err := ps.RegisterTopicValidator(topic, f.validateSize); err != nil {

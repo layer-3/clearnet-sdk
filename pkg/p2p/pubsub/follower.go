@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/layer-3/clearnet-sdk/pkg/cborx"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/log"
 )
 
 // maxFinalizedWithdrawalBytes caps the raw size of an inbound message before
@@ -58,7 +58,7 @@ type Follower struct {
 	sub     *pubsub.Subscription
 	topic   *pubsub.Topic
 	name    string
-	logger  *slog.Logger
+	logger  log.Logger
 	metrics *Metrics
 
 	handlerMu sync.RWMutex
@@ -70,9 +70,9 @@ type Follower struct {
 // reach the consume loop. Call Run to start consuming; register a handler with
 // SetHandler before (or shortly after) Run — messages arriving with no handler
 // are dropped with a warning. The caller owns h and its connectivity.
-func NewFollower(ctx context.Context, h host.Host, topic string, logger *slog.Logger) (*Follower, error) {
+func NewFollower(ctx context.Context, h host.Host, topic string, logger log.Logger) (*Follower, error) {
 	if logger == nil {
-		logger = slog.Default()
+		logger = log.NewNoopLogger()
 	}
 	ps, err := pubsub.NewGossipSub(ctx, h)
 	if err != nil {
@@ -81,7 +81,7 @@ func NewFollower(ctx context.Context, h host.Host, topic string, logger *slog.Lo
 	f := &Follower{
 		host:    h,
 		name:    topic,
-		logger:  logger.With("component", "p2p-pubsub-follower", "topic", topic),
+		logger:  logger.WithName("p2p-pubsub-follower").WithKV("topic", topic),
 		metrics: &Metrics{},
 	}
 	// Register the validator before Join so it is attached from the first

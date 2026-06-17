@@ -15,9 +15,13 @@ require (
 	github.com/gagliardetto/binary v0.8.0
 	github.com/gagliardetto/solana-go v1.21.0
 	github.com/ipfs/go-cid v0.5.0
+	github.com/jsternberg/zap-logfmt v1.3.0
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/libp2p/go-libp2p-pubsub v0.16.0
 	github.com/whyrusleeping/cbor-gen v0.3.1
+	go.opentelemetry.io/otel v1.40.0
+	go.opentelemetry.io/otel/trace v1.40.0
+	go.uber.org/zap v1.27.0
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
 )
 
@@ -140,15 +144,12 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel v1.40.0 // indirect
 	go.opentelemetry.io/otel/metric v1.40.0 // indirect
-	go.opentelemetry.io/otel/trace v1.40.0 // indirect
 	go.uber.org/dig v1.19.0 // indirect
 	go.uber.org/fx v1.24.0 // indirect
 	go.uber.org/mock v0.5.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/ratelimit v0.3.1 // indirect
-	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20250606033433-dcc06ee1d476 // indirect
 	golang.org/x/mod v0.33.0 // indirect

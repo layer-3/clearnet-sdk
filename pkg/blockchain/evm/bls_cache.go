@@ -3,7 +3,6 @@ package evm
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math/big"
 	"sync"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/log"
 )
 
 // BLSPubkeyCacheSize is the expected G2 serialization length (ADR-008 / ISSUE-035
@@ -81,6 +81,9 @@ type BLSPubkeyCache struct {
 	// committing a NodeActivated / NodeReleased event into the cache.
 	confirmations uint64
 
+	// logger defaults to a no-op; set with SetLogger.
+	logger log.Logger
+
 	mu sync.RWMutex
 	// keys is the forward index: nodeId → 128-byte G2 pubkey.
 	keys map[core.NodeID][]byte
@@ -120,9 +123,19 @@ func NewBLSPubkeyCache(client *ethclient.Client, registryAddr common.Address, re
 		registryAddr:  registryAddr,
 		reg:           reg,
 		confirmations: confirmations,
+		logger:        log.NewNoopLogger(),
 		keys:          make(map[core.NodeID][]byte),
 		byPubkey:      make(map[string]core.NodeID),
 	}
+}
+
+// SetLogger sets the cache's logger (defaults to a no-op). Call before Backfill
+// or Watch; not safe to call concurrently with them.
+func (c *BLSPubkeyCache) SetLogger(l log.Logger) {
+	if l == nil {
+		l = log.NewNoopLogger()
+	}
+	c.logger = l
 }
 
 // assignLocked writes (id → pubkey) into both indices. Caller MUST hold the
@@ -272,7 +285,7 @@ func (c *BLSPubkeyCache) Backfill(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 
-	slog.Info("BLSPubkeyCache backfill complete",
+	c.logger.Info("BLSPubkeyCache backfill complete",
 		"entries", c.Size(),
 		"watermark", startBlock,
 		"total_nodes", total.String(),
@@ -344,7 +357,7 @@ func (c *BLSPubkeyCache) Watch(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			if err := c.pollOnce(ctx); err != nil {
-				slog.Debug("BLSPubkeyCache poll failed", "error", err)
+				c.logger.Debug("BLSPubkeyCache poll failed", "error", err)
 			}
 		}
 	}
@@ -413,7 +426,7 @@ func (c *BLSPubkeyCache) applyLog(l types.Log) {
 		//   [32..64)   uint64 vestedAt (right-padded)
 		//   [64..192)  uint256[4] blsPubkeyG2 — [x_im, x_re, y_im, y_re]
 		if len(l.Data) < 192 {
-			slog.Warn("NodeActivated log has short data", "len", len(l.Data), "tx", l.TxHash.Hex())
+			c.logger.Warn("NodeActivated log has short data", "len", len(l.Data), "tx", l.TxHash.Hex())
 			return
 		}
 		pubkey := make([]byte, BLSPubkeyCacheSize)
@@ -421,7 +434,7 @@ func (c *BLSPubkeyCache) applyLog(l types.Log) {
 		c.mu.Lock()
 		c.assignLocked(nodeID, pubkey)
 		c.mu.Unlock()
-		slog.Debug("BLSPubkeyCache: NodeActivated committed",
+		c.logger.Debug("BLSPubkeyCache: NodeActivated committed",
 			"node", fmt.Sprintf("%x", nodeID[:8]),
 			"block", l.BlockNumber,
 		)
@@ -429,7 +442,7 @@ func (c *BLSPubkeyCache) applyLog(l types.Log) {
 		c.mu.Lock()
 		c.removeLocked(nodeID)
 		c.mu.Unlock()
-		slog.Debug("BLSPubkeyCache: NodeReleased committed",
+		c.logger.Debug("BLSPubkeyCache: NodeReleased committed",
 			"node", fmt.Sprintf("%x", nodeID[:8]),
 			"block", l.BlockNumber,
 		)
@@ -451,7 +464,7 @@ func (c *BLSPubkeyCache) LookupWithRefresh(ctx context.Context, id core.NodeID) 
 	}
 	rec, err := c.reg.GetNodeById(&bind.CallOpts{Context: ctx}, [32]byte(id))
 	if err != nil {
-		slog.Debug("BLSPubkeyCache: cold-miss lookup failed", "error", err, "node", fmt.Sprintf("%x", id[:8]))
+		c.logger.Debug("BLSPubkeyCache: cold-miss lookup failed", "error", err, "node", fmt.Sprintf("%x", id[:8]))
 		return nil, false
 	}
 	if g2Zero(rec.BlsPubkeyG2) {

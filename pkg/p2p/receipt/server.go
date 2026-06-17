@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -27,6 +26,7 @@ import (
 
 	"github.com/layer-3/clearnet-sdk/pkg/cborx"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/log"
 	p2pproto "github.com/layer-3/clearnet-sdk/pkg/p2p/protocol"
 )
 
@@ -42,17 +42,17 @@ const (
 // receipt to a ReceiptHandler.
 type Server struct {
 	handler ReceiptHandler
-	logger  *slog.Logger
+	logger  log.Logger
 }
 
 var _ p2pproto.Registrar = (*Server)(nil)
 
 // NewServer returns a Server that delegates to handler.
-func NewServer(handler ReceiptHandler, logger *slog.Logger) *Server {
+func NewServer(handler ReceiptHandler, logger log.Logger) *Server {
 	if logger == nil {
-		logger = slog.Default()
+		logger = log.NewNoopLogger()
 	}
-	return &Server{handler: handler, logger: logger.With("component", "p2p-receipt-server")}
+	return &Server{handler: handler, logger: logger.WithName("p2p-receipt-server")}
 }
 
 // Register installs both receipt stream handlers on h.
@@ -94,31 +94,31 @@ func (s *Server) serve(
 	dispatch func(context.Context, io.Reader) (p2pproto.ReceiptAck, error),
 ) {
 	defer stream.Close()
-	log := s.logger.With("protocol", proto)
+	lg := s.logger.WithKV("protocol", proto)
 
 	ctx, cancel := context.WithTimeout(context.Background(), streamReadDeadline)
 	defer cancel()
 	if err := stream.SetReadDeadline(time.Now().Add(streamReadDeadline)); err != nil {
-		log.Warn("set read deadline failed", "error", err)
+		lg.Warn("set read deadline failed", "error", err)
 		return
 	}
 
 	ack, err := dispatch(ctx, io.LimitReader(stream, maxReceiptBytes))
 	if err != nil {
-		log.Warn("handler error", "error", err)
-		writeAck(stream, p2pproto.ReceiptAck{Accepted: false, Reason: err.Error()}, log)
+		lg.Warn("handler error", "error", err)
+		writeAck(stream, p2pproto.ReceiptAck{Accepted: false, Reason: err.Error()}, lg)
 		return
 	}
-	writeAck(stream, ack, log)
+	writeAck(stream, ack, lg)
 }
 
-func writeAck(stream network.Stream, ack p2pproto.ReceiptAck, log *slog.Logger) {
+func writeAck(stream network.Stream, ack p2pproto.ReceiptAck, logger log.Logger) {
 	var buf bytes.Buffer
 	if err := cborx.WriteFrame(&buf, cborx.V1, &ack); err != nil {
-		log.Warn("encode ack failed", "error", err)
+		logger.Warn("encode ack failed", "error", err)
 		return
 	}
 	if _, err := stream.Write(buf.Bytes()); err != nil {
-		log.Warn("write ack failed", "error", err)
+		logger.Warn("write ack failed", "error", err)
 	}
 }
