@@ -1,23 +1,21 @@
-// Package gossip is a generic GossipSub publish/subscribe toolset over any
-// cborx-envelope payload. It is the type-parameterized alternative to the
-// concrete pkg/p2p/pubsub (which bakes in *core.FinalizedWithdrawal): a
-// Publisher[T]/Follower[T] works for any T whose cbor-gen codec lives on *T.
+// Package pubsub is a generic GossipSub publish/subscribe toolset over any
+// cborx-envelope payload: a Publisher[T]/Follower[T] works for any T whose
+// cbor-gen codec lives on *T (e.g. *core.FinalizedWithdrawal).
 //
-// Both ship side by side so the design can be chosen at review — generic reuse
-// here vs. a concrete, no-generics surface in pubsub. Like pubsub, gossip is
-// host-taking: the caller builds and owns the libp2p host and its connectivity;
-// gossip owns only the GossipSub instance, topic, and subscription.
+// It is host-taking: the caller builds and owns the libp2p host and its
+// connectivity; this package owns only the GossipSub instance, topic, and
+// subscription.
 //
 // Usage (constraint type inference fills the pointer type, so callers name only
 // the value type):
 //
-//	pub, _ := gossip.NewPublisher[core.FinalizedWithdrawal](ctx, h, topic, nil)
+//	pub, _ := pubsub.NewPublisher[core.FinalizedWithdrawal](ctx, h, topic, nil)
 //	_ = pub.Publish(ctx, &core.FinalizedWithdrawal{...})
 //
-//	fol, _ := gossip.NewFollower[core.FinalizedWithdrawal](ctx, h, topic, nil)
+//	fol, _ := pubsub.NewFollower[core.FinalizedWithdrawal](ctx, h, topic, nil)
 //	fol.SetHandler(func(fw *core.FinalizedWithdrawal) { ... })
 //	go fol.Run(ctx)
-package gossip
+package pubsub
 
 import (
 	cbg "github.com/whyrusleeping/cbor-gen"
@@ -25,7 +23,7 @@ import (
 
 // maxMessageBytes caps the raw size of an inbound message before any CBOR
 // allocation, keeping a malicious publisher from forcing large allocations per
-// message. Matches the concrete pubsub follower's cap.
+// message.
 const maxMessageBytes = 128 * 1024
 
 // message constrains *T to the cborx codec interfaces. cbor-gen emits

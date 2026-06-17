@@ -13,7 +13,10 @@ import (
 	p2pproto "github.com/layer-3/clearnet-sdk/pkg/p2p/protocol"
 )
 
-func TestPubSub_PublishDeliver(t *testing.T) {
+// TestPubSub_FinalizedWithdrawal shows the generic toolset carrying a concrete
+// payload: callers name only the value type (core.FinalizedWithdrawal) and
+// constraint type inference supplies the *T pointer type to Publisher/Follower.
+func TestPubSub_FinalizedWithdrawal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -21,7 +24,7 @@ func TestPubSub_PublishDeliver(t *testing.T) {
 	hSub := newHost(t)
 	connect(t, hPub, hSub)
 
-	follower, err := NewFollower(ctx, hSub, p2pproto.TopicWithdrawals, nil)
+	follower, err := NewFollower[core.FinalizedWithdrawal](ctx, hSub, p2pproto.TopicWithdrawals, nil)
 	if err != nil {
 		t.Fatalf("NewFollower: %v", err)
 	}
@@ -31,13 +34,12 @@ func TestPubSub_PublishDeliver(t *testing.T) {
 	follower.SetHandler(func(fw *core.FinalizedWithdrawal) { got <- fw })
 	go follower.Run(ctx)
 
-	pub, err := NewPublisher(ctx, hPub, p2pproto.TopicWithdrawals, nil)
+	pub, err := NewPublisher[core.FinalizedWithdrawal](ctx, hPub, p2pproto.TopicWithdrawals, nil)
 	if err != nil {
 		t.Fatalf("NewPublisher: %v", err)
 	}
 	defer pub.Close()
 
-	// Wait for the subscriber to appear in the publisher's topic mesh.
 	if err := pub.WaitForPeers(ctx, 1, 10*time.Second); err != nil {
 		t.Fatalf("WaitForPeers: %v", err)
 	}
@@ -45,12 +47,11 @@ func TestPubSub_PublishDeliver(t *testing.T) {
 	want := &core.FinalizedWithdrawal{EntryIndex: 7}
 	want.WithdrawalID[0], want.WithdrawalID[31] = 0xF1, 0x7A
 
-	// GossipSub mesh links may still be forming; republish until delivered.
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 	deadline := time.After(10 * time.Second)
 	for {
-		if err := pub.PublishFinalizedWithdrawal(ctx, want); err != nil {
+		if err := pub.Publish(ctx, want); err != nil {
 			t.Fatalf("publish: %v", err)
 		}
 		select {
@@ -58,8 +59,8 @@ func TestPubSub_PublishDeliver(t *testing.T) {
 			if fw.WithdrawalID != want.WithdrawalID || fw.EntryIndex != want.EntryIndex {
 				t.Fatalf("delivered %+v, want %+v", fw.Header(), want.Header())
 			}
-			if m := follower.Metrics().Snapshot(); m.DeliveredWithdrawals != 1 {
-				t.Errorf("DeliveredWithdrawals = %d, want 1", m.DeliveredWithdrawals)
+			if m := follower.Metrics().Snapshot(); m.Delivered != 1 {
+				t.Errorf("Delivered = %d, want 1", m.Delivered)
 			}
 			return
 		case <-ticker.C:
