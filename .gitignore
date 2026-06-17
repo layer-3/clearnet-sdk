@@ -1,0 +1,6 @@
+# Stray `go build` output for the refresher command
+/abi_refresher
+
+# Go workspace files
+go.work
+go.work.sum

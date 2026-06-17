@@ -1,0 +1,10 @@
+{
+  "name": "header",
+  "description": "FinalizedWithdrawal.SigningMessage() = canonical CBOR of FinalizedWithdrawalHeader{WithdrawalID, BlockHash, EntryIndex, FinalizedAt} (ADR-009 §4). Finality hash = keccak256(preimage).",
+  "withdrawalIDHex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "blockHashHex": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "entryIndex": 3,
+  "finalizedAt": 1700004200,
+  "cborBytes": 75,
+  "derivedFinalizedHashHex": "eeac931e7ba4ae5d7d7657da6a6e26acb8c007894be8bf30dd19f5c7e546dcc6"
+}

@@ -1,0 +1,12 @@
+{
+  "name": "session_challenge",
+  "description": "SessionChallengeOp payload = canonical CBOR of SessionChallengeOp tuple.",
+  "opType": "SessionChallengeOp",
+  "op": {
+    "newDeadline": 1700003600,
+    "newVersion": 6,
+    "previousVersion": 5,
+    "sessionIDHex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "cborBytes": 42
+}

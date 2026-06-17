@@ -1,0 +1,12 @@
+{
+  "name": "aggregate_sig",
+  "description": "Two partial signatures over the literal 32-byte msgHash, aggregated via AggregateG1; aggregate G2 pubkey via AggregateG2. Layout: sigma(G1,64B) || apkG2(128B).",
+  "msgHashHex": "6d91a2b8e2f9c0d1a3b4c5d6e7f8091a2b3c4d5e6f70819a2b3c4d5e6f708192",
+  "signerASeed": "clearnet/cbor-w0/bls/agg/A",
+  "signerBSeed": "clearnet/cbor-w0/bls/agg/B",
+  "partialSigmaAHex": "29b89d92db15b9219d3b0226599f9d175c0c40d74492c72a731112b1661de36016fc323187ba7672d0c1fda5aeaf69da3b1a1d8af64fbac766f28ee7546821ef",
+  "partialSigmaBHex": "21995186d53257403eede946a9876d9801a66d35260caa47d9974c94150c7f6817576f381e267de569cc9d325678aeec2157fee999a67b886f6db1f811c529ce",
+  "aggregateSigmaHex": "10683dfead0cc7947f4678e1bae35c16d4ee51984f17223ed7d7b3789b81c2491572b2614eca1e45f0f511cb46e37347c559c69b2685721d92326531043be37c",
+  "aggregateApkG2Hex": "128c346a31bc241603a100f846d4dd6a6ba972b2e713b9e28d6b395d4ebecc43024742bc9f0f237cb22881025dbc98e6d8f3bc021d949bdd7e03e815c77ef631129d672996109f3fc2e4dbc91a8e7dbd67662602507a02cceecfb916b42a81b91f9a2cdcfe87062305b9193c666ed4b680fb6a3551b64d5eeef7381f0f6554f5",
+  "payloadOrder": "aggSigmaG1(64) || aggApkG2(128)"
+}

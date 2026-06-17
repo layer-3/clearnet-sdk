@@ -1,0 +1,14 @@
+{
+  "name": "withdrawal",
+  "description": "WithdrawalOp payload = canonical CBOR of WithdrawalOp tuple.",
+  "opType": "WithdrawalOp",
+  "op": {
+    "amountDec": "10000000",
+    "asset": "USDT",
+    "chainID": 1,
+    "l1Asset": "0xA0b8000000000000000000000000000000000001",
+    "recipient": "0xRecipient",
+    "userSignatureHex": "aabbcc"
+  },
+  "cborBytes": 75
+}

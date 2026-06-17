@@ -1,0 +1,15 @@
+{
+  "name": "repeg",
+  "description": "RepegOp payload = canonical CBOR of RepegOp tuple.",
+  "opType": "RepegOp",
+  "op": {
+    "epoch": 42,
+    "newPriceScaleDec": "2010",
+    "newVirtPriceDec": "1001",
+    "oldPriceScaleDec": "2000",
+    "oldVirtPriceDec": "1000",
+    "poolID": "pool:ETH-USDC",
+    "priceEMADec": "2005"
+  },
+  "cborBytes": 37
+}

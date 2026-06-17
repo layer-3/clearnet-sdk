@@ -1,0 +1,18 @@
+{
+  "name": "swap",
+  "description": "SwapOp payload = canonical CBOR of SwapOp tuple.",
+  "opType": "SwapOp",
+  "op": {
+    "amountInDec": "1000",
+    "amountOutDec": "2000",
+    "assetIn": "ETH",
+    "assetOut": "USDC",
+    "feeDec": "3",
+    "feeRate": 30,
+    "poolID": "pool:ETH-USDC",
+    "priceEMADec": "2000",
+    "spotPriceDec": "2001",
+    "txID": "tx-golden-swap"
+  },
+  "cborBytes": 75
+}

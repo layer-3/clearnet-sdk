@@ -1,0 +1,17 @@
+name: Push on master
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit
+    uses: ./.github/workflows/test-go.yml
+
+  integration:
+    name: Integration
+    uses: ./.github/workflows/test-integration.yml

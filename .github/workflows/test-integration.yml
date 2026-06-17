@@ -1,0 +1,35 @@
+name: Test (Integration)
+
+# Reusable: brings up the devnet (anvil + bitcoind + rippled + solana) and runs
+# the integration suite against it. Called by the per-event workflows.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # setup-go precedes `make devnet`: the readiness gate (devnet/wait) runs
+      # via `go run`, and the integration tests need the toolchain too.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Bring up devnet
+        run: make devnet
+
+      - name: Integration tests
+        run: make integration
+
+      - name: Tear down devnet
+        if: always()
+        run: make devnet-down

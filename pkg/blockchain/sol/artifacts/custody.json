@@ -1,0 +1,1040 @@
+{
+  "address": "98eVpih8X9CAcgU9bzNB9V7VtkRrnFZUmqzEnsq7cfmg",
+  "metadata": {
+    "name": "custody",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Yellow custody Solana vault program — analogue of Custody.sol"
+  },
+  "instructions": [
+    {
+      "name": "deposit_sol",
+      "docs": [
+        "Native SOL deposit crediting the 20-byte clearnet `account`."
+      ],
+      "discriminator": [
+        108,
+        81,
+        78,
+        117,
+        125,
+        155,
+        56,
+        200
+      ],
+      "accounts": [
+        {
+          "name": "depositor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "account",
+          "type": {
+            "array": [
+              "u8",
+              20
+            ]
+          }
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "deposit_spl",
+      "docs": [
+        "SPL token deposit crediting the 20-byte clearnet `account`."
+      ],
+      "discriminator": [
+        224,
+        0,
+        198,
+        175,
+        198,
+        47,
+        105,
+        204
+      ],
+      "accounts": [
+        {
+          "name": "depositor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "depositor_ata",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "depositor"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_ata",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "account",
+          "type": {
+            "array": [
+              "u8",
+              20
+            ]
+          }
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "execute",
+      "docs": [
+        "Execute a quorum-authorized withdrawal (native or SPL)."
+      ],
+      "discriminator": [
+        130,
+        221,
+        242,
+        154,
+        13,
+        193,
+        189,
+        29
+      ],
+      "accounts": [
+        {
+          "name": "fee_payer",
+          "docs": [
+            "Pays the WithdrawalRecord rent and the transaction fee. Authorizes no",
+            "custody action — distinct from the provider custody signers."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "withdrawal",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  119,
+                  105,
+                  116,
+                  104,
+                  100,
+                  114,
+                  97,
+                  119,
+                  97,
+                  108
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "withdrawal_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "recipient",
+          "docs": [
+            "for SPL it is only used to derive the recipient ATA. Pinned to `to`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "instructions",
+          "docs": [
+            "address constraint plus `load_instruction_at_checked` both verify it."
+          ],
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "to",
+          "type": "pubkey"
+        },
+        {
+          "name": "mint",
+          "type": "pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "withdrawal_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "sig_ix_index",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "docs": [
+        "One-time setup of the Config PDA (signer set, threshold, chain_id)."
+      ],
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "program",
+          "address": "98eVpih8X9CAcgU9bzNB9V7VtkRrnFZUmqzEnsq7cfmg"
+        },
+        {
+          "name": "program_data"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "signers",
+          "type": {
+            "vec": "pubkey"
+          }
+        },
+        {
+          "name": "threshold",
+          "type": "u8"
+        },
+        {
+          "name": "chain_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "update_signers",
+      "docs": [
+        "In-place signer rotation (ADR-013 Flow A)."
+      ],
+      "discriminator": [
+        228,
+        82,
+        68,
+        150,
+        92,
+        66,
+        140,
+        174
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_signers",
+          "type": {
+            "vec": "pubkey"
+          }
+        },
+        {
+          "name": "new_threshold",
+          "type": "u8"
+        },
+        {
+          "name": "sig_ix_index",
+          "type": "u8"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "WithdrawalRecord",
+      "discriminator": [
+        88,
+        59,
+        154,
+        202,
+        216,
+        210,
+        211,
+        237
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "Deposited",
+      "discriminator": [
+        111,
+        141,
+        26,
+        45,
+        161,
+        35,
+        100,
+        57
+      ]
+    },
+    {
+      "name": "Executed",
+      "discriminator": [
+        8,
+        232,
+        139,
+        132,
+        197,
+        45,
+        29,
+        164
+      ]
+    },
+    {
+      "name": "SignersUpdated",
+      "discriminator": [
+        71,
+        177,
+        47,
+        237,
+        194,
+        42,
+        20,
+        105
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "NotUpgradeAuthority",
+      "msg": "initializer must be the program upgrade authority"
+    },
+    {
+      "code": 6001,
+      "name": "ZeroAccount",
+      "msg": "clearnet account must not be the zero address"
+    },
+    {
+      "code": 6002,
+      "name": "InvalidThreshold",
+      "msg": "threshold must be > 0 and <= number of signers"
+    },
+    {
+      "code": 6003,
+      "name": "TooFewSigners",
+      "msg": "signer set must have at least 3 members"
+    },
+    {
+      "code": 6004,
+      "name": "TooManySigners",
+      "msg": "signer set exceeds MAX_SIGNERS"
+    },
+    {
+      "code": 6005,
+      "name": "DefaultSigner",
+      "msg": "signer set contains the default pubkey"
+    },
+    {
+      "code": 6006,
+      "name": "SignersNotAscending",
+      "msg": "signers/pubkeys must be strictly ascending (byte-wise)"
+    },
+    {
+      "code": 6007,
+      "name": "ZeroAmount",
+      "msg": "amount must be > 0"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidRecipient",
+      "msg": "recipient must not be the default pubkey and must match `to`"
+    },
+    {
+      "code": 6009,
+      "name": "VaultAtaMismatch",
+      "msg": "vault ATA does not match the derived associated token address"
+    },
+    {
+      "code": 6010,
+      "name": "RecipientAtaMismatch",
+      "msg": "recipient ATA does not match the derived associated token address"
+    },
+    {
+      "code": 6011,
+      "name": "MissingTokenAccounts",
+      "msg": "SPL withdrawal requires token_program, vault_ata, recipient_ata in remaining accounts"
+    },
+    {
+      "code": 6012,
+      "name": "WrongTokenProgram",
+      "msg": "token_program account is not the SPL Token program"
+    },
+    {
+      "code": 6013,
+      "name": "SigIxLoad",
+      "msg": "failed to load the Ed25519 companion instruction"
+    },
+    {
+      "code": 6014,
+      "name": "SigIxProgram",
+      "msg": "companion instruction is not the Ed25519 precompile"
+    },
+    {
+      "code": 6015,
+      "name": "SigIxMalformed",
+      "msg": "Ed25519 instruction data is malformed"
+    },
+    {
+      "code": 6016,
+      "name": "SigIxOffsets",
+      "msg": "Ed25519 offsets are not self-referencing (instruction_index != u16::MAX)"
+    },
+    {
+      "code": 6017,
+      "name": "SigIxMsgSize",
+      "msg": "Ed25519 message size is not 32 bytes"
+    },
+    {
+      "code": 6018,
+      "name": "SigIxDigest",
+      "msg": "Ed25519 signed message does not equal the recomputed digest"
+    },
+    {
+      "code": 6019,
+      "name": "SignerNotAuthorized",
+      "msg": "a verified signer is not in the authorized config set"
+    },
+    {
+      "code": 6020,
+      "name": "QuorumTooSmall",
+      "msg": "fewer than threshold authorized signatures"
+    }
+  ],
+  "types": [
+    {
+      "name": "Config",
+      "docs": [
+        "Config PDA — seeds `[\"config\"]`. The on-chain analogue of `Custody.sol`'s",
+        "signer set + threshold + nonce. `signers` is kept strictly ascending so a",
+        "linear membership scan in the Ed25519 verifier is unambiguous."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "signers",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "threshold",
+            "type": "u8"
+          },
+          {
+            "name": "signer_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "chain_id",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Deposited",
+      "docs": [
+        "Emitted by `deposit_sol` / `deposit_spl` via `emit_cpi!`. The custody",
+        "watcher decodes these from the self-CPI inner instructions and turns each",
+        "into a `chains.DepositEvent`. `mint == Pubkey::default()` denotes native",
+        "SOL (the analogue of EVM's `asset == address(0)`). `account` is the 20-byte",
+        "clearnet account the deposit credits."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "account",
+            "type": {
+              "array": [
+                "u8",
+                20
+              ]
+            }
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Executed",
+      "docs": [
+        "Emitted by `execute` via `emit_cpi!`. The watcher writes a ledger row keyed",
+        "by `withdrawal_id` (the reconciliation key against `signing_wal`)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "withdrawal_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "to",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SignersUpdated",
+      "docs": [
+        "Emitted by `update_signers` via `emit_cpi!`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "signers",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "threshold",
+            "type": "u8"
+          },
+          {
+            "name": "signer_nonce",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "WithdrawalRecord",
+      "docs": [
+        "WithdrawalRecord PDA — seeds `[\"withdrawal\", withdrawal_id]`. Its mere",
+        "existence is the replay guard: `execute` creates it with `init`, so a",
+        "second execution of the same `withdrawal_id` fails at account creation.",
+        "The analogue of `Custody.sol`'s `executed[withdrawalId]` storage slot;",
+        "never closed (closing would re-enable replay)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "to",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ]
+}
