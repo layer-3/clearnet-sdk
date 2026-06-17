@@ -3,7 +3,31 @@ package btc
 import (
 	"fmt"
 	"sort"
+
+	"github.com/btcsuite/btcd/wire"
 )
+
+// validateFixedTxFields asserts the fixed fields the BIP-143 SIGHASH_ALL digest
+// commits to, matching what the canonical builders produce: version
+// wire.TxVersion, locktime 0, and final (non-RBF) input sequences. The sighash
+// already binds these, so a Byzantine canonicalizer cannot make followers sign
+// something inconsistent — but without the checks it could induce co-signing of
+// a non-final or RBF-signalling tx and waste a signing round (ISS-006(b),
+// griefing only). Shared by the withdrawal and rotation validators.
+func validateFixedTxFields(tx *wire.MsgTx) error {
+	if tx.Version != wire.TxVersion {
+		return fmt.Errorf("unexpected tx version %d", tx.Version)
+	}
+	if tx.LockTime != 0 {
+		return fmt.Errorf("non-zero locktime %d", tx.LockTime)
+	}
+	for i, in := range tx.TxIn {
+		if in.Sequence != wire.MaxTxInSequenceNum {
+			return fmt.Errorf("input %d non-final sequence %d", i, in.Sequence)
+		}
+	}
+	return nil
+}
 
 // Witness/size constants for a P2WSH m-of-n input, used for fee estimation.
 const (

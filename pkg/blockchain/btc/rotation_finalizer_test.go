@@ -7,10 +7,45 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
+
+// TestValidateFixedTxFields covers the ISS-006(b) griefing guard shared by the
+// withdrawal and rotation validators: the canonical tx must use the canonical
+// version, a zero locktime, and final (non-RBF) input sequences.
+func TestValidateFixedTxFields(t *testing.T) {
+	good := func() *wire.MsgTx {
+		tx := wire.NewMsgTx(wire.TxVersion)
+		in := wire.NewTxIn(&wire.OutPoint{Index: 0}, nil, nil)
+		in.Sequence = wire.MaxTxInSequenceNum
+		tx.AddTxIn(in)
+		return tx
+	}
+	if err := validateFixedTxFields(good()); err != nil {
+		t.Fatalf("canonical tx rejected: %v", err)
+	}
+
+	badVersion := good()
+	badVersion.Version = wire.TxVersion + 1
+	if err := validateFixedTxFields(badVersion); err == nil {
+		t.Error("non-canonical version accepted")
+	}
+
+	badLock := good()
+	badLock.LockTime = 1
+	if err := validateFixedTxFields(badLock); err == nil {
+		t.Error("non-zero locktime accepted")
+	}
+
+	rbf := good()
+	rbf.TxIn[0].Sequence = wire.MaxTxInSequenceNum - 2 // RBF-signalling
+	if err := validateFixedTxFields(rbf); err == nil {
+		t.Error("RBF-signalling sequence accepted")
+	}
+}
 
 // TestBuildSweepTx_OpReturnMarker pins the rotation sweep wire a watcher matches
 // on: output 0 pays the new vault, the final output is a zero-value OP_RETURN

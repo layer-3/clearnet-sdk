@@ -13,10 +13,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
+	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
+	"github.com/gagliardetto/solana-go/programs/system"
+	"github.com/gagliardetto/solana-go/programs/token"
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/layer-3/clearnet-sdk/pkg/blockchain/sol/custody"
@@ -168,6 +172,46 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 		t.Fatal("withdrawal not reported executed")
 	}
 
+	// ── SPL withdrawal flow ─────────────────────────────────────────────────────
+	// Create a 0-decimal mint, fund the vault's ATA, then withdraw under the same
+	// quorum. Exercises the SPL execute path: recipient-ATA creation + the token
+	// remaining-accounts.
+	authorityKey := loadAuthorityKey(t)
+	mint := setupSPLMintFundVault(ctx, t, client, authorityPub, authorityKey, programID, 100)
+
+	var splWid [32]byte
+	if _, err := rand.Read(splWid[:]); err != nil {
+		t.Fatalf("rand spl wid: %v", err)
+	}
+	splRecipient := fixedEd25519(t, "clearnet-sdk/sol-itest/spl-recipient/"+hex.EncodeToString(splWid[:4]))
+	splRecipientPub, _ := solanaPub(splRecipient)
+	splOp := &core.WithdrawalOp{Recipient: splRecipientPub.String(), L1Asset: mint.String(), Amount: decimal.NewFromInt(40)}
+
+	splPacked, err := finalizers[0].Pack(ctx, splOp, splWid)
+	if err != nil {
+		t.Fatalf("SPL Pack: %v", err)
+	}
+	splShares := make([][]byte, 0, len(finalizers))
+	for i, f := range finalizers {
+		if err := f.Validate(ctx, splPacked, splOp, splWid); err != nil {
+			t.Fatalf("SPL Validate[%d]: %v", i, err)
+		}
+		s, e := f.Sign(ctx, splPacked)
+		if e != nil {
+			t.Fatalf("SPL Sign[%d]: %v", i, e)
+		}
+		splShares = append(splShares, s)
+	}
+	if _, err := finalizers[0].Submit(ctx, splPacked, splShares); err != nil {
+		t.Fatalf("SPL Submit: %v", err)
+	}
+	recipientATA, _, err := solana.FindAssociatedTokenAddress(splRecipientPub, mint)
+	if err != nil {
+		t.Fatalf("recipient ATA: %v", err)
+	}
+	waitTokenBalance(ctx, t, client, recipientATA, 40)
+	t.Logf("SPL withdrawal credited 40 tokens to %s", recipientATA)
+
 	// ── Rotation flow ─────────────────────────────────────────────────────────
 	// Config is a singleton, so rotate to the (deterministic) rotated set and
 	// restore the original — both directions exercised. A run that dies between
@@ -312,6 +356,98 @@ func loadAuthority(t *testing.T) sign.Signer {
 		t.Fatalf("authority signer: %v", err)
 	}
 	return ks
+}
+
+// loadAuthorityKey reads the vendored upgrade-authority keypair as a raw Solana
+// private key (for signing token-setup txs that need more than the fee payer).
+func loadAuthorityKey(t *testing.T) solana.PrivateKey {
+	t.Helper()
+	path := filepath.Join("..", "..", "..", "devnet", "sol-upgrade-authority.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read authority keypair: %v", err)
+	}
+	var b []byte
+	if err := json.Unmarshal(raw, &b); err != nil {
+		t.Fatalf("parse authority keypair: %v", err)
+	}
+	return solana.PrivateKey(b)
+}
+
+// setupSPLMintFundVault creates a fresh 0-decimal mint (authority = mint
+// authority), creates the vault's ATA, and mints `amount` tokens into it — so a
+// subsequent SPL withdrawal has a funded vault to draw from. Returns the mint.
+func setupSPLMintFundVault(ctx context.Context, t *testing.T, client *rpc.Client, authorityPub solana.PublicKey, authorityKey solana.PrivateKey, programID solana.PublicKey, amount uint64) solana.PublicKey {
+	t.Helper()
+	mintKP, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatalf("mint keypair: %v", err)
+	}
+	mintPub := mintKP.PublicKey()
+
+	rent, err := client.GetMinimumBalanceForRentExemption(ctx, token.MINT_SIZE, rpc.CommitmentConfirmed)
+	if err != nil {
+		t.Fatalf("rent exemption: %v", err)
+	}
+	vaultATA, _, err := solana.FindAssociatedTokenAddress(VaultPDA(programID), mintPub)
+	if err != nil {
+		t.Fatalf("vault ATA: %v", err)
+	}
+
+	ixs := []solana.Instruction{
+		system.NewCreateAccountInstruction(rent, token.MINT_SIZE, solana.TokenProgramID, authorityPub, mintPub).Build(),
+		token.NewInitializeMint2Instruction(0, authorityPub, authorityPub, mintPub).Build(),
+		associatedtokenaccount.NewCreateInstruction(authorityPub, VaultPDA(programID), mintPub).Build(),
+		token.NewMintToInstruction(amount, mintPub, vaultATA, authorityPub, nil).Build(),
+	}
+	keys := map[solana.PublicKey]solana.PrivateKey{authorityPub: authorityKey, mintPub: mintKP}
+	sendMultiSigned(ctx, t, client, ixs, authorityPub, keys)
+	waitTokenBalance(ctx, t, client, vaultATA, amount)
+	return mintPub
+}
+
+// sendMultiSigned builds, signs (with every key the message needs), and sends a
+// transaction, then waits for the vault-ATA balance to reflect it via the
+// caller's own wait.
+func sendMultiSigned(ctx context.Context, t *testing.T, client *rpc.Client, ixs []solana.Instruction, payer solana.PublicKey, keys map[solana.PublicKey]solana.PrivateKey) {
+	t.Helper()
+	bh, err := client.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
+	if err != nil {
+		t.Fatalf("blockhash: %v", err)
+	}
+	tx, err := solana.NewTransaction(ixs, bh.Value.Blockhash, solana.TransactionPayer(payer))
+	if err != nil {
+		t.Fatalf("build tx: %v", err)
+	}
+	if _, err := tx.Sign(func(pub solana.PublicKey) *solana.PrivateKey {
+		if k, ok := keys[pub]; ok {
+			return &k
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("sign tx: %v", err)
+	}
+	if _, err := client.SendTransactionWithOpts(ctx, tx, rpc.TransactionOpts{PreflightCommitment: rpc.CommitmentConfirmed}); err != nil {
+		t.Fatalf("send tx: %v", err)
+	}
+}
+
+// waitTokenBalance blocks until the SPL token account holds at least min.
+func waitTokenBalance(ctx context.Context, t *testing.T, client *rpc.Client, account solana.PublicKey, min uint64) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		res, err := client.GetTokenAccountBalance(ctx, account, rpc.CommitmentConfirmed)
+		if err == nil && res != nil && res.Value != nil {
+			if v, perr := strconv.ParseUint(res.Value.Amount, 10, 64); perr == nil && v >= min {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("token account %s did not reach %d in time", account, min)
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func fixedEd25519(t *testing.T, seedStr string) sign.Signer {

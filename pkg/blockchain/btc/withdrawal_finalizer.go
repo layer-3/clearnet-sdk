@@ -181,22 +181,8 @@ func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *c
 	if err != nil {
 		return fmt.Errorf("btc validate: %w", err)
 	}
-	// Assert the fixed fields the BIP-143 SIGHASH_ALL digest commits to, matching
-	// what BuildUnsignedTx produces: version wire.TxVersion, locktime 0, and final
-	// (non-RBF) input sequences. The sighash already binds these, so a Byzantine
-	// canonicalizer cannot make followers sign something inconsistent — but
-	// without the checks it could induce co-signing of a non-final or
-	// RBF-signalling tx and waste a signing round (ISS-006(b), griefing only).
-	if tx.Version != wire.TxVersion {
-		return fmt.Errorf("btc validate: unexpected tx version %d", tx.Version)
-	}
-	if tx.LockTime != 0 {
-		return fmt.Errorf("btc validate: non-zero locktime %d", tx.LockTime)
-	}
-	for i, in := range tx.TxIn {
-		if in.Sequence != wire.MaxTxInSequenceNum {
-			return fmt.Errorf("btc validate: input %d non-final sequence %d", i, in.Sequence)
-		}
+	if err := validateFixedTxFields(tx); err != nil {
+		return fmt.Errorf("btc validate: %w", err)
 	}
 	if n := len(tx.TxOut); n != 2 && n != 3 {
 		return fmt.Errorf("btc validate: expected 2 or 3 outputs, got %d", n)

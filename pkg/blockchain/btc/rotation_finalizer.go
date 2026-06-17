@@ -155,6 +155,9 @@ func (f *RotationFinalizer) Validate(ctx context.Context, opID [32]byte, packed 
 	if err != nil {
 		return fmt.Errorf("btc rotation validate: %w", err)
 	}
+	if err := validateFixedTxFields(tx); err != nil {
+		return fmt.Errorf("btc rotation validate: %w", err)
+	}
 	if len(tx.TxOut) != 2 {
 		return fmt.Errorf("btc rotation validate: expected 2 outputs (new vault + OP_RETURN), got %d", len(tx.TxOut))
 	}
