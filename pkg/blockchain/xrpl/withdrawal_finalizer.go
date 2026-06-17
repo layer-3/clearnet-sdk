@@ -118,7 +118,7 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 // Submit combines the collected multi-sign blobs (trimmed to the quorum) and
 // broadcasts the result, returning the tx reference.
 func (f *WithdrawalFinalizer) Submit(_ context.Context, _ []byte, signatures [][]byte) (core.TxRef, error) {
-	merged, err := combineMultisign(signatures, f.threshold)
+	merged, err := combineLive(f.client, f.vaultAddress, signatures)
 	if err != nil {
 		return core.TxRef{}, err
 	}

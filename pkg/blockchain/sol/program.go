@@ -6,16 +6,20 @@ import (
 	"fmt"
 
 	"github.com/gagliardetto/solana-go"
+	addresslookuptable "github.com/gagliardetto/solana-go/programs/address-lookup-table"
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/layer-3/clearnet-sdk/pkg/blockchain/sol/custody"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
-// signAndSend builds a legacy transaction over the instructions, signs it with
-// the single fee-payer (the quorum's signatures ride inside the Ed25519
-// instruction, not the tx signers), and broadcasts it.
-func signAndSend(ctx context.Context, client *rpc.Client, instructions []solana.Instruction, payerPub solana.PublicKey, payer sign.Signer, commitment rpc.CommitmentType) (solana.Signature, error) {
+// signAndSend builds a transaction over the instructions, signs it with the
+// single fee-payer (the quorum's signatures ride inside the Ed25519 instruction,
+// not the tx signers), and broadcasts it. When alt is non-zero it loads that
+// Address Lookup Table and emits a v0 transaction, compressing the account list
+// so large quorums (whose Ed25519 instruction is already large) still fit the
+// 1232-byte packet limit; otherwise it emits a legacy transaction.
+func signAndSend(ctx context.Context, client *rpc.Client, instructions []solana.Instruction, payerPub solana.PublicKey, payer sign.Signer, commitment rpc.CommitmentType, alt solana.PublicKey) (solana.Signature, error) {
 	if commitment == "" {
 		commitment = rpc.CommitmentFinalized
 	}
@@ -27,7 +31,17 @@ func signAndSend(ctx context.Context, client *rpc.Client, instructions []solana.
 	if err != nil {
 		return solana.Signature{}, fmt.Errorf("sol: latest blockhash: %w", err)
 	}
-	tx, err := solana.NewTransaction(instructions, bh.Value.Blockhash, solana.TransactionPayer(payerPub))
+	opts := []solana.TransactionOption{solana.TransactionPayer(payerPub)}
+	if !alt.IsZero() {
+		state, err := addresslookuptable.GetAddressLookupTable(ctx, client, alt)
+		if err != nil {
+			return solana.Signature{}, fmt.Errorf("sol: load ALT: %w", err)
+		}
+		opts = append(opts, solana.TransactionAddressTables(map[solana.PublicKey]solana.PublicKeySlice{
+			alt: state.Addresses,
+		}))
+	}
+	tx, err := solana.NewTransaction(instructions, bh.Value.Blockhash, opts...)
 	if err != nil {
 		return solana.Signature{}, fmt.Errorf("sol: build tx: %w", err)
 	}

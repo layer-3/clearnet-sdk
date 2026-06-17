@@ -93,7 +93,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 		if e != nil {
 			t.Fatalf("build initialize: %v", e)
 		}
-		if _, e := signAndSend(ctx, client, []solana.Instruction{ix}, authorityPub, authority, rpc.CommitmentConfirmed); e != nil {
+		if _, e := signAndSend(ctx, client, []solana.Instruction{ix}, authorityPub, authority, rpc.CommitmentConfirmed, solana.PublicKey{}); e != nil {
 			t.Fatalf("initialize: %v", e)
 		}
 		waitConfig(ctx, t, client, programID)

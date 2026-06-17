@@ -101,7 +101,7 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 		return core.TxRef{}, fmt.Errorf("sol: build deposit ix: %w", err)
 	}
 
-	sig, err := signAndSend(ctx, d.client, []solana.Instruction{ix}, d.depositorPub, d.signer, d.commitment)
+	sig, err := signAndSend(ctx, d.client, []solana.Instruction{ix}, d.depositorPub, d.signer, d.commitment, solana.PublicKey{})
 	if err != nil {
 		return core.TxRef{}, err
 	}

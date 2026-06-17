@@ -208,7 +208,7 @@ func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares []
 	}
 	instructions := append(leading, ed25519Ix, updateIx)
 
-	sig, err := signAndSend(ctx, f.client, instructions, f.feePayerPub, f.feePayer, f.commitment)
+	sig, err := signAndSend(ctx, f.client, instructions, f.feePayerPub, f.feePayer, f.commitment, solana.PublicKey{})
 	if err != nil {
 		if _, done, verr := f.VerifyRotation(ctx, p.NewSigners, int(p.NewThreshold)); verr == nil && done {
 			return core.TxRef{}, nil

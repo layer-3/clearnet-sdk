@@ -18,6 +18,8 @@ import (
 	binarycodec "github.com/Peersyst/xrpl-go/binary-codec"
 	xrplcrypto "github.com/Peersyst/xrpl-go/pkg/crypto"
 	"github.com/Peersyst/xrpl-go/xrpl"
+	"github.com/Peersyst/xrpl-go/xrpl/queries/account"
+	"github.com/Peersyst/xrpl-go/xrpl/rpc"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
 
@@ -211,6 +213,16 @@ func ValidateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, 
 	if uint64(fee) > maxAcceptableFeeDrops {
 		return fmt.Errorf("xrpl canonical: Fee %d drops exceeds ceiling %d", fee, maxAcceptableFeeDrops)
 	}
+	// Flags is allowlisted (honest bodies omit it) but its value must be
+	// constrained: a non-zero Flags can carry tfPartialPayment, which on an
+	// issued-currency withdrawal lets the submitter deliver less than Amount
+	// while the ceremony still reports success (ISS-002). Reject any present
+	// Flags that is non-zero or non-numeric.
+	if raw, ok := flat["Flags"]; ok {
+		if v, ok := uint32Field(raw); !ok || v != 0 {
+			return fmt.Errorf("xrpl canonical: non-zero or invalid Flags not permitted: %v", raw)
+		}
+	}
 	for k := range flat {
 		if _, ok := canonicalAllowedFields[k]; !ok {
 			return fmt.Errorf("xrpl canonical: unexpected field %q", k)
@@ -262,6 +274,13 @@ func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []st
 	}
 	if uint64(fee) > maxAcceptableFeeDrops {
 		return fmt.Errorf("xrpl rotation: Fee %d drops exceeds ceiling %d", fee, maxAcceptableFeeDrops)
+	}
+	// Flags is allowlisted but its value must be constrained; reject any present
+	// Flags that is non-zero or non-numeric (ISS-002).
+	if raw, ok := flat["Flags"]; ok {
+		if v, ok := uint32Field(raw); !ok || v != 0 {
+			return fmt.Errorf("xrpl rotation: non-zero or invalid Flags not permitted: %v", raw)
+		}
 	}
 	for k := range flat {
 		if _, ok := rotationAllowedFields[k]; !ok {
@@ -400,24 +419,113 @@ func CanonicalJSON(flatTx transaction.FlatTransaction) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// combineMultisign trims the collected multi-sign blobs to exactly `threshold`
-// and combines them into one submittable blob. Pack autofilled the multi-sign
-// fee for that count (base × (1 + threshold)), so including extras would
-// under-pay (telINSUF_FEE_P) and waste fee; any threshold of the SignerList's
-// members satisfies the quorum. Shared by the withdrawal and rotation submits.
-func combineMultisign(signatures [][]byte, threshold int) (string, error) {
-	if len(signatures) < threshold {
-		return "", fmt.Errorf("xrpl: have %d signatures, need %d", len(signatures), threshold)
-	}
-	blobs := make([]string, 0, threshold)
-	for _, s := range signatures[:threshold] {
+// combineLive merges the collected multi-sign blobs, filtering them against the
+// vault's live SignerList and trimming to the live SignerQuorum rather than a
+// boot-time threshold. A blob signed by a peer whose key just rotated off (or
+// hasn't rotated on yet) would make rippled reject the assembled tx
+// (tefBAD_SIGNATURE), and a stale quorum would under- or over-fill the Signers
+// array; reading the live list keeps both correct across a rotation. Pack
+// autofilled the multi-sign fee for the quorum count, so trimming to exactly
+// liveQuorum keeps the fee right. Shared by the withdrawal and rotation submits.
+func combineLive(client *rpc.Client, vault string, signatures [][]byte) (string, error) {
+	blobs := make([]string, 0, len(signatures))
+	for _, s := range signatures {
 		blobs = append(blobs, string(s))
 	}
+	authorized, liveQuorum, err := fetchLiveSignerList(client, vault)
+	if err != nil {
+		return "", err
+	}
+	blobs, err = filterBlobsByAuthorized(blobs, authorized)
+	if err != nil {
+		return "", err
+	}
+	if len(blobs) < liveQuorum {
+		return "", fmt.Errorf("xrpl: only %d authorized signatures after live-SignerList filter, need %d", len(blobs), liveQuorum)
+	}
+	blobs = blobs[:liveQuorum]
 	final, err := xrpl.Multisign(blobs...)
 	if err != nil {
 		return "", fmt.Errorf("xrpl: combine signatures: %w", err)
 	}
 	return final, nil
+}
+
+// fetchLiveSignerList reads the vault's live SignerList via account_info and
+// returns the currently-authorized r-addresses plus the live SignerQuorum.
+func fetchLiveSignerList(client *rpc.Client, vault string) (map[string]struct{}, int, error) {
+	resp, err := client.GetAccountInfo(&account.InfoRequest{
+		Account:     types.Address(vault),
+		SignerLists: true,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("xrpl: account_info: %w", err)
+	}
+	if len(resp.SignerLists) == 0 {
+		return nil, 0, fmt.Errorf("xrpl: vault has no SignerList configured")
+	}
+	live := resp.SignerLists[0]
+	authorized := make(map[string]struct{}, len(live.SignerEntries))
+	for _, e := range live.SignerEntries {
+		authorized[string(e.SignerEntry.Account)] = struct{}{}
+	}
+	quorum := int(live.SignerQuorum)
+	if quorum <= 0 || quorum > len(live.SignerEntries) {
+		return nil, 0, fmt.Errorf("xrpl: live SignerQuorum %d out of range for %d entries", quorum, len(live.SignerEntries))
+	}
+	return authorized, quorum, nil
+}
+
+// filterBlobsByAuthorized drops blobs whose inner signer is not in authorized,
+// de-duping by signer account.
+func filterBlobsByAuthorized(blobs []string, authorized map[string]struct{}) ([]string, error) {
+	out := make([]string, 0, len(blobs))
+	seen := make(map[string]struct{}, len(blobs))
+	for i, b := range blobs {
+		acct, err := blobSignerAccount(b)
+		if err != nil {
+			return nil, fmt.Errorf("xrpl: decode blob %d: %w", i, err)
+		}
+		if _, dup := seen[acct]; dup {
+			continue
+		}
+		if _, ok := authorized[acct]; !ok {
+			continue
+		}
+		seen[acct] = struct{}{}
+		out = append(out, b)
+	}
+	return out, nil
+}
+
+// blobSignerAccount decodes a multi-sign blob (one signer's contribution) and
+// returns the classic r-address of its inner Signer entry.
+func blobSignerAccount(blob string) (string, error) {
+	decoded, err := binarycodec.Decode(blob)
+	if err != nil {
+		return "", err
+	}
+	signersAny, ok := decoded["Signers"]
+	if !ok {
+		return "", fmt.Errorf("blob missing Signers field")
+	}
+	signers, ok := signersAny.([]any)
+	if !ok || len(signers) == 0 {
+		return "", fmt.Errorf("blob Signers field not a non-empty array")
+	}
+	first, ok := signers[0].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("blob Signers[0] not an object")
+	}
+	inner, ok := first["Signer"].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("blob Signers[0].Signer not an object")
+	}
+	acct, ok := inner["Account"].(string)
+	if !ok || acct == "" {
+		return "", fmt.Errorf("blob Signers[0].Signer.Account missing")
+	}
+	return acct, nil
 }
 
 // hashHex is the uppercase hex of a 32-byte tx hash (XRPL's display form).

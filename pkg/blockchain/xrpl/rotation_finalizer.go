@@ -100,7 +100,7 @@ func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, er
 // Submit combines the collected multi-sign blobs (trimmed to the current quorum)
 // and broadcasts the SignerListSet, returning the tx reference.
 func (f *RotationFinalizer) Submit(_ context.Context, _ []byte, signatures [][]byte) (core.TxRef, error) {
-	merged, err := combineMultisign(signatures, f.threshold)
+	merged, err := combineLive(f.client, f.vaultAddress, signatures)
 	if err != nil {
 		return core.TxRef{}, err
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
+	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/rpc"
 
@@ -40,13 +41,19 @@ type Config struct {
 	// devnet/test speed tradeoff: it observes results in ~1-2 slots instead of
 	// waiting ~32 for finality, cutting the local flow from ~16s to a few.
 	Commitment rpc.CommitmentType
+	// AddressLookupTable, when set, makes the submit emit a v0 transaction using
+	// this ALT. Required for large quorums: the Ed25519 instruction grows ~112
+	// bytes per signer, so beyond ~8-9 signers a legacy transaction exceeds the
+	// 1232-byte packet limit. Zero → legacy transaction.
+	AddressLookupTable solana.PublicKey
 }
 
 // WithdrawalFinalizer executes a withdrawal against the custody Anchor program:
 // a digest signed by the ed25519 quorum, verified on-chain via the Ed25519
 // precompile. The node's signer contributes one share; a separate fee-payer
-// signer pays + submits. It implements core.VaultWithdrawalFinalizer. Native
-// SOL only for now (SPL execute needs the program's remaining-accounts).
+// signer pays + submits. It implements core.VaultWithdrawalFinalizer, for both
+// native SOL and SPL tokens (the SPL path adds the recipient-ATA creation and
+// the token remaining-accounts the program's execute expects).
 type WithdrawalFinalizer struct {
 	client      *rpc.Client
 	programID   solana.PublicKey
@@ -57,6 +64,7 @@ type WithdrawalFinalizer struct {
 	cuLimit     uint32
 	cuPrice     uint64
 	commitment  rpc.CommitmentType
+	alt         solana.PublicKey
 	signer      sign.Signer
 	nodePub     solana.PublicKey
 	feePayer    sign.Signer
@@ -95,6 +103,7 @@ func NewWithdrawalFinalizer(rpcURL string, programID solana.PublicKey, signer, f
 		cuLimit:     limit,
 		cuPrice:     cfg.ComputeUnitPrice,
 		commitment:  commitment,
+		alt:         cfg.AddressLookupTable,
 		signer:      signer,
 		nodePub:     nodePub,
 		feePayer:    feePayer,
@@ -176,9 +185,6 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares 
 	if err != nil {
 		return core.TxRef{}, err
 	}
-	if !mint.IsZero() {
-		return core.TxRef{}, fmt.Errorf("sol: SPL withdrawal not yet supported (native SOL only)")
-	}
 
 	pubkeys, sigs, err := f.merge(ctx, shares)
 	if err != nil {
@@ -191,23 +197,26 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares 
 		return core.TxRef{}, err
 	}
 	// Leading instructions before the Ed25519 companion: the two compute-budget
-	// instructions. sigIxIndex (which execute introspects) is their count.
+	// instructions, plus (SPL only) an idempotent recipient-ATA creation paid by
+	// the fee payer (the recipient may not have a token account yet). sigIxIndex
+	// — which execute introspects to find its Ed25519 companion — is the count of
+	// these leading instructions.
 	leading := []solana.Instruction{
 		computebudget.NewSetComputeUnitLimitInstruction(f.cuLimit).Build(),
 		computebudget.NewSetComputeUnitPriceInstruction(f.cuPrice).Build(),
 	}
+	if !mint.IsZero() {
+		leading = append(leading,
+			associatedtokenaccount.NewCreateIdempotentInstruction(f.feePayerPub, to, mint).Build())
+	}
 	sigIxIndex := uint8(len(leading))
-	execIx, err := custody.NewExecuteInstruction(
-		to, mint, amount, wid, sigIxIndex,
-		f.feePayerPub, f.configPDA, f.vaultPDA, WithdrawalPDA(f.programID, wid),
-		to, solana.SysVarInstructionsPubkey, solana.SystemProgramID, f.eventAuth, f.programID,
-	)
+	execIx, err := f.buildExecuteIx(to, mint, amount, wid, sigIxIndex)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("sol: build execute ix: %w", err)
+		return core.TxRef{}, err
 	}
 	instructions := append(leading, ed25519Ix, execIx)
 
-	sig, err := signAndSend(ctx, f.client, instructions, f.feePayerPub, f.feePayer, f.commitment)
+	sig, err := signAndSend(ctx, f.client, instructions, f.feePayerPub, f.feePayer, f.commitment, f.alt)
 	if err != nil {
 		// A peer may have already landed it.
 		if h, executed, verr := f.VerifyExecution(ctx, wid); verr == nil && executed {
@@ -219,6 +228,43 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares 
 		return core.TxRef{}, err
 	}
 	return txRef(sig), nil
+}
+
+// buildExecuteIx builds the execute instruction. The native account list comes
+// from the generated binding; for an SPL withdrawal it appends the token
+// remaining-accounts the program's execute expects (token program, vault ATA,
+// recipient ATA), reusing the binding's data encoding so the discriminator and
+// arguments stay byte-exact.
+func (f *WithdrawalFinalizer) buildExecuteIx(to, mint solana.PublicKey, amount uint64, wid [32]byte, sigIxIndex uint8) (solana.Instruction, error) {
+	execIx, err := custody.NewExecuteInstruction(
+		to, mint, amount, wid, sigIxIndex,
+		f.feePayerPub, f.configPDA, f.vaultPDA, WithdrawalPDA(f.programID, wid),
+		to, solana.SysVarInstructionsPubkey, solana.SystemProgramID, f.eventAuth, f.programID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sol: build execute ix: %w", err)
+	}
+	if mint.IsZero() {
+		return execIx, nil
+	}
+	vaultATA, _, err := solana.FindAssociatedTokenAddress(f.vaultPDA, mint)
+	if err != nil {
+		return nil, fmt.Errorf("sol: vault ATA: %w", err)
+	}
+	recipientATA, _, err := solana.FindAssociatedTokenAddress(to, mint)
+	if err != nil {
+		return nil, fmt.Errorf("sol: recipient ATA: %w", err)
+	}
+	data, err := execIx.Data()
+	if err != nil {
+		return nil, fmt.Errorf("sol: execute data: %w", err)
+	}
+	metas := append(execIx.Accounts(),
+		solana.NewAccountMeta(solana.TokenProgramID, false, false),
+		solana.NewAccountMeta(vaultATA, true, false),
+		solana.NewAccountMeta(recipientATA, true, false),
+	)
+	return solana.NewInstruction(f.programID, metas, data), nil
 }
 
 // VerifyExecution reports whether the Withdrawal PDA exists (the on-chain

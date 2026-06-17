@@ -29,13 +29,14 @@ Rewrites `../custody/*.go` from `custody.json`. Commit the result.
 
 ## Refresh the artifacts (only when the program changes)
 
-Both files come from `anchor build` in the repo that owns the Rust source
-(`clearnet/contracts/solana`, Anchor 0.31). Requires the Solana + Anchor
+Both files come from `anchor build` in the repo that owns the Rust source.
+That source now lives in **custody** at `chains/sol/contract` (Anchor 0.31) —
+the custody program was moved out of clearnet. Requires the Solana + Anchor
 toolchain (`solana` / `cargo-build-sbf` + `anchor` 0.31 via avm) — needed only
 to refresh, never to run the tests:
 
 ```sh
-cd ../clearnet/contracts/solana
+cd ../custody/chains/sol/contract
 anchor build
 cp target/idl/custody.json    <sdk>/pkg/blockchain/sol/artifacts/custody.json
 cp target/deploy/custody.so   <sdk>/pkg/blockchain/sol/artifacts/custody.so

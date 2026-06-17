@@ -28,13 +28,18 @@ This rewrites `../*_abi.go` from the `.abi`/`.bin` here. Commit the result.
 
 ## Refresh the .abi / .bin (only when a contract changes)
 
-The files are produced by `forge build` in a repo that owns the Solidity
-source (clearnet for Registry/YellowToken/etc.; custody for Custody). Build
-there, then extract abi + bytecode into this directory. Foundry nests output
-by source-file name, so the contract→json mapping matters (note YellowToken
-lives in `Token.sol`):
+The files are produced by `forge build` in the repo that owns each contract's
+Solidity source. The source trees are split: the clearing contracts
+(`Registry`, `YellowToken`, `MockERC20`, `NodeID`, `Faucet`, `Slasher`) live in
+**clearnet** (`contracts/evm`); **`Custody` was moved out of clearnet and now
+lives in custody** at `chains/evm/contract` (`src/Custody.sol`). Build each in
+its own tree, then extract abi + bytecode into this directory. Foundry nests
+output by source-file name, so the contract→json mapping matters (note
+YellowToken lives in `Token.sol`):
 
 ```sh
+# Clearing contracts from clearnet; refresh Custody from
+# ../custody/chains/evm/contract/out (same jq extraction, different OUT tree).
 OUT=../clearnet/contracts/evm/out          # a `forge build` output tree
 DEST=pkg/blockchain/evm/artifacts          # this directory, from repo root
 
