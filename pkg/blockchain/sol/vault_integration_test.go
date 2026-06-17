@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
+	addresslookuptable "github.com/gagliardetto/solana-go/programs/address-lookup-table"
 	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
 	"github.com/gagliardetto/solana-go/programs/system"
 	"github.com/gagliardetto/solana-go/programs/token"
@@ -172,12 +173,26 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 		t.Fatal("withdrawal not reported executed")
 	}
 
-	// ── SPL withdrawal flow ─────────────────────────────────────────────────────
-	// Create a 0-decimal mint, fund the vault's ATA, then withdraw under the same
-	// quorum. Exercises the SPL execute path: recipient-ATA creation + the token
-	// remaining-accounts.
+	// ── SPL withdrawal flow (over a v0 transaction + ALT) ───────────────────────
+	// Create a 0-decimal mint, fund the vault's ATA, build an Address Lookup Table
+	// over the static execute accounts, then withdraw under the same quorum with
+	// the ALT configured. Exercises the SPL execute path (recipient-ATA creation +
+	// token remaining-accounts) and the v0/ALT submit path together.
 	authorityKey := loadAuthorityKey(t)
 	mint := setupSPLMintFundVault(ctx, t, client, authorityPub, authorityKey, programID, 100)
+	// Build the ALT from the SDK's invariant account set — the same knowledge
+	// buildExecuteIx uses, so the table can't drift from the instruction layout.
+	alt := createActiveALT(ctx, t, client, authorityPub, authorityKey, VaultLookupAddresses(programID, mint))
+
+	splCfg := Config{ChainID: solChainID, Commitment: rpc.CommitmentConfirmed, AddressLookupTable: alt}
+	splFinalizers := make([]*WithdrawalFinalizer, solSignerCount)
+	for i, s := range signers {
+		f, e := NewWithdrawalFinalizer(rpcURL, programID, s, authority, splCfg)
+		if e != nil {
+			t.Fatalf("NewWithdrawalFinalizer (spl) %d: %v", i, e)
+		}
+		splFinalizers[i] = f
+	}
 
 	var splWid [32]byte
 	if _, err := rand.Read(splWid[:]); err != nil {
@@ -187,12 +202,12 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	splRecipientPub, _ := solanaPub(splRecipient)
 	splOp := &core.WithdrawalOp{Recipient: splRecipientPub.String(), L1Asset: mint.String(), Amount: decimal.NewFromInt(40)}
 
-	splPacked, err := finalizers[0].Pack(ctx, splOp, splWid)
+	splPacked, err := splFinalizers[0].Pack(ctx, splOp, splWid)
 	if err != nil {
 		t.Fatalf("SPL Pack: %v", err)
 	}
-	splShares := make([][]byte, 0, len(finalizers))
-	for i, f := range finalizers {
+	splShares := make([][]byte, 0, len(splFinalizers))
+	for i, f := range splFinalizers {
 		if err := f.Validate(ctx, splPacked, splOp, splWid); err != nil {
 			t.Fatalf("SPL Validate[%d]: %v", i, err)
 		}
@@ -202,7 +217,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 		}
 		splShares = append(splShares, s)
 	}
-	if _, err := finalizers[0].Submit(ctx, splPacked, splShares); err != nil {
+	if _, err := splFinalizers[0].Submit(ctx, splPacked, splShares); err != nil {
 		t.Fatalf("SPL Submit: %v", err)
 	}
 	recipientATA, _, err := solana.FindAssociatedTokenAddress(splRecipientPub, mint)
@@ -404,6 +419,42 @@ func setupSPLMintFundVault(ctx context.Context, t *testing.T, client *rpc.Client
 	sendMultiSigned(ctx, t, client, ixs, authorityPub, keys)
 	waitTokenBalance(ctx, t, client, vaultATA, amount)
 	return mintPub
+}
+
+// createActiveALT creates an Address Lookup Table, extends it with addresses,
+// and waits until it is populated and old enough to use in a v0 transaction.
+func createActiveALT(ctx context.Context, t *testing.T, client *rpc.Client, authorityPub solana.PublicKey, authorityKey solana.PrivateKey, addresses []solana.PublicKey) solana.PublicKey {
+	t.Helper()
+	// CreateLookupTable requires recent_slot to be a slot already in the
+	// SlotHashes sysvar — i.e. strictly in the past. The finalized slot always
+	// lags the execution slot, so it is safely present; the current (confirmed)
+	// slot can equal the execution slot and is rejected ("not a recent slot").
+	slot, err := client.GetSlot(ctx, rpc.CommitmentFinalized)
+	if err != nil {
+		t.Fatalf("get slot: %v", err)
+	}
+	createIx, altAddr, err := addresslookuptable.NewCreateLookupTableInstruction(authorityPub, authorityPub, slot)
+	if err != nil {
+		t.Fatalf("create ALT ix: %v", err)
+	}
+	extendIx := addresslookuptable.NewExtendLookupTableInstruction(altAddr, authorityPub, authorityPub, addresses).Build()
+	sendMultiSigned(ctx, t, client, []solana.Instruction{createIx.Build(), extendIx}, authorityPub, map[solana.PublicKey]solana.PrivateKey{authorityPub: authorityKey})
+
+	// Wait until the table is readable with all addresses, then let it age a slot
+	// (a lookup table cannot be used in the same slot it was extended).
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		state, err := addresslookuptable.GetAddressLookupTable(ctx, client, altAddr)
+		if err == nil && state != nil && len(state.Addresses) >= len(addresses) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ALT %s not populated in time", altAddr)
+		}
+		time.Sleep(time.Second)
+	}
+	time.Sleep(2 * time.Second)
+	return altAddr
 }
 
 // sendMultiSigned builds, signs (with every key the message needs), and sends a

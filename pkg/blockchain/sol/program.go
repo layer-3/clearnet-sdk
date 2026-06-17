@@ -104,6 +104,34 @@ func eventAuthorityPDA(programID solana.PublicKey) solana.PublicKey {
 	return pk
 }
 
+// VaultLookupAddresses returns the invariant accounts of the execute
+// instruction — the ones that recur across every withdrawal and are therefore
+// eligible to populate an Address Lookup Table, letting large quorums fit a v0
+// transaction (set the table via WithdrawalFinalizer's Config.AddressLookupTable).
+// A zero mint returns the native-SOL set; a non-zero mint adds the token program
+// and the vault's associated token account. Per-withdrawal accounts (the
+// recipient, its token account, the Withdrawal PDA, the fee payer) vary each call
+// and are intentionally excluded.
+//
+// Build the lookup table from this set so it stays in lockstep with the
+// instruction's account layout (both live here, in the SDK).
+func VaultLookupAddresses(programID, mint solana.PublicKey) []solana.PublicKey {
+	addrs := []solana.PublicKey{
+		ConfigPDA(programID),
+		VaultPDA(programID),
+		eventAuthorityPDA(programID),
+		solana.SystemProgramID,
+		solana.SysVarInstructionsPubkey,
+	}
+	if !mint.IsZero() {
+		addrs = append(addrs, solana.TokenProgramID)
+		if vaultATA, _, err := solana.FindAssociatedTokenAddress(VaultPDA(programID), mint); err == nil {
+			addrs = append(addrs, vaultATA)
+		}
+	}
+	return addrs
+}
+
 // BuildEd25519Instruction frames the quorum's signatures for the native
 // Ed25519SigVerify precompile, all offsets self-referencing (instruction index
 // 0xFFFF) so the verified data cannot be smuggled from another instruction.
