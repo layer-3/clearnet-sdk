@@ -89,7 +89,11 @@ type evmPacked struct {
 
 // Pack returns the canonical JSON for the withdrawal. Pure — no chain access.
 func (f *WithdrawalFinalizer) Pack(_ context.Context, op *core.WithdrawalOp, withdrawalID [32]byte) ([]byte, error) {
-	return json.Marshal(packedFromOp(op, withdrawalID))
+	p, err := packedFromOp(op, withdrawalID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(p)
 }
 
 // Validate re-derives the canonical payload from the op and asserts the packed
@@ -99,7 +103,10 @@ func (f *WithdrawalFinalizer) Validate(_ context.Context, packed []byte, op *cor
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("decode packed: %w", err)
 	}
-	want := packedFromOp(op, withdrawalID)
+	want, err := packedFromOp(op, withdrawalID)
+	if err != nil {
+		return err
+	}
 	if got != want {
 		return fmt.Errorf("packed withdrawal does not match op: got %+v want %+v", got, want)
 	}
@@ -220,13 +227,22 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 
 // --- helpers ---
 
-func packedFromOp(op *core.WithdrawalOp, withdrawalID [32]byte) evmPacked {
+func packedFromOp(op *core.WithdrawalOp, withdrawalID [32]byte) (evmPacked, error) {
+	// common.HexToAddress silently zero-fills/truncates a malformed input, which
+	// would sign a withdrawal to the wrong (often zero) recipient. Reject
+	// anything that is not a well-formed hex address up front.
+	if !common.IsHexAddress(op.Recipient) {
+		return evmPacked{}, fmt.Errorf("evm: recipient %q is not a valid hex address", op.Recipient)
+	}
+	if !common.IsHexAddress(op.L1Asset) {
+		return evmPacked{}, fmt.Errorf("evm: l1 asset %q is not a valid hex address", op.L1Asset)
+	}
 	return evmPacked{
 		To:           common.HexToAddress(op.Recipient).Hex(),
 		Asset:        common.HexToAddress(op.L1Asset).Hex(),
 		Amount:       op.Amount.BigInt().String(),
 		WithdrawalID: hex.EncodeToString(withdrawalID[:]),
-	}
+	}, nil
 }
 
 // digest computes the Custody.execute signing digest:

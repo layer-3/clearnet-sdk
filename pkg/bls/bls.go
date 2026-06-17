@@ -259,14 +259,29 @@ func SerializeG1(p bn254.G1Affine) []byte {
 	return buf
 }
 
-// DeserializeG1 reads a G1 point from 64 bytes (X || Y, big-endian).
+// DeserializeG1 reads a G1 point from 64 bytes (X || Y, big-endian). It is an
+// acceptance-path decoder for untrusted input, so it fully validates the point:
+// each coordinate must be a canonical field element (< P), and the point must be
+// on the curve and in the prime-order subgroup. Skipping the subgroup check
+// would admit small-subgroup points that break the signature scheme's security.
 func DeserializeG1(data []byte) (bn254.G1Affine, error) {
 	if len(data) != 64 {
 		return bn254.G1Affine{}, errors.New("invalid G1 data length: expected 64 bytes")
 	}
+	x := new(big.Int).SetBytes(data[:32])
+	y := new(big.Int).SetBytes(data[32:])
+	if x.Cmp(fieldP) >= 0 || y.Cmp(fieldP) >= 0 {
+		return bn254.G1Affine{}, errors.New("bls: G1 coordinate not in field range")
+	}
 	var pt bn254.G1Affine
-	pt.X.SetBigInt(new(big.Int).SetBytes(data[:32]))
-	pt.Y.SetBigInt(new(big.Int).SetBytes(data[32:]))
+	pt.X.SetBigInt(x)
+	pt.Y.SetBigInt(y)
+	if !pt.IsOnCurve() {
+		return bn254.G1Affine{}, errors.New("bls: G1 point not on curve")
+	}
+	if !pt.IsInSubGroup() {
+		return bn254.G1Affine{}, errors.New("bls: G1 point not in prime-order subgroup")
+	}
 	return pt, nil
 }
 
@@ -295,16 +310,35 @@ func SerializeG2(p bn254.G2Affine) []byte {
 	return buf
 }
 
-// DeserializeG2 reads a G2 point from 128 bytes.
+// DeserializeG2 reads a G2 point from 128 bytes. Like DeserializeG1 it is an
+// acceptance-path decoder: it rejects non-canonical coordinates (>= P) and
+// points that are off-curve or outside the prime-order subgroup. The off-chain
+// verifier must apply the same membership checks the on-chain precompile does,
+// or a crafted pubkey/signature could pass off-chain acceptance.
 func DeserializeG2(data []byte) (bn254.G2Affine, error) {
 	if len(data) != 128 {
 		return bn254.G2Affine{}, errors.New("invalid G2 data length: expected 128 bytes")
 	}
+	xa1 := new(big.Int).SetBytes(data[0:32])
+	xa0 := new(big.Int).SetBytes(data[32:64])
+	ya1 := new(big.Int).SetBytes(data[64:96])
+	ya0 := new(big.Int).SetBytes(data[96:128])
+	for _, c := range []*big.Int{xa1, xa0, ya1, ya0} {
+		if c.Cmp(fieldP) >= 0 {
+			return bn254.G2Affine{}, errors.New("bls: G2 coordinate not in field range")
+		}
+	}
 	var pt bn254.G2Affine
-	pt.X.A1.SetBigInt(new(big.Int).SetBytes(data[0:32]))
-	pt.X.A0.SetBigInt(new(big.Int).SetBytes(data[32:64]))
-	pt.Y.A1.SetBigInt(new(big.Int).SetBytes(data[64:96]))
-	pt.Y.A0.SetBigInt(new(big.Int).SetBytes(data[96:128]))
+	pt.X.A1.SetBigInt(xa1)
+	pt.X.A0.SetBigInt(xa0)
+	pt.Y.A1.SetBigInt(ya1)
+	pt.Y.A0.SetBigInt(ya0)
+	if !pt.IsOnCurve() {
+		return bn254.G2Affine{}, errors.New("bls: G2 point not on curve")
+	}
+	if !pt.IsInSubGroup() {
+		return bn254.G2Affine{}, errors.New("bls: G2 point not in prime-order subgroup")
+	}
 	return pt, nil
 }
 
