@@ -9,13 +9,13 @@
 # these nodes (fresh keys/accounts/contract each run). See devnet/README.md.
 services:
   anvil:
-    image: ghcr.io/foundry-rs/foundry:latest
+    image: ghcr.io/foundry-rs/foundry:latest@sha256:8347b728d5d393dac1c018691b36f506d23b9dcd78341d40ea0fcb11c3a19cdd
     entrypoint: ["anvil", "--host", "0.0.0.0", "--chain-id", "31337"]
     ports:
       - "8545:8545"
 
   bitcoind:
-    image: ruimarinho/bitcoin-core:24
+    image: ruimarinho/bitcoin-core:24@sha256:79dd32455cf8c268c63e5d0114cc9882a8857e942b1d17a6b8ec40a6d44e3981
     command:
       - -regtest=1
       - -server=1
@@ -34,7 +34,7 @@ services:
   # validator needs AVX (not emulable on Apple silicon); beeman's image is
   # multi-arch and pulls the native arm64 build.
   solana:
-    image: beeman/solana-test-validator:3.1.14
+    image: beeman/solana-test-validator:3.1.14@sha256:92350b9cda62938aaca12b63ca81d5db217f6a96ff415215e0346904957cd5db
     # The Agave validator uses io_uring; Docker Desktop's default seccomp
     # profile blocks io_uring_setup (EPERM) even though the VM kernel supports
     # it, so the validator aborts. Allow it.
@@ -58,7 +58,7 @@ services:
       - "8900:8900"
 
   rippled:
-    image: xrpllabsofficial/xrpld:latest
+    image: xrpllabsofficial/xrpld:latest@sha256:5bed71463491c098bdb7f057a95c5a77bb71c36ed6b5009ff8397ce076d0e22e
     platform: linux/amd64
     command: ["-a", "--start"]
     volumes:

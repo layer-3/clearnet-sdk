@@ -1,0 +1,25 @@
+name: Test (Unit)
+
+# Reusable: runs the unit suite (go test -race ./...). Called by the per-event
+# workflows (PR, push to master).
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: make test
