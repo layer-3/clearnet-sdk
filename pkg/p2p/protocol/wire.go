@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/ipfs/go-cid"
 	cbg "github.com/whyrusleeping/cbor-gen"
 )
 
@@ -198,8 +199,14 @@ func (t *ReceiptAck) UnmarshalCBOR(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	if maj != cbg.MajArray || extra != 2 {
-		return fmt.Errorf("ReceiptAck: expected 2-element CBOR array")
+	// Accept >= 2 elements and skip any trailing fields: a real clearnode emits
+	// a wider ack (6 elements) and forward-compatible readers must not reject it.
+	// Only the first two — Accepted, Reason — are part of this contract.
+	if maj != cbg.MajArray {
+		return fmt.Errorf("ReceiptAck: expected CBOR array, got major %d", maj)
+	}
+	if extra < 2 {
+		return fmt.Errorf("ReceiptAck: expected >=2 elements, got %d", extra)
 	}
 	// Accepted (CBOR simple value: 20 = false, 21 = true).
 	bmaj, bminor, err := cr.ReadHeader()
@@ -222,5 +229,13 @@ func (t *ReceiptAck) UnmarshalCBOR(r io.Reader) error {
 		return fmt.Errorf("ReceiptAck.Reason: %w", err)
 	}
 	t.Reason = reason
+	// Skip any trailing elements (ScanForLinks walks exactly one CBOR item per
+	// call, recursing into arrays/maps); the CID sink is a no-op.
+	noLink := func(cid.Cid) {}
+	for i := uint64(2); i < extra; i++ {
+		if err := cbg.ScanForLinks(cr, noLink); err != nil {
+			return fmt.Errorf("ReceiptAck: skip trailing element %d: %w", i, err)
+		}
+	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
@@ -92,10 +93,20 @@ func (s *Server) Register(h host.Host) {
 	h.SetStreamHandler(protocol.ID(p2pproto.ProtocolAuth), s.HandleAuth)
 }
 
+// handshakeTimeout bounds one server-side handshake end to end (challenge write
+// + response read), so a stalled peer cannot pin the handler goroutine.
+const handshakeTimeout = 10 * time.Second
+
 // HandleAuth is the stream handler for /ynp/auth/1.0.0.
 func (s *Server) HandleAuth(stream network.Stream) {
 	defer stream.Close()
 	conn := stream.Conn()
+	// Bound the whole handshake: the server writes the challenge then reads the
+	// response, so the deadline covers both directions (slowloris guard).
+	if err := stream.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		s.logger.Debug("auth set deadline failed", "peer", conn.RemotePeer().ShortString(), "error", err)
+		return
+	}
 	res, err := s.verify(stream, conn.RemotePublicKey())
 	if err != nil {
 		s.logger.Debug("auth handshake failed", "peer", conn.RemotePeer().ShortString(), "error", err)

@@ -109,9 +109,14 @@ func (l *ZapLogger) log(level Level, msg string, keysAndValues ...any) {
 
 // WithKV returns a new ZapLogger with the key-value pair added to all future log messages.
 func (l *ZapLogger) WithKV(key string, value any) Logger {
+	// Clone before appending: a bare append(l.keysAndValues, …) reuses the
+	// parent's backing array when it has spare capacity, so sibling WithKV calls
+	// off the same logger would race and corrupt each other's KV set (and the
+	// span attributes derived from GetAllKV).
+	kv := append(append([]any(nil), l.keysAndValues...), key, value)
 	return &ZapLogger{
 		lg:            l.lg.With(key, value),
-		keysAndValues: append(l.keysAndValues, key, value),
+		keysAndValues: kv,
 	}
 }
 

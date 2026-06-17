@@ -112,6 +112,23 @@ func TestWireRoundTrip(t *testing.T) {
 		}
 	})
 
+	t.Run("ReceiptAck wider ack", func(t *testing.T) {
+		// A real clearnode emits a 6-element ack; the reader must accept it and
+		// take only the first two fields (Accepted, Reason), skipping the rest.
+		// 86 = array(6); f5 = true; 626f6b = "ok"; then 4 trailing ints 0..3.
+		wire, err := hex.DecodeString("86f5626f6b00010203")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out ReceiptAck
+		if err := out.UnmarshalCBOR(bytes.NewReader(wire)); err != nil {
+			t.Fatalf("decode 6-element ack: %v", err)
+		}
+		if !out.Accepted || out.Reason != "ok" {
+			t.Errorf("got %+v, want {Accepted:true Reason:ok}", out)
+		}
+	})
+
 	t.Run("ReceiptAck", func(t *testing.T) {
 		for _, in := range []*ReceiptAck{
 			{Accepted: true, Reason: ""},
