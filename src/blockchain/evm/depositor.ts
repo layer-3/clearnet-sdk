@@ -1,3 +1,4 @@
+import { zeroHash } from "viem";
 import type { Address, Hash, TransactionReceipt } from "viem";
 
 import { ClearnetSdkError } from "../../core/errors.js";
@@ -103,7 +104,9 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
 
     let headBlockNumber: bigint;
     try {
-      headBlockNumber = await this.config.publicClient.getBlockNumber();
+      headBlockNumber = await this.config.publicClient.getBlockNumber({
+        cacheTime: 0,
+      });
     } catch (error) {
       throw new ClearnetSdkError("RPC_ERROR", "evm: block number", {
         cause: error,
@@ -127,7 +130,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
         address: this.config.custodyAddress,
         abi: custodyAbi,
         functionName: "deposit",
-        args: [account, EVM_NATIVE_ASSET, amount],
+        args: [account, EVM_NATIVE_ASSET, amount, zeroHash],
         value: amount,
         account: this.config.walletAccount,
         chain: this.config.walletClient.chain ?? null,
@@ -162,7 +165,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
         address: this.config.custodyAddress,
         abi: custodyAbi,
         functionName: "deposit",
-        args: [account, asset, amount],
+        args: [account, asset, amount, zeroHash],
         account: this.config.walletAccount,
         chain: this.config.walletClient.chain ?? null,
       }),

@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
-import { zeroAddress } from "viem";
+import { zeroAddress, zeroHash } from "viem";
 import type {
   Address,
   Hash,
@@ -78,7 +78,7 @@ describe("EvmVaultDepositor", () => {
       expect.objectContaining({
         address: CUSTODY_ADDRESS,
         functionName: "deposit",
-        args: [ACCOUNT, zeroAddress, 10n],
+        args: [ACCOUNT, zeroAddress, 10n, zeroHash],
         value: 10n,
         account: ACCOUNT,
         chain: null,
@@ -119,7 +119,7 @@ describe("EvmVaultDepositor", () => {
       expect.objectContaining({
         address: CUSTODY_ADDRESS,
         functionName: "deposit",
-        args: [ACCOUNT, TOKEN, 25n],
+        args: [ACCOUNT, TOKEN, 25n, zeroHash],
         account: ACCOUNT,
         chain: null,
       }),
@@ -287,6 +287,9 @@ describe("EvmVaultDepositor", () => {
     await expect(
       depositor.verifyDeposit({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH }, 2),
     ).resolves.toBe("pending");
+    expect(clients.publicMock.getBlockNumber).toHaveBeenCalledWith({
+      cacheTime: 0,
+    });
   });
 
   it("maps failed receipts to absent", async () => {

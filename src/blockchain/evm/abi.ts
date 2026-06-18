@@ -14,6 +14,7 @@ export const custodyAbi = [
       { name: "account", type: "address", internalType: "address" },
       { name: "asset", type: "address", internalType: "address" },
       { name: "amount", type: "uint256", internalType: "uint256" },
+      { name: "depositReference", type: "bytes32", internalType: "bytes32" },
     ],
     outputs: [],
     stateMutability: "payable",
@@ -23,15 +24,21 @@ export const custodyAbi = [
     name: "Deposited",
     inputs: [
       {
-        name: "depositor",
+        name: "account",
         type: "address",
         indexed: true,
         internalType: "address",
       },
       {
-        name: "account",
-        type: "address",
+        name: "depositReference",
+        type: "bytes32",
         indexed: true,
+        internalType: "bytes32",
+      },
+      {
+        name: "depositor",
+        type: "address",
+        indexed: false,
         internalType: "address",
       },
       { name: "asset", type: "address", indexed: false, internalType: "address" },
