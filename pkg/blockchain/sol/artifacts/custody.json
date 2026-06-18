@@ -10,7 +10,8 @@
     {
       "name": "deposit_sol",
       "docs": [
-        "Native SOL deposit crediting the 20-byte clearnet `account`."
+        "Native SOL deposit crediting the 20-byte clearnet `account`, with an",
+        "optional ADR-015 sub-account `reference` ([0u8; 32] for none)."
       ],
       "discriminator": [
         108,
@@ -94,6 +95,15 @@
           }
         },
         {
+          "name": "reference",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
           "name": "amount",
           "type": "u64"
         }
@@ -102,7 +112,8 @@
     {
       "name": "deposit_spl",
       "docs": [
-        "SPL token deposit crediting the 20-byte clearnet `account`."
+        "SPL token deposit crediting the 20-byte clearnet `account`, with an",
+        "optional ADR-015 sub-account `reference` ([0u8; 32] for none)."
       ],
       "discriminator": [
         224,
@@ -368,6 +379,15 @@
             "array": [
               "u8",
               20
+            ]
+          }
+        },
+        {
+          "name": "reference",
+          "type": {
+            "array": [
+              "u8",
+              32
             ]
           }
         },
@@ -922,7 +942,9 @@
         "watcher decodes these from the self-CPI inner instructions and turns each",
         "into a `chains.DepositEvent`. `mint == Pubkey::default()` denotes native",
         "SOL (the analogue of EVM's `asset == address(0)`). `account` is the 20-byte",
-        "clearnet account the deposit credits."
+        "clearnet account the deposit credits. `reference` is the ADR-015 opaque",
+        "sub-account selector ([0u8; 32] when absent); never interpreted on-chain,",
+        "the watcher folds it into the account URI as a /tag/<reference> suffix."
       ],
       "type": {
         "kind": "struct",
@@ -937,6 +959,15 @@
               "array": [
                 "u8",
                 20
+              ]
+            }
+          },
+          {
+            "name": "reference",
+            "type": {
+              "array": [
+                "u8",
+                32
               ]
             }
           },

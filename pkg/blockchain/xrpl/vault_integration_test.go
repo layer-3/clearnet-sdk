@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -46,7 +45,6 @@ const (
 	genesisSeed     = "snoPBrXtMeMyMHUVTgbuqAfg1SUTb" // rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh, ~100B XRP
 	xrplSignerCount = 3
 	xrplQuorum      = 2
-	depositTag      = 42
 )
 
 func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
@@ -89,7 +87,7 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDepositor: %v", err)
 	}
-	depRef, err := dep.SubmitDeposit(ctx, "XRP", decimal.NewFromInt(100_000_000), fmt.Sprintf("xrpl-%d", depositTag)) // 100 XRP
+	depRef, err := dep.SubmitDeposit(ctx, "XRP", decimal.NewFromInt(100_000_000), core.DepositDestination{Account: "00000000000000000000000000000000000000a2"}) // 100 XRP
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}

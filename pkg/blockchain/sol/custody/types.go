@@ -111,10 +111,13 @@ func UnmarshalConfig(buf []byte) (*Config, error) {
 // watcher decodes these from the self-CPI inner instructions and turns each
 // into a `chains.DepositEvent`. `mint == Pubkey::default()` denotes native
 // SOL (the analogue of EVM's `asset == address(0)`). `account` is the 20-byte
-// clearnet account the deposit credits.
+// clearnet account the deposit credits. `reference` is the ADR-015 opaque
+// sub-account selector ([0u8; 32] when absent); never interpreted on-chain,
+// the watcher folds it into the account URI as a /tag/<reference> suffix.
 type Deposited struct {
 	Depositor solanago.PublicKey `json:"depositor"`
 	Account   [20]uint8          `json:"account"`
+	Reference [32]uint8          `json:"reference"`
 	Mint      solanago.PublicKey `json:"mint"`
 	Amount    uint64             `json:"amount"`
 }
@@ -129,6 +132,11 @@ func (obj Deposited) MarshalWithEncoder(encoder *binary.Encoder) (err error) {
 	err = encoder.Encode(obj.Account)
 	if err != nil {
 		return errors.NewField("Account", err)
+	}
+	// Serialize `Reference`:
+	err = encoder.Encode(obj.Reference)
+	if err != nil {
+		return errors.NewField("Reference", err)
 	}
 	// Serialize `Mint`:
 	err = encoder.Encode(obj.Mint)
@@ -163,6 +171,11 @@ func (obj *Deposited) UnmarshalWithDecoder(decoder *binary.Decoder) (err error) 
 	err = decoder.Decode(&obj.Account)
 	if err != nil {
 		return errors.NewField("Account", err)
+	}
+	// Deserialize `Reference`:
+	err = decoder.Decode(&obj.Reference)
+	if err != nil {
+		return errors.NewField("Reference", err)
 	}
 	// Deserialize `Mint`:
 	err = decoder.Decode(&obj.Mint)

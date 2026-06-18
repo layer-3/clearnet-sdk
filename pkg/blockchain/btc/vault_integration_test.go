@@ -93,7 +93,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	node.generateToAddress(ctx, t, 1, miner)
 
 	// ── Deposit flow ──────────────────────────────────────────────────────────
-	depRef, err := depositor.SubmitDeposit(ctx, "BTC", decimal.NewFromInt(20_000_000), account) // 0.2 BTC
+	depRef, err := depositor.SubmitDeposit(ctx, "BTC", decimal.NewFromInt(20_000_000), core.DepositDestination{Account: account}) // 0.2 BTC
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}

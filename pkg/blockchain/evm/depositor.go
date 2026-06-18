@@ -40,13 +40,13 @@ func NewDepositor(client *ethclient.Client, custodyAddr common.Address, signer s
 // non-zero hex address) it approves the vault then calls
 // Custody.deposit(account, asset, amount); for the zero address it sends native
 // ETH with msg.value == amount. Blocks until the deposit tx mines.
-func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (core.TxRef, error) {
+func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
 	assetAddr, err := depositAssetAddress(asset)
 	if err != nil {
 		return core.TxRef{}, err
 	}
 	amt := amount.BigInt()
-	accountAddr := common.HexToAddress(account)
+	accountAddr := common.HexToAddress(dest.Account)
 
 	if assetAddr == (common.Address{}) {
 		opts, _, err := signerTransactOpts(ctx, d.client, d.signer)
@@ -54,9 +54,7 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 			return core.TxRef{}, err
 		}
 		opts.Value = amt
-		// Zero depositReference: this depositor models no sub-account; the
-		// reference is opaque, log-only, and bytes32(0) means "none" (ADR-015).
-		tx, err := d.custody.Deposit(opts, accountAddr, common.Address{}, amt, [32]byte{})
+		tx, err := d.custody.Deposit(opts, accountAddr, common.Address{}, amt, dest.Ref)
 		if err != nil {
 			return core.TxRef{}, fmt.Errorf("ETH deposit: %w", err)
 		}
@@ -87,7 +85,7 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 	if err != nil {
 		return core.TxRef{}, err
 	}
-	tx, err := d.custody.Deposit(depositOpts, accountAddr, assetAddr, amt, [32]byte{})
+	tx, err := d.custody.Deposit(depositOpts, accountAddr, assetAddr, amt, dest.Ref)
 	if err != nil {
 		return core.TxRef{}, fmt.Errorf("ERC20 deposit: %w", err)
 	}

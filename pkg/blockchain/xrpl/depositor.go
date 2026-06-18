@@ -2,6 +2,7 @@ package xrpl
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -15,9 +16,10 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
-// Depositor sends a tagged Payment from the depositor's account (the key the
-// sign.Signer holds) to the vault, crediting a clearnet account via the
-// DestinationTag. It implements core.VaultDepositor. Native XRP and issued
+// Depositor sends a Payment from the depositor's account (the key the
+// sign.Signer holds) to the vault, crediting a clearnet account via a
+// `ynet-account` memo (a 20-byte account followed by a 32-byte ADR-015
+// reference). It implements core.VaultDepositor. Native XRP and issued
 // currencies ("CUR.rIssuer") are both supported.
 type Depositor struct {
 	client       *rpc.Client
@@ -44,11 +46,12 @@ func NewDepositor(rpcURL, vaultAddress string, signer sign.Signer) (*Depositor, 
 // DepositorAddress returns the depositor's classic r-address.
 func (d *Depositor) DepositorAddress() string { return d.id.ClassicAddress }
 
-// SubmitDeposit sends `amount` of `asset` to the vault, crediting `account` via its
-// DestinationTag. asset is "" / "XRP" for native or "CUR.rIssuer" for an issued
-// currency; account must be of the form xrpl-<tag> (the tag the watcher credits).
-func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (core.TxRef, error) {
-	tag, err := parseDepositTag(account)
+// SubmitDeposit sends `amount` of `asset` to the vault, crediting dest.Account
+// via a `ynet-account` memo carrying the 20-byte account and the 32-byte
+// ADR-015 dest.Ref. asset is "" / "XRP" for native or "CUR.rIssuer" for an
+// issued currency; dest.Account is the 20-byte clearnet account (hex).
+func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
+	memo, err := accountMemo(dest)
 	if err != nil {
 		return core.TxRef{}, err
 	}
@@ -58,12 +61,14 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 	}
 
 	payment := transaction.Payment{
-		BaseTx:      transaction.BaseTx{Account: types.Address(d.id.ClassicAddress)},
+		BaseTx: transaction.BaseTx{
+			Account: types.Address(d.id.ClassicAddress),
+			Memos:   []types.MemoWrapper{memo},
+		},
 		Destination: types.Address(d.vaultAddress),
 		Amount:      xrplAmount,
 	}
 	flatTx := payment.Flatten()
-	flatTx["DestinationTag"] = tag
 	if err := d.client.Autofill(&flatTx); err != nil {
 		return core.TxRef{}, fmt.Errorf("xrpl: autofill: %w", err)
 	}
@@ -86,6 +91,29 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 	default:
 		return core.TxRef{}, fmt.Errorf("xrpl: deposit rejected: %s - %s", result.EngineResult, result.EngineResultMessage)
 	}
+}
+
+// accountMemoType is the MemoType (as plain text, hex-encoded on the wire)
+// that marks the ynet-account memo carrying the deposit destination.
+const accountMemoType = "ynet-account"
+
+// accountMemo builds the ynet-account memo: MemoData is the 20-byte clearnet
+// account followed by the 32-byte ADR-015 reference (zero for no sub-account),
+// hex-encoded; MemoType is "ynet-account", hex-encoded.
+func accountMemo(dest core.DepositDestination) (types.MemoWrapper, error) {
+	raw := strings.TrimPrefix(strings.TrimSpace(dest.Account), "0x")
+	account, err := hex.DecodeString(raw)
+	if err != nil {
+		return types.MemoWrapper{}, fmt.Errorf("xrpl: account not hex: %w", err)
+	}
+	if len(account) != 20 {
+		return types.MemoWrapper{}, fmt.Errorf("xrpl: account must be 20 bytes, got %d", len(account))
+	}
+	data := append(account, dest.Ref[:]...)
+	return types.MemoWrapper{Memo: types.Memo{
+		MemoType: hex.EncodeToString([]byte(accountMemoType)),
+		MemoData: hex.EncodeToString(data),
+	}}, nil
 }
 
 // VerifyDeposit reports the on-chain status of the deposit tx in ref (matched by

@@ -72,13 +72,24 @@ func (s DepositStatus) String() string {
 	}
 }
 
+// DepositDestination identifies who a deposit credits. Account is the L1 /
+// clearnet account; Ref is the opaque ADR-015 sub-account reference, carried
+// alongside the account as side-data (a zero Ref means no sub-account). The
+// reference is never interpreted on-chain — it is emitted so deposits are
+// filterable per (Account, Ref); an observer folds it into the account URI.
+// Chains without a reference channel (BTC) reject a non-zero Ref.
+type DepositDestination struct {
+	Account string
+	Ref     [32]byte
+}
+
 // VaultDepositor moves funds into the L1 vault. The implementation owns the
 // depositor's signing identity (a sign.Signer supplied at construction) and
 // executes the deposit on its chain: a contract call (EVM), a funding tx to a
-// derived address (BTC), or a tagged Payment (XRPL). It expects only the asset,
-// amount, and crediting clearnet account.
+// derived address (BTC), or a memo-tagged Payment (XRPL). It expects only the
+// asset, amount, and crediting destination.
 type VaultDepositor interface {
-	SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (TxRef, error)
+	SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, dest DepositDestination) (TxRef, error)
 	// VerifyDeposit reports whether the deposit identified by ref (a TxRef
 	// returned by SubmitDeposit) is present and final on chain — a pure read for
 	// replay/audit. minConf is the confirmation depth required for
