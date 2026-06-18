@@ -202,7 +202,7 @@ async function mine(publicClient: AnvilPublicClient, hash: Hex) {
 
 function artifactBytecode(fileName: "Custody.bin" | "MockERC20.bin"): Hex {
   const contents = readFileSync(
-    resolve("pkg/blockchain/evm/artifacts", fileName),
+    resolve("../../pkg/blockchain/evm/artifacts", fileName),
     "utf8",
   ).trim();
   return contents.startsWith("0x") ? (contents as Hex) : `0x${contents}`;

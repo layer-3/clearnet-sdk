@@ -9,3 +9,6 @@ go.work.sum
 node_modules/
 dist/
 examples/*/dist/
+sdk/ts/node_modules/
+sdk/ts/dist/
+sdk/ts/examples/*/dist/
