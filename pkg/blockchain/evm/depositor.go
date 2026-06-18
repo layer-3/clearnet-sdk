@@ -54,7 +54,9 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 			return core.TxRef{}, err
 		}
 		opts.Value = amt
-		tx, err := d.custody.Deposit(opts, accountAddr, common.Address{}, amt)
+		// Zero depositReference: this depositor models no sub-account; the
+		// reference is opaque, log-only, and bytes32(0) means "none" (ADR-015).
+		tx, err := d.custody.Deposit(opts, accountAddr, common.Address{}, amt, [32]byte{})
 		if err != nil {
 			return core.TxRef{}, fmt.Errorf("ETH deposit: %w", err)
 		}
@@ -85,7 +87,7 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 	if err != nil {
 		return core.TxRef{}, err
 	}
-	tx, err := d.custody.Deposit(depositOpts, accountAddr, assetAddr, amt)
+	tx, err := d.custody.Deposit(depositOpts, accountAddr, assetAddr, amt, [32]byte{})
 	if err != nil {
 		return core.TxRef{}, fmt.Errorf("ERC20 deposit: %w", err)
 	}
