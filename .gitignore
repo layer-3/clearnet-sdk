@@ -4,3 +4,8 @@
 # Go workspace files
 go.work
 go.work.sum
+
+# Node.js dependencies and build output
+node_modules/
+dist/
+examples/*/dist/
