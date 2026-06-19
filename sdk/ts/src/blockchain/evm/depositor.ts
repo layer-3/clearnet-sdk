@@ -1,4 +1,3 @@
-import { zeroHash } from "viem";
 import type { Address, Hash, TransactionReceipt } from "viem";
 
 import { ClearnetSdkError } from "../../core/errors.js";
@@ -17,15 +16,16 @@ import {
 } from "./constants.js";
 import {
   isTransactionNotFound,
+  requireDepositDestination,
   normalizeMinConfirmations,
   requireAddress,
   requireAmount,
   requireChainId,
-  requireReferenceUnsupported,
   requireTxRef,
   requireWalletAccount,
   txRef,
   walletAccountAddress,
+  type ValidatedDepositDestination,
 } from "./validation.js";
 
 type AsyncValidation = Promise<ClearnetSdkError | undefined>;
@@ -66,16 +66,15 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
     input: EvmSubmitDepositInput,
     options: SubmitDepositOptions = {},
   ): Promise<TxRef> {
-    const account = requireAddress(input.account, "account");
+    const destination = requireDepositDestination(input.destination);
     const asset = requireAddress(input.asset, "asset");
     const amount = requireAmount(input.amount);
-    requireReferenceUnsupported(input.reference);
     await this.ensureWriteChain();
 
     if (asset === EVM_NATIVE_ASSET) {
-      return this.submitNativeDeposit(account, amount, options);
+      return this.submitNativeDeposit(destination, amount, options);
     }
-    return this.submitErc20Deposit(account, asset, amount, options);
+    return this.submitErc20Deposit(destination, asset, amount, options);
   }
 
   async verifyDeposit(
@@ -121,7 +120,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
   }
 
   private async submitNativeDeposit(
-    account: Address,
+    destination: ValidatedDepositDestination,
     amount: bigint,
     options: SubmitDepositOptions,
   ): Promise<TxRef> {
@@ -130,7 +129,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
         address: this.config.custodyAddress,
         abi: custodyAbi,
         functionName: "deposit",
-        args: [account, EVM_NATIVE_ASSET, amount, zeroHash],
+        args: [destination.account, EVM_NATIVE_ASSET, amount, destination.ref],
         value: amount,
         account: this.config.walletAccount,
         chain: this.config.walletClient.chain ?? null,
@@ -143,7 +142,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
   }
 
   private async submitErc20Deposit(
-    account: Address,
+    destination: ValidatedDepositDestination,
     asset: Address,
     amount: bigint,
     options: SubmitDepositOptions,
@@ -165,7 +164,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
         address: this.config.custodyAddress,
         abi: custodyAbi,
         functionName: "deposit",
-        args: [account, asset, amount, zeroHash],
+        args: [destination.account, asset, amount, destination.ref],
         account: this.config.walletAccount,
         chain: this.config.walletClient.chain ?? null,
       }),

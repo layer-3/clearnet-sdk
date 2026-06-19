@@ -13,16 +13,24 @@ export interface TxRef {
 
 export type DepositStatus = "absent" | "pending" | "confirmed";
 
+export interface DepositDestination {
+  account: string;
+  ref?: Hash;
+}
+
+export interface EvmDepositDestination extends DepositDestination {
+  account: Address;
+}
+
 export interface SubmitDepositInput {
   asset: string;
   amount: bigint;
-  account: string;
-  reference?: string;
+  destination: DepositDestination;
 }
 
 export interface EvmSubmitDepositInput extends SubmitDepositInput {
   asset: Address;
-  account: Address;
+  destination: EvmDepositDestination;
 }
 
 export interface SubmitDepositOptions {

@@ -86,6 +86,7 @@ async function submitDeposit(): Promise<void> {
   const custodyAddress = getAddress(readInput("custody-address"));
   const account = getAddress(readInput("account"));
   const asset = getAddress(readInput("asset"));
+  const ref = readOptionalHash("reference");
   const amount = parseUnits(readInput("amount"), readInt("decimals"));
   const publicClient = createPublicClient({ transport: http(rpcUrl) });
   const walletClient = createWalletClient({
@@ -105,7 +106,10 @@ async function submitDeposit(): Promise<void> {
     await requireConfiguredRpcChain(rpcUrl, chainId);
     lastRef = await depositor.submitDeposit(
       {
-        account,
+        destination: {
+          account,
+          ...(ref === undefined ? {} : { ref }),
+        },
         asset,
         amount,
       },
@@ -290,6 +294,17 @@ function readInput(id: string): string {
     throw new Error(`${id} is required`);
   }
   return value;
+}
+
+function readOptionalHash(id: string): Hash | undefined {
+  const value = mustElement<HTMLInputElement>(id).value.trim();
+  if (value.length === 0) {
+    return undefined;
+  }
+  if (!/^0x[a-fA-F0-9]{64}$/.test(value)) {
+    throw new Error(`${id} must be a 32-byte hex value`);
+  }
+  return value as Hash;
 }
 
 function readInt(id: string): number {

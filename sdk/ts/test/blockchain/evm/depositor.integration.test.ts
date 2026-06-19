@@ -10,9 +10,10 @@ import {
   http,
   parseAbiItem,
   parseEther,
+  parseEventLogs,
   zeroAddress,
 } from "viem";
-import type { Address, Hex, Log } from "viem";
+import type { Address, Hash, Hex, Log } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { EvmVaultDepositor } from "../../../src/blockchain/evm/depositor.js";
@@ -27,6 +28,8 @@ const ACCOUNT_PRIVATE_KEYS = [
   "0x0000000000000000000000000000000000000000000000000000000000000001",
   "0x0000000000000000000000000000000000000000000000000000000000000002",
 ] as const;
+const DEPOSIT_REFERENCE =
+  "0x3333333333333333333333333333333333333333333333333333333333333333" as Hash;
 const anvil = defineChain({
   id: CHAIN_ID,
   name: "Anvil",
@@ -68,7 +71,7 @@ describe("EvmVaultDepositor Anvil integration", () => {
     });
 
     const ref = await depositor.submitDeposit({
-      account: deployer.address,
+      destination: { account: deployer.address, ref: DEPOSIT_REFERENCE },
       asset: zeroAddress,
       amount,
     });
@@ -80,7 +83,16 @@ describe("EvmVaultDepositor Anvil integration", () => {
     });
 
     expect(afterBalance - beforeBalance).toBe(amount);
-    expect(hasDepositedLog(receipt.logs, custodyAddress)).toBe(true);
+    expect(
+      hasDepositedLog(
+        receipt.logs,
+        custodyAddress,
+        deployer.address,
+        DEPOSIT_REFERENCE,
+        zeroAddress,
+        amount,
+      ),
+    ).toBe(true);
     await expect(depositor.verifyDeposit(ref, 1)).resolves.toBe("confirmed");
   });
 
@@ -114,7 +126,7 @@ describe("EvmVaultDepositor Anvil integration", () => {
     const startBlock = await publicClient.getBlockNumber();
 
     const ref = await depositor.submitDeposit({
-      account: deployer.address,
+      destination: { account: deployer.address, ref: DEPOSIT_REFERENCE },
       asset: tokenAddress,
       amount,
     });
@@ -156,7 +168,16 @@ describe("EvmVaultDepositor Anvil integration", () => {
     expect(approvalReceipt.status).toBe("success");
     expect(approvalReceipt.blockNumber < receipt.blockNumber).toBe(true);
     expect(afterBalance - beforeBalance).toBe(amount);
-    expect(hasDepositedLog(receipt.logs, custodyAddress)).toBe(true);
+    expect(
+      hasDepositedLog(
+        receipt.logs,
+        custodyAddress,
+        deployer.address,
+        DEPOSIT_REFERENCE,
+        tokenAddress,
+        amount,
+      ),
+    ).toBe(true);
     await expect(depositor.verifyDeposit(ref, 1)).resolves.toBe("confirmed");
   });
 });
@@ -208,8 +229,24 @@ function artifactBytecode(fileName: "Custody.bin" | "MockERC20.bin"): Hex {
   return contents.startsWith("0x") ? (contents as Hex) : `0x${contents}`;
 }
 
-function hasDepositedLog(logs: readonly Log[], custodyAddress: Address): boolean {
-  return logs.some(
-    (log) => log.address.toLowerCase() === custodyAddress.toLowerCase(),
+function hasDepositedLog(
+  logs: readonly Log[],
+  custodyAddress: Address,
+  account: Address,
+  reference: Hash,
+  asset: Address,
+  amount: bigint,
+): boolean {
+  return parseEventLogs({
+    abi: custodyAbi,
+    eventName: "Deposited",
+    logs: [...logs],
+  }).some(
+    (log) =>
+      log.address.toLowerCase() === custodyAddress.toLowerCase() &&
+      log.args.account.toLowerCase() === account.toLowerCase() &&
+      log.args.depositReference.toLowerCase() === reference.toLowerCase() &&
+      log.args.asset.toLowerCase() === asset.toLowerCase() &&
+      log.args.amount === amount,
   );
 }

@@ -1,4 +1,4 @@
-import { isAddress } from "viem";
+import { isAddress, zeroHash } from "viem";
 import type { Account, Address, Hash } from "viem";
 
 import { ClearnetSdkError } from "../../core/errors.js";
@@ -6,6 +6,11 @@ import type { TxRef } from "../../core/types.js";
 
 const UINT256_MAX = (1n << 256n) - 1n;
 const HASH_PATTERN = /^0x[a-fA-F0-9]{64}$/;
+
+export interface ValidatedDepositDestination {
+  account: Address;
+  ref: Hash;
+}
 
 export function requireAddress(value: unknown, field: string): Address {
   if (typeof value !== "string" || !isAddress(value)) {
@@ -57,6 +62,22 @@ export function requireAmount(amount: unknown): bigint {
   return amount;
 }
 
+export function requireDepositDestination(
+  destination: unknown,
+): ValidatedDepositDestination {
+  if (!destination || typeof destination !== "object") {
+    throw new ClearnetSdkError(
+      "INVALID_ADDRESS",
+      "destination.account must be a valid EVM address",
+    );
+  }
+  const fields = destination as Record<"account" | "ref", unknown>;
+  return {
+    account: requireAddress(fields.account, "destination.account"),
+    ref: requireReference(fields.ref),
+  };
+}
+
 export function requireChainId(chainId: number): number {
   if (!Number.isSafeInteger(chainId) || chainId <= 0) {
     throw new ClearnetSdkError(
@@ -67,13 +88,17 @@ export function requireChainId(chainId: number): number {
   return chainId;
 }
 
-export function requireReferenceUnsupported(reference: unknown): void {
-  if (reference !== undefined && reference !== "") {
+export function requireReference(reference: unknown): Hash {
+  if (reference === undefined || reference === "") {
+    return zeroHash;
+  }
+  if (typeof reference !== "string" || !HASH_PATTERN.test(reference)) {
     throw new ClearnetSdkError(
-      "UNSUPPORTED_REFERENCE",
-      "EVM deposits do not support reference values",
+      "INVALID_REFERENCE",
+      "destination.ref must be a 32-byte hex value",
     );
   }
+  return reference as Hash;
 }
 
 export function requireTxRef(ref: unknown): Hash {

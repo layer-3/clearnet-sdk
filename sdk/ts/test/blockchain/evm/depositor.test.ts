@@ -29,6 +29,8 @@ const DEPOSIT_HASH =
   "0x1111111111111111111111111111111111111111111111111111111111111111" as Hash;
 const APPROVAL_HASH =
   "0x2222222222222222222222222222222222222222222222222222222222222222" as Hash;
+const DEPOSIT_REFERENCE =
+  "0x3333333333333333333333333333333333333333333333333333333333333333" as Hash;
 
 interface ClientMocks {
   publicClient: PublicClient;
@@ -68,7 +70,11 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
     const onSubmitted = vi.fn();
     const ref = await depositor.submitDeposit(
-      { account: ACCOUNT, asset: zeroAddress, amount: 10n },
+      {
+        destination: { account: ACCOUNT, ref: DEPOSIT_REFERENCE },
+        asset: zeroAddress,
+        amount: 10n,
+      },
       { onSubmitted },
     );
 
@@ -78,7 +84,7 @@ describe("EvmVaultDepositor", () => {
       expect.objectContaining({
         address: CUSTODY_ADDRESS,
         functionName: "deposit",
-        args: [ACCOUNT, zeroAddress, 10n, zeroHash],
+        args: [ACCOUNT, zeroAddress, 10n, DEPOSIT_REFERENCE],
         value: 10n,
         account: ACCOUNT,
         chain: null,
@@ -98,7 +104,7 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
     const onSubmitted = vi.fn();
     const ref = await depositor.submitDeposit(
-      { account: ACCOUNT, asset: TOKEN, amount: 25n },
+      { destination: { account: ACCOUNT }, asset: TOKEN, amount: 25n },
       { onSubmitted },
     );
 
@@ -143,7 +149,7 @@ describe("EvmVaultDepositor", () => {
 
     await expect(
       depositor.submitDeposit({
-        account: ACCOUNT,
+        destination: { account: ACCOUNT },
         asset: zeroAddress,
         amount: 1n,
       }),
@@ -161,7 +167,11 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
 
     await expect(
-      depositor.submitDeposit({ account: ACCOUNT, asset: TOKEN, amount: 1n }),
+      depositor.submitDeposit({
+        destination: { account: ACCOUNT },
+        asset: TOKEN,
+        amount: 1n,
+      }),
     ).rejects.toMatchObject({
       code: "TX_REVERTED",
       txRef: { hash: APPROVAL_HASH, raw: APPROVAL_HASH },
@@ -178,7 +188,7 @@ describe("EvmVaultDepositor", () => {
 
     await expect(
       depositor.submitDeposit(
-        { account: ACCOUNT, asset: zeroAddress, amount: 1n },
+        { destination: { account: ACCOUNT }, asset: zeroAddress, amount: 1n },
         { receiptTimeoutMs: 1 },
       ),
     ).rejects.toMatchObject({
@@ -187,18 +197,17 @@ describe("EvmVaultDepositor", () => {
     });
   });
 
-  it("validates unsupported reference before chain checks or signing", async () => {
+  it("validates deposit reference before chain checks or signing", async () => {
     const clients = createClients();
     const depositor = createDepositor(clients);
 
     await expect(
       depositor.submitDeposit({
-        account: ACCOUNT,
+        destination: { account: ACCOUNT, ref: "invoice-1" as Hash },
         asset: zeroAddress,
         amount: 1n,
-        reference: "invoice-1",
       }),
-    ).rejects.toMatchObject({ code: "UNSUPPORTED_REFERENCE" });
+    ).rejects.toMatchObject({ code: "INVALID_REFERENCE" });
     expect(clients.walletMock.writeContract).not.toHaveBeenCalled();
   });
 
@@ -208,14 +217,21 @@ describe("EvmVaultDepositor", () => {
 
     await expect(
       depositor.submitDeposit({
-        account: ACCOUNT,
+        destination: { account: ACCOUNT },
         asset: "not-an-address" as Address,
         amount: 1n,
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
-        account: ACCOUNT,
+        destination: { account: "not-an-address" as Address },
+        asset: zeroAddress,
+        amount: 1n,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    await expect(
+      depositor.submitDeposit({
+        destination: { account: ACCOUNT },
         asset: zeroAddress,
         amount: 0n,
       }),
@@ -229,7 +245,7 @@ describe("EvmVaultDepositor", () => {
 
     await expect(
       depositor.submitDeposit({
-        account: ACCOUNT,
+        destination: { account: ACCOUNT },
         asset: zeroAddress,
         amount: 1n,
       }),

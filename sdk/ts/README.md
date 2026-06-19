@@ -2,7 +2,8 @@
 
 TypeScript SDK for Clearnet custody integrations. This package currently exposes
 the EVM vault depositor, with support for native ETH deposits and ERC-20
-deposits.
+deposits. Deposits credit a `destination` made of an account and an optional
+ADR-015 opaque reference.
 
 The package is ESM-first and uses `viem` for EVM clients and primitives.
 
@@ -77,7 +78,7 @@ const depositor = new EvmVaultDepositor({
 try {
   const ref = await depositor.submitDeposit(
     {
-      account: walletAccount,
+      destination: { account: walletAccount },
       asset: EVM_NATIVE_ASSET,
       amount: parseEther("0.01"),
     },
@@ -110,7 +111,7 @@ For ERC-20 deposits, pass the token contract address as `asset`.
 import { parseUnits } from "viem";
 
 const ref = await depositor.submitDeposit({
-  account: walletAccount,
+  destination: { account: walletAccount },
   asset: "0x0000000000000000000000000000000000003000",
   amount: parseUnits("25", 18),
 });
@@ -121,6 +122,25 @@ before submitting the custody `deposit(...)` transaction. A successful
 `submitDeposit` call returns the deposit transaction hash, not the approval hash.
 If an ERC-20 approval fails before the deposit is submitted, `error.txRef` may
 refer to the approval transaction.
+
+## Deposit References
+
+Pass `destination.ref` to attach a 32-byte opaque sub-account reference to the
+deposit. Omit it when there is no sub-account reference.
+
+```ts
+const ref = await depositor.submitDeposit({
+  destination: {
+    account: walletAccount,
+    ref: "0x3333333333333333333333333333333333333333333333333333333333333333",
+  },
+  asset: EVM_NATIVE_ASSET,
+  amount: parseEther("0.01"),
+});
+```
+
+For EVM, the reference is passed to `Custody.deposit(...)` as `bytes32`. The SDK
+does not interpret it.
 
 ## Verify A Deposit
 
@@ -164,10 +184,10 @@ Input fields:
 
 | Field | Type | Notes |
 |---|---|---|
-| `account` | `Address` | Clearnet account credited by the custody deposit. |
+| `destination.account` | `Address` | Clearnet account credited by the custody deposit. |
+| `destination.ref` | `Hash \| undefined` | Optional 32-byte opaque reference. Omitted values are sent as `bytes32(0)`. |
 | `asset` | `Address` | Use `EVM_NATIVE_ASSET` for native ETH, or an ERC-20 token address. |
 | `amount` | `bigint` | Positive base-unit amount that fits in `uint256`. |
-| `reference` | `string \| undefined` | Not supported for EVM deposits; non-empty values throw `UNSUPPORTED_REFERENCE`. |
 
 Options:
 
@@ -246,8 +266,8 @@ Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 | `INVALID_ADDRESS` | `account`, `asset`, `custodyAddress`, or `walletAccount` is not a valid EVM address. |
 | `INVALID_AMOUNT` | `amount` is not a positive `bigint` or does not fit in `uint256`. |
 | `INVALID_CONFIRMATIONS` | `minConfirmations` is negative, fractional, or an unsafe number. |
+| `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value. |
 | `INVALID_TX_REF` | `ref.hash` is missing or is not a 32-byte EVM transaction hash. |
-| `UNSUPPORTED_REFERENCE` | EVM deposits do not support non-empty `reference` values. |
 | `MISSING_WALLET_ACCOUNT` | The wallet account is missing or does not match `walletClient.account`. |
 | `CHAIN_MISMATCH` | The public RPC or wallet chain does not match `chainId`. |
 | `TX_REVERTED` | A submitted approval or deposit transaction reverted. |

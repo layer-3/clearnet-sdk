@@ -1,5 +1,7 @@
 export type {
+  DepositDestination,
   DepositStatus,
+  EvmDepositDestination,
   EvmDepositorConfig,
   EvmSubmitDepositInput,
   SubmitDepositInput,
