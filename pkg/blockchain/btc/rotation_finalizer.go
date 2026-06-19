@@ -186,6 +186,37 @@ func (f *RotationFinalizer) Validate(ctx context.Context, opID [32]byte, packed 
 	if cap := EstimateFeeSats(len(tx.TxIn), 2, f.cfg.FeeCapSatPerVByte); f.cfg.FeeCapSatPerVByte > 0 && fee > cap {
 		return fmt.Errorf("btc rotation validate: fee %d exceeds ceiling %d", fee, cap)
 	}
+
+	// Completeness: a rotation sweep must spend every currently-owned UTXO. The
+	// checks above only prove each PRESENT input is a valid vault UTXO — they do
+	// not catch a sweep that silently omits some. An incomplete sweep would
+	// strand those funds at the old vault, which is abandoned the moment the
+	// pivot lands. Re-list the owned set and require exact set-equality with the
+	// tx's inputs.
+	unspent, err := cur.rpc.ListUnspent(ctx, int(f.cfg.ConfirmationDepth), cur.watchAddresses())
+	if err != nil {
+		return fmt.Errorf("btc rotation validate: list vault utxos: %w", err)
+	}
+	owned, err := cur.toUTXOs(unspent)
+	if err != nil {
+		return err
+	}
+	want := make(map[string]struct{}, len(owned))
+	for _, u := range owned {
+		want[fmt.Sprintf("%s:%d", u.TxID.String(), u.Vout)] = struct{}{}
+	}
+	got := make(map[string]struct{}, len(tx.TxIn))
+	for _, in := range tx.TxIn {
+		got[fmt.Sprintf("%s:%d", in.PreviousOutPoint.Hash.String(), in.PreviousOutPoint.Index)] = struct{}{}
+	}
+	if len(want) != len(got) {
+		return fmt.Errorf("btc rotation validate: spends %d inputs, expected all %d owned utxos", len(got), len(want))
+	}
+	for k := range want {
+		if _, ok := got[k]; !ok {
+			return fmt.Errorf("btc rotation validate: omits owned utxo %s", k)
+		}
+	}
 	return nil
 }
 
