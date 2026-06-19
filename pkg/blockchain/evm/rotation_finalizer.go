@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"sort"
 
+	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -165,6 +166,9 @@ func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, signature
 	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
 		return core.TxRef{}, err
 	}
+	if err := f.estimateGas(ctx, opts, addrs, big.NewInt(int64(p.NewThreshold)), sigs); err != nil {
+		return core.TxRef{}, err
+	}
 	tx, err := f.custody.UpdateSigners(opts, addrs, big.NewInt(int64(p.NewThreshold)), sigs)
 	if err != nil {
 		return core.TxRef{}, fmt.Errorf("updateSigners: %w", err)
@@ -198,6 +202,37 @@ func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []str
 }
 
 // --- helpers ---
+
+// estimateGas sets opts.GasLimit for the updateSigners call. We do NOT rely on
+// the binding's built-in gas auto-estimation: updateSigners takes dynamic-array
+// args (address[], uint256, bytes[]), and the binding's implicit estimate trips
+// a known go-ethereum gotcha on dynamic args that yields a too-low limit (or an
+// outright estimation error), so the rotation tx would revert out-of-gas. We
+// pack the calldata explicitly, run a single eth_estimateGas against it, and pad
+// by the configured multiplier — mirroring the withdrawal path.
+func (f *RotationFinalizer) estimateGas(ctx context.Context, opts *bind.TransactOpts, newSigners []common.Address, newThreshold *big.Int, sigs [][]byte) error {
+	abi, err := CustodyMetaData.GetAbi()
+	if err != nil {
+		return fmt.Errorf("parse ABI: %w", err)
+	}
+	data, err := abi.Pack("updateSigners", newSigners, newThreshold, sigs)
+	if err != nil {
+		return fmt.Errorf("pack updateSigners calldata: %w", err)
+	}
+	est, err := f.client.EstimateGas(ctx, ethereum.CallMsg{
+		From:      f.signerAddr,
+		To:        &f.vaultAddr,
+		Data:      data,
+		GasTipCap: opts.GasTipCap,
+		GasFeeCap: opts.GasFeeCap,
+		GasPrice:  opts.GasPrice,
+	})
+	if err != nil {
+		return fmt.Errorf("estimate gas: %w", err)
+	}
+	opts.GasLimit = uint64(float64(est) * f.fees.gasLimitMultiplier())
+	return nil
+}
 
 func (f *RotationFinalizer) digestFromPacked(packed []byte) ([32]byte, error) {
 	var p evmRotPacked
