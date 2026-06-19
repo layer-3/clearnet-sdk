@@ -30,6 +30,16 @@ type Config struct {
 	FeeConfTarget     int    // estimatesmartfee confirmation target (blocks)
 	FallbackFeeRate   int64  // sat/vByte used when the node can't estimate
 	FeeCapSatPerVByte int64  // ceiling Validate accepts on a canonical tx
+
+	// MaxInputsPerWithdrawal bounds how many inputs a withdrawal may select
+	// before SelectUTXOs returns ErrTooFragmented (0 = unbounded). A fragmented
+	// vault that hits this should consolidate (see ConsolidationFinalizer) and
+	// retry.
+	MaxInputsPerWithdrawal int
+	// ConsolidationBatchMax bounds how many of the vault's smallest UTXOs one
+	// consolidation fold spends (0 => a sane default well under the standard-tx
+	// input ceiling).
+	ConsolidationBatchMax int
 }
 
 // WithdrawalFinalizer is the Bitcoin m-of-n P2WSH vault withdrawal path. It
@@ -157,7 +167,7 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 	if err != nil {
 		return nil, fmt.Errorf("btc: estimate fee: %w", err)
 	}
-	selected, feeSats, err := SelectUTXOs(utxos, amount, feeRate, 2)
+	selected, feeSats, err := SelectUTXOs(utxos, amount, feeRate, 2, f.cfg.MaxInputsPerWithdrawal)
 	if err != nil {
 		return nil, err
 	}

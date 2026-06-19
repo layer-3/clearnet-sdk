@@ -101,7 +101,7 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 		return core.TxRef{}, fmt.Errorf("btc: estimate fee: %w", err)
 	}
 	// numFixedOutputs = recipient (deposit address); change is sized in.
-	selected, feeSats, err := SelectUTXOs(utxos, sats, feeRate, 1)
+	selected, feeSats, err := SelectUTXOs(utxos, sats, feeRate, 1, 0)
 	if err != nil {
 		return core.TxRef{}, err
 	}
