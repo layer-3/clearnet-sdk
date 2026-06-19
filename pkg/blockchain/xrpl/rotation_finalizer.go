@@ -28,6 +28,28 @@ type RotationFinalizer struct {
 	threshold    int // current SignerQuorum — sizes the multi-sign fee
 	signer       sign.Signer
 	id           Identity
+
+	// resolveThreshold, when set, supplies the live SignerQuorum used to size the
+	// multi-sign fee autofill. Lets a quorum-raising rotation pay a fee sized
+	// against the vault's current (outgoing) quorum rather than a boot-time
+	// threshold. nil falls back to threshold.
+	resolveThreshold func(context.Context) (int, error)
+}
+
+// SetThresholdResolver installs a hook that resolves the live SignerQuorum used
+// to size the fee autofill. Optional; unset uses the static construction-time
+// threshold.
+func (f *RotationFinalizer) SetThresholdResolver(fn func(context.Context) (int, error)) {
+	f.resolveThreshold = fn
+}
+
+// LiveQuorum returns the vault's current on-chain SignerQuorum. Callers wire it
+// as the ThresholdResolver (and reuse it for the ceremony collect count) so a
+// quorum-raising rotation sizes the fee and quorum against live state rather
+// than the boot-time threshold.
+func (f *RotationFinalizer) LiveQuorum(_ context.Context) (int, error) {
+	_, q, err := fetchLiveSignerList(f.client, f.vaultAddress)
+	return q, err
 }
 
 var _ core.SignerRotationFinalizer = (*RotationFinalizer)(nil)
@@ -57,7 +79,7 @@ func NewRotationFinalizer(rpcURL, vaultAddress string, threshold int, signer sig
 // newThreshold (each member weight 1), returning its sorted-key JSON. opID is
 // ignored: XRPL binds rotation replay to the account Sequence (autofilled here),
 // so the operation identity is not embedded in the payload.
-func (f *RotationFinalizer) Pack(_ context.Context, _ [32]byte, newSigners []string, newThreshold int) ([]byte, error) {
+func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []string, newThreshold int) ([]byte, error) {
 	entries, err := signerEntries(newSigners, newThreshold)
 	if err != nil {
 		return nil, err
@@ -68,7 +90,14 @@ func (f *RotationFinalizer) Pack(_ context.Context, _ [32]byte, newSigners []str
 		"SignerQuorum":    uint32(newThreshold),
 		"SignerEntries":   entries,
 	}
-	if err := f.client.AutofillMultisigned(&flatTx, uint64(f.threshold)); err != nil {
+	quorum := f.threshold
+	if f.resolveThreshold != nil {
+		quorum, err = f.resolveThreshold(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("xrpl: resolve live quorum: %w", err)
+		}
+	}
+	if err := f.client.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
 		return nil, fmt.Errorf("xrpl: autofill: %w", err)
 	}
 	delete(flatTx, "LastLedgerSequence")

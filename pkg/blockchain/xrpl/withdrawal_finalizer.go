@@ -36,6 +36,19 @@ type WithdrawalFinalizer struct {
 	signer       sign.Signer
 	id           Identity
 	tickets      TicketProvider
+
+	// resolveThreshold, when set, supplies the live SignerQuorum used to size the
+	// multi-sign fee autofill in Pack. It lets a quorum-raising rotation take
+	// effect without a fleet restart: the fee is sized against the vault's current
+	// quorum rather than the boot-time threshold. nil falls back to threshold.
+	resolveThreshold func(context.Context) (int, error)
+}
+
+// SetThresholdResolver installs a hook that resolves the live SignerQuorum used
+// to size the fee autofill (see resolveThreshold). Optional; callers that leave
+// it unset get the static threshold passed at construction.
+func (f *WithdrawalFinalizer) SetThresholdResolver(fn func(context.Context) (int, error)) {
+	f.resolveThreshold = fn
 }
 
 var _ core.VaultWithdrawalFinalizer = (*WithdrawalFinalizer)(nil)
@@ -61,6 +74,28 @@ func NewWithdrawalFinalizer(rpcURL, vaultAddress string, threshold int, signer s
 	}, nil
 }
 
+// LiveQuorum returns the vault's current on-chain SignerQuorum. Callers wire it
+// as the ThresholdResolver (and reuse it for the ceremony collect count) so a
+// quorum-raising rotation sizes the fee and quorum against live state rather
+// than the boot-time threshold.
+func (f *WithdrawalFinalizer) LiveQuorum(_ context.Context) (int, error) {
+	_, q, err := fetchLiveSignerList(f.client, f.vaultAddress)
+	return q, err
+}
+
+// feeQuorum returns the SignerQuorum used to size the multi-sign fee: the live
+// value from resolveThreshold when set, else the static threshold.
+func (f *WithdrawalFinalizer) feeQuorum(ctx context.Context) (int, error) {
+	if f.resolveThreshold == nil {
+		return f.threshold, nil
+	}
+	q, err := f.resolveThreshold(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("xrpl: resolve live quorum: %w", err)
+	}
+	return q, nil
+}
+
 // Pack binds a Ticket and builds the autofilled multi-sign Payment, returning
 // its sorted-key JSON.
 func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte) ([]byte, error) {
@@ -84,7 +119,11 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 	}
 	flatTx := payment.Flatten()
 	flatTx["Sequence"] = uint32(0)
-	if err := f.client.AutofillMultisigned(&flatTx, uint64(f.threshold)); err != nil {
+	quorum, err := f.feeQuorum(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.client.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
 		return nil, fmt.Errorf("xrpl: autofill: %w", err)
 	}
 	flatTx["Sequence"] = uint32(0)
