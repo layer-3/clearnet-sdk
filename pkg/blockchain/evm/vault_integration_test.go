@@ -102,7 +102,7 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	account := crypto.PubkeyToAddress(deployerKey.PublicKey)
 	const zeroAsset = "0x0000000000000000000000000000000000000000" // native ETH
 	depositAmt := decimal.NewFromInt(1_000_000_000_000)            // 1e12 wei
-	depRef, err := depositor.SubmitDeposit(ctx, zeroAsset, depositAmt, account.Hex())
+	depRef, err := depositor.SubmitDeposit(ctx, zeroAsset, depositAmt, core.DepositDestination{Account: account.Hex()})
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}

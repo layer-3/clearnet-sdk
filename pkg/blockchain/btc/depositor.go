@@ -63,12 +63,18 @@ func NewDepositor(net *chaincfg.Params, rpc RPC, signer sign.Signer, vaultPubkey
 // DepositorAddress returns the depositor's own P2WPKH funding address.
 func (d *Depositor) DepositorAddress() string { return d.depositAddr.EncodeAddress() }
 
-// SubmitDeposit sends `amount` satoshis from the depositor's wallet to the per-account
-// deposit address for `account`. asset must be native BTC ("" or "BTC"). Builds,
-// signs (P2WPKH), and broadcasts the funding tx.
-func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (core.TxRef, error) {
+// SubmitDeposit sends `amount` satoshis from the depositor's wallet to the
+// per-account deposit address for dest.Account. asset must be native BTC ("" or
+// "BTC"). Builds, signs (P2WPKH), and broadcasts the funding tx. A non-zero
+// dest.Ref is rejected: the account is encoded in the deposit address and a
+// plain BTC send has no side-data channel for a sub-account (ADR-015 has no BTC
+// reference).
+func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
 	if a := strings.ToUpper(strings.TrimSpace(asset)); a != "" && a != "BTC" {
 		return core.TxRef{}, fmt.Errorf("btc: only native BTC deposits supported, got asset %q", asset)
+	}
+	if dest.Ref != ([32]byte{}) {
+		return core.TxRef{}, fmt.Errorf("btc: deposit reference not supported")
 	}
 	amt := amount.BigInt()
 	if !amt.IsInt64() || amt.Int64() <= 0 {
@@ -76,7 +82,7 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 	}
 	sats := amt.Int64()
 
-	depositAddr, _, err := DepositAddress(account, d.threshold, d.vaultPubkeys, d.net)
+	depositAddr, _, err := DepositAddress(dest.Account, d.threshold, d.vaultPubkeys, d.net)
 	if err != nil {
 		return core.TxRef{}, fmt.Errorf("btc: derive deposit address: %w", err)
 	}
@@ -95,7 +101,7 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 		return core.TxRef{}, fmt.Errorf("btc: estimate fee: %w", err)
 	}
 	// numFixedOutputs = recipient (deposit address); change is sized in.
-	selected, feeSats, err := SelectUTXOs(utxos, sats, feeRate, 1)
+	selected, feeSats, err := SelectUTXOs(utxos, sats, feeRate, 1, 0)
 	if err != nil {
 		return core.TxRef{}, err
 	}

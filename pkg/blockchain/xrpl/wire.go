@@ -39,29 +39,6 @@ var canonicalAllowedFields = map[string]struct{}{
 	"SigningPubKey": {}, "Flags": {},
 }
 
-// parseDepositTag extracts the XRPL DestinationTag from a crediting account.
-//
-// The custody deposit watcher derives the credited account FROM the tag —
-// `core.UserURI("xrpl-" + tag)` — so the tag is the primary identifier, not a
-// hash of anything. The account therefore must be of the form `xrpl-<tag>`
-// (optionally as the last segment of a yellow:// URI); this reverses that
-// mapping to recover the uint32 tag the depositor must set.
-func parseDepositTag(account string) (uint32, error) {
-	seg := account
-	if i := strings.LastIndex(seg, "/"); i >= 0 {
-		seg = seg[i+1:]
-	}
-	rest, ok := strings.CutPrefix(strings.ToLower(seg), "xrpl-")
-	if !ok {
-		return 0, fmt.Errorf("xrpl: account %q must be of the form xrpl-<tag> (or yellow://.../user/xrpl-<tag>)", account)
-	}
-	n, err := strconv.ParseUint(rest, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("xrpl: bad deposit tag in account %q: %w", account, err)
-	}
-	return uint32(n), nil
-}
-
 // Identity is a signer's XRPL classic address + signing pubkey hex.
 type Identity struct {
 	ClassicAddress   string

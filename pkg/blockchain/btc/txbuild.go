@@ -1,11 +1,18 @@
 package btc
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 
 	"github.com/btcsuite/btcd/wire"
 )
+
+// ErrTooFragmented reports that covering a withdrawal would require more inputs
+// than the configured maxInputs bound — i.e. the vault's UTXO set is too
+// fragmented to build a standard-size transaction. Callers detect it (via
+// errors.Is) to trigger a consolidation fold and retry the withdrawal.
+var ErrTooFragmented = errors.New("btc: utxo set too fragmented for a standard-size tx")
 
 // validateFixedTxFields asserts the fixed fields the BIP-143 SIGHASH_ALL digest
 // commits to, matching what the canonical builders produce: version
@@ -54,7 +61,12 @@ func EstimateFeeSats(numInputs, numOutputs int, satPerVByte int64) int64 {
 // and accumulated greedily until they cover amount + fee, where the fee grows
 // with each added input. numFixedOutputs is the count of always-present outputs
 // (recipient + OP_RETURN = 2); a change output is assumed for fee sizing.
-func SelectUTXOs(available []UTXO, amount int64, satPerVByte int64, numFixedOutputs int) (selected []UTXO, feeSats int64, err error) {
+//
+// maxInputs bounds the input count so the resulting tx stays within Bitcoin's
+// standard-size relay limit. When covering the amount would need more than
+// maxInputs inputs, it returns ErrTooFragmented (the caller then consolidates
+// and retries). maxInputs <= 0 means unbounded.
+func SelectUTXOs(available []UTXO, amount int64, satPerVByte int64, numFixedOutputs, maxInputs int) (selected []UTXO, feeSats int64, err error) {
 	if amount <= 0 {
 		return nil, 0, fmt.Errorf("btc: non-positive amount %d", amount)
 	}
@@ -77,6 +89,11 @@ func SelectUTXOs(available []UTXO, amount int64, satPerVByte int64, numFixedOutp
 		fee := EstimateFeeSats(n, numFixedOutputs+1, satPerVByte)
 		if total >= amount+fee {
 			return pool[:n], fee, nil
+		}
+		// Coverage not reached at n inputs; if n has hit the bound, adding more
+		// would exceed a standard-size tx — signal the need to consolidate.
+		if maxInputs > 0 && n >= maxInputs {
+			return nil, 0, ErrTooFragmented
 		}
 	}
 	return nil, 0, fmt.Errorf("btc: insufficient vault balance: have %d, need %d + fee at %d sat/vB",

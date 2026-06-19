@@ -60,9 +60,10 @@ func NewDepositor(rpcURL string, programID solana.PublicKey, signer sign.Signer,
 func (d *Depositor) DepositorAddress() string { return d.depositorPub.String() }
 
 // SubmitDeposit transfers `amount` of `asset` into the vault, crediting clearnet
-// `account` (20-byte hex). asset is "" / "SOL" for native or a base58 mint.
-func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, account string) (core.TxRef, error) {
-	acct, err := parseClearnetAccount(account)
+// dest.Account (20-byte hex) with the optional ADR-015 dest.Ref sub-account
+// reference. asset is "" / "SOL" for native or a base58 mint.
+func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
+	acct, err := parseClearnetAccount(dest.Account)
 	if err != nil {
 		return core.TxRef{}, err
 	}
@@ -79,7 +80,7 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 	var ix solana.Instruction
 	if mint.IsZero() {
 		ix, err = custody.NewDepositSolInstruction(
-			acct, lamports,
+			acct, dest.Ref, lamports,
 			d.depositorPub, d.vaultPDA, solana.SystemProgramID, d.eventAuth, d.programID,
 		)
 	} else {
@@ -92,7 +93,7 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 			return core.TxRef{}, fmt.Errorf("sol: vault ATA: %w", e)
 		}
 		ix, err = custody.NewDepositSplInstruction(
-			acct, lamports,
+			acct, dest.Ref, lamports,
 			d.depositorPub, mint, depositorATA, d.vaultPDA, vaultATA,
 			solana.TokenProgramID, solana.SPLAssociatedTokenAccountProgramID, d.eventAuth, d.programID,
 		)

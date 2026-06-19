@@ -12,10 +12,11 @@ import (
 )
 
 // Builds a "deposit_sol" instruction.
-// Native SOL deposit crediting the 20-byte clearnet `account`.
+// Native SOL deposit crediting the 20-byte clearnet `account`, with an // optional ADR-015 sub-account `reference` ([0u8; 32] for none).
 func NewDepositSolInstruction(
 	// Params:
 	accountParam [20]uint8,
+	referenceParam [32]uint8,
 	amountParam uint64,
 
 	// Accounts:
@@ -38,6 +39,11 @@ func NewDepositSolInstruction(
 		err = enc__.Encode(accountParam)
 		if err != nil {
 			return nil, errors.NewField("accountParam", err)
+		}
+		// Serialize `referenceParam`:
+		err = enc__.Encode(referenceParam)
+		if err != nil {
+			return nil, errors.NewField("referenceParam", err)
 		}
 		// Serialize `amountParam`:
 		err = enc__.Encode(amountParam)
@@ -70,10 +76,11 @@ func NewDepositSolInstruction(
 }
 
 // Builds a "deposit_spl" instruction.
-// SPL token deposit crediting the 20-byte clearnet `account`.
+// SPL token deposit crediting the 20-byte clearnet `account`, with an // optional ADR-015 sub-account `reference` ([0u8; 32] for none).
 func NewDepositSplInstruction(
 	// Params:
 	accountParam [20]uint8,
+	referenceParam [32]uint8,
 	amountParam uint64,
 
 	// Accounts:
@@ -100,6 +107,11 @@ func NewDepositSplInstruction(
 		err = enc__.Encode(accountParam)
 		if err != nil {
 			return nil, errors.NewField("accountParam", err)
+		}
+		// Serialize `referenceParam`:
+		err = enc__.Encode(referenceParam)
+		if err != nil {
+			return nil, errors.NewField("referenceParam", err)
 		}
 		// Serialize `amountParam`:
 		err = enc__.Encode(amountParam)
