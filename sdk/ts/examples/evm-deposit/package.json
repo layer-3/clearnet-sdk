@@ -8,7 +8,7 @@
     "build": "vite build"
   },
   "dependencies": {
-    "@yellow-org/sdk": "file:../..",
+    "@yellow-org/clearnet-sdk": "file:../..",
     "viem": "^2.39.0"
   },
   "devDependencies": {

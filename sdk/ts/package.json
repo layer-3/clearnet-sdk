@@ -1,6 +1,6 @@
 {
-  "name": "@yellow-org/sdk",
-  "version": "0.0.0",
+  "name": "@yellow-org/clearnet-sdk",
+  "version": "0.2.0",
   "description": "TypeScript SDK for Clearnet integration.",
   "type": "module",
   "license": "MIT",

@@ -6,7 +6,7 @@
     "rootDir": ".",
     "types": ["node", "vitest/globals"],
     "paths": {
-      "@yellow-org/sdk": ["./src/index.ts"]
+      "@yellow-org/clearnet-sdk": ["./src/index.ts"]
     }
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts"]

@@ -7,26 +7,31 @@ withdrawal test runs the whole *k-of-n* quorum in-process — it holds N local
 `sign.KeySigner`s and drives `Pack → Validate → Sign → Merge → Submit →
 VerifyExecution` itself, so no p2p mesh is needed.
 
+The TypeScript EVM SDK integration test lives under `sdk/ts/test` and runs
+through the same `make integration` target.
+
 ## Run
 
 ```sh
 make devnet        # anvil + bitcoind + rippled + solana-test-validator; blocks until all answer RPC
-make integration   # go test -tags integration ./pkg/blockchain/...
+npm --prefix sdk/ts ci
+make integration   # Go blockchain integrations + TS EVM integration
 make devnet-down
 ```
 
 `make devnet` returns only once every node answers (the `devnet/wait` probe).
-`make integration` then needs **no setup and no env** — every test
-self-provisions against the devnet and is **idempotent**: each run uses fresh
-keys / accounts / a freshly-deployed contract, so re-running is a clean run.
-Only each node's funder persists (anvil account 0, the bitcoind coinbase
+After Node dependencies are installed, `make integration` needs **no env**. The
+tests self-provision against the devnet and are **idempotent**: each run uses
+fresh keys / accounts / a freshly-deployed contract, so re-running is a clean
+run. Only each node's funder persists (anvil account 0, the bitcoind coinbase
 wallet, the XRPL genesis master).
 
 ## What each test provisions
 
 - **EVM** — deploys a fresh `Custody` vault over N freshly-generated signer
   keys (funded from anvil account 0), deposits native ETH, then runs the quorum
-  withdrawal.
+  withdrawal. The TypeScript EVM integration test also deploys fresh `Custody`
+  and `MockERC20` contracts and runs native ETH + ERC-20 deposit coverage.
 - **BTC** — creates a legacy wallet, mines to maturity, generates a fresh vault
   + depositor, watch-imports their addresses, funds the depositor, deposits to
   the per-account P2WSH address, then runs the quorum withdrawal (mining to

@@ -10,7 +10,7 @@ The package is ESM-first and uses `viem` for EVM clients and primitives.
 ## Install
 
 ```sh
-npm install @yellow-org/sdk viem
+npm install @yellow-org/clearnet-sdk viem
 ```
 
 For local development in this repository:
@@ -30,7 +30,7 @@ import {
   ClearnetSdkError,
   EVM_NATIVE_ASSET,
   EvmVaultDepositor,
-} from "@yellow-org/sdk";
+} from "@yellow-org/clearnet-sdk";
 import {
   createPublicClient,
   createWalletClient,
@@ -238,6 +238,16 @@ make devnet-down
 
 The integration test deploys fresh `Custody` and `MockERC20` contracts on each
 run.
+
+To run the repository integration suite, including this TS EVM integration test:
+
+```sh
+# From the repository root:
+make devnet
+npm --prefix sdk/ts ci
+make integration
+make devnet-down
+```
 
 ## Demo
 

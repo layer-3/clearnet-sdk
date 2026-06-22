@@ -1,4 +1,4 @@
-import { EVM_NATIVE_ASSET, EvmVaultDepositor } from "@yellow-org/sdk";
+import { EVM_NATIVE_ASSET, EvmVaultDepositor } from "@yellow-org/clearnet-sdk";
 import {
   createPublicClient,
   createWalletClient,
@@ -8,7 +8,7 @@ import {
   http,
   parseUnits,
 } from "viem";
-import type { TxRef } from "@yellow-org/sdk";
+import type { TxRef } from "@yellow-org/clearnet-sdk";
 import type { Address, Hash } from "viem";
 
 interface Eip1193Provider {
