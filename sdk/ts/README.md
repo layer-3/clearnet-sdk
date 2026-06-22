@@ -1,6 +1,6 @@
 # Clearnet TypeScript SDK
 
-TypeScript SDK for Clearnet custody integrations. This package currently exposes
+TypeScript SDK for Clearnet integration. This package currently exposes
 the EVM vault depositor, with support for native ETH deposits and ERC-20
 deposits. Deposits credit a `destination` made of an account and an optional
 ADR-015 opaque reference.

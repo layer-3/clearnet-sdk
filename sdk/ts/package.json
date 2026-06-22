@@ -1,7 +1,7 @@
 {
   "name": "@yellow-org/sdk",
   "version": "0.0.0",
-  "description": "TypeScript SDK for Clearnet custody integrations.",
+  "description": "TypeScript SDK for Clearnet integration.",
   "type": "module",
   "license": "MIT",
   "main": "./dist/index.js",
