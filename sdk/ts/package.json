@@ -1,0 +1,45 @@
+{
+  "name": "@yellow-org/clearnet-sdk",
+  "version": "0.2.0",
+  "description": "TypeScript SDK for Clearnet integration.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "workspaces": [
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run test/blockchain/evm/depositor.test.ts",
+    "test:integration:evm": "vitest run test/blockchain/evm/depositor.integration.test.ts",
+    "demo:evm": "npm --workspace @yellow-org/evm-deposit-demo run dev"
+  },
+  "dependencies": {
+    "viem": "^2.39.0"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.0.0",
+    "vitest": "^4.0.0"
+  }
+}

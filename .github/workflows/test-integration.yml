@@ -24,6 +24,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdk/ts/package-lock.json
+
       - name: Bring up devnet
         run: make devnet
 

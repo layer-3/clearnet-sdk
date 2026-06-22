@@ -59,9 +59,7 @@ func TestPubSub_FinalizedWithdrawal(t *testing.T) {
 			if fw.WithdrawalID != want.WithdrawalID || fw.EntryIndex != want.EntryIndex {
 				t.Fatalf("delivered %+v, want %+v", fw.Header(), want.Header())
 			}
-			if m := follower.Metrics().Snapshot(); m.Delivered != 1 {
-				t.Errorf("Delivered = %d, want 1", m.Delivered)
-			}
+			waitDelivered(t, follower, 1)
 			return
 		case <-ticker.C:
 			continue
@@ -89,5 +87,24 @@ func connect(t *testing.T, from, to host.Host) {
 	defer cancel()
 	if err := from.Connect(ctx, peer.AddrInfo{ID: to.ID(), Addrs: to.Addrs()}); err != nil {
 		t.Fatalf("connect: %v", err)
+	}
+}
+
+func waitDelivered(t *testing.T, follower *Follower[core.FinalizedWithdrawal, *core.FinalizedWithdrawal], want uint64) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if got := follower.Metrics().Snapshot().Delivered; got == want {
+			return
+		}
+		select {
+		case <-deadline:
+			got := follower.Metrics().Snapshot().Delivered
+			t.Fatalf("Delivered = %d, want %d", got, want)
+		case <-ticker.C:
+		}
 	}
 }

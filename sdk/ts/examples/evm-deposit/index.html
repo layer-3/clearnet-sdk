@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EVM Deposit Demo</title>
+    <style>
+      :root {
+        color: #1b1d24;
+        background: #f6f7f9;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      main {
+        box-sizing: border-box;
+        margin: 0 auto;
+        max-width: 920px;
+        min-height: 100vh;
+        padding: 32px 20px;
+      }
+
+      h1 {
+        font-size: 28px;
+        font-weight: 650;
+        margin: 0 0 24px;
+      }
+
+      form {
+        display: grid;
+        gap: 16px;
+      }
+
+      fieldset {
+        border: 1px solid #d6dae1;
+        border-radius: 8px;
+        display: grid;
+        gap: 14px;
+        margin: 0;
+        padding: 18px;
+      }
+
+      legend {
+        font-weight: 650;
+        padding: 0 8px;
+      }
+
+      label {
+        display: grid;
+        font-size: 13px;
+        font-weight: 600;
+        gap: 6px;
+      }
+
+      input {
+        border: 1px solid #c5cad3;
+        border-radius: 6px;
+        box-sizing: border-box;
+        color: #1b1d24;
+        font: inherit;
+        min-width: 0;
+        padding: 10px 12px;
+        width: 100%;
+      }
+
+      button {
+        align-items: center;
+        background: #1457d9;
+        border: 0;
+        border-radius: 6px;
+        color: white;
+        cursor: pointer;
+        display: inline-flex;
+        font: inherit;
+        font-weight: 650;
+        justify-content: center;
+        min-height: 42px;
+        padding: 0 16px;
+      }
+
+      button.secondary {
+        background: #2e343d;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .grid {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      output {
+        background: #111827;
+        border-radius: 8px;
+        box-sizing: border-box;
+        color: #f9fafb;
+        display: block;
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        margin-top: 16px;
+        min-height: 140px;
+        overflow-wrap: anywhere;
+        padding: 16px;
+        white-space: pre-wrap;
+      }
+
+      @media (max-width: 720px) {
+        main {
+          padding: 24px 14px;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>EVM Deposit Demo</h1>
+      <form id="deposit-form">
+        <fieldset>
+          <legend>Network</legend>
+          <div class="grid">
+            <label>
+              RPC URL
+              <input id="rpc-url" value="http://127.0.0.1:8545" />
+            </label>
+            <label>
+              Chain ID
+              <input id="chain-id" value="31337" inputmode="numeric" />
+            </label>
+          </div>
+          <label>
+            Custody Address
+            <input id="custody-address" placeholder="0x..." />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Deposit</legend>
+          <div class="grid">
+            <label>
+              Credited Account
+              <input id="account" placeholder="0x..." />
+            </label>
+            <label>
+              Asset
+              <input
+                id="asset"
+                value="0x0000000000000000000000000000000000000000"
+              />
+            </label>
+            <label>
+              Reference
+              <input id="reference" placeholder="0x... (optional bytes32)" />
+            </label>
+            <label>
+              Amount
+              <input id="amount" value="0.01" inputmode="decimal" />
+            </label>
+            <label>
+              Decimals
+              <input id="decimals" value="18" inputmode="numeric" />
+            </label>
+          </div>
+        </fieldset>
+
+        <div class="actions">
+          <button id="connect" type="button">Connect Wallet</button>
+          <button id="submit" type="submit">Submit Deposit</button>
+          <button id="verify" class="secondary" type="button" disabled>
+            Verify Last Tx
+          </button>
+        </div>
+      </form>
+      <output id="log"></output>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

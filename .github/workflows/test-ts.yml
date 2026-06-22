@@ -1,0 +1,41 @@
+name: Test (TypeScript)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: TypeScript Unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdk/ts/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: sdk/ts
+
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: sdk/ts
+
+      - name: Build package
+        run: npm run build
+        working-directory: sdk/ts
+
+      - name: Unit tests
+        run: npm test
+        working-directory: sdk/ts
+
+      - name: Build demo
+        run: npm --workspace @yellow-org/evm-deposit-demo run build
+        working-directory: sdk/ts

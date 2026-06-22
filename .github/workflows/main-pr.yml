@@ -12,6 +12,10 @@ jobs:
     name: Unit
     uses: ./.github/workflows/test-go.yml
 
+  typescript:
+    name: TypeScript
+    uses: ./.github/workflows/test-ts.yml
+
   integration:
     name: Integration
     uses: ./.github/workflows/test-integration.yml
