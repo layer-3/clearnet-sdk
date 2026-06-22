@@ -244,7 +244,6 @@ To run the repository integration suite, including this TS EVM integration test:
 ```sh
 # From the repository root:
 make devnet
-npm --prefix sdk/ts ci
 make integration
 make devnet-down
 ```

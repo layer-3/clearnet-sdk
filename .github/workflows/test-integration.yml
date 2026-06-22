@@ -31,10 +31,6 @@ jobs:
           cache: npm
           cache-dependency-path: sdk/ts/package-lock.json
 
-      - name: Install TypeScript dependencies
-        run: npm ci
-        working-directory: sdk/ts
-
       - name: Bring up devnet
         run: make devnet
 
