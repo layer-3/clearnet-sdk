@@ -1,13 +1,14 @@
 import type {
   Account,
   Address,
-  Hash,
   PublicClient,
   WalletClient,
 } from "viem";
 
+export type Bytes32Hex = `0x${string}`;
+
 export interface TxRef {
-  hash: Hash;
+  hash: Bytes32Hex;
   raw: string;
 }
 
@@ -15,7 +16,7 @@ export type DepositStatus = "absent" | "pending" | "confirmed";
 
 export interface DepositDestination {
   account: string;
-  ref?: Hash;
+  ref?: Bytes32Hex;
 }
 
 export interface EvmDepositDestination extends DepositDestination {

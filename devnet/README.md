@@ -7,15 +7,15 @@ withdrawal test runs the whole *k-of-n* quorum in-process — it holds N local
 `sign.KeySigner`s and drives `Pack → Validate → Sign → Merge → Submit →
 VerifyExecution` itself, so no p2p mesh is needed.
 
-The TypeScript EVM SDK integration test lives under `sdk/ts/test` and runs
-through the same `make integration` target.
+The TypeScript SDK integration tests live under `sdk/ts/test` and run through
+the same `make integration` target.
 
 ## Run
 
 ```sh
 make devnet        # anvil + bitcoind + rippled + solana-test-validator; blocks until all answer RPC
 npm --prefix sdk/ts ci
-make integration   # Go blockchain integrations + TS EVM integration
+make integration   # Go blockchain integrations + TS EVM and Solana integration
 make devnet-down
 ```
 
@@ -47,8 +47,20 @@ wallet, the XRPL genesis master).
   authority), deposits native SOL, then runs the quorum withdrawal. The Config
   PDA is a singleton, so the signer set is **fixed** across runs and only the
   withdrawalID is fresh — re-runs stay clean without a validator restart. The
-  validator image is multi-arch (no `platform:` pin — the Agave validator needs
-  AVX, which isn't emulable on Apple silicon).
+  TypeScript Solana integration test creates and funds local signers, submits
+  native SOL and SPL deposits, and verifies each returned transaction reference.
+  The validator image is multi-arch (no `platform:` pin — the Agave validator
+  needs AVX, which isn't emulable on Apple silicon).
+
+For focused local iteration:
+
+```sh
+make devnet-evm
+npm --prefix sdk/ts run test:integration:evm
+
+make devnet-sol
+npm --prefix sdk/ts run test:integration:sol
+```
 
 ## Optional overrides
 
@@ -59,6 +71,7 @@ Defaults target the devnet; override the endpoints if pointing elsewhere:
 | `EVM_RPC_URL` / `EVM_DEPLOYER_KEY` | `http://127.0.0.1:8545` / anvil account 0 |
 | `BTC_RPC_URL` / `BTC_RPC_USER` / `BTC_RPC_PASS` | `http://127.0.0.1:18443` / `sdk` / `sdk` |
 | `XRPL_RPC_URL` | `http://127.0.0.1:5005` |
+| `SOL_RPC_URL` | `http://127.0.0.1:8899` |
 
 ## Notes
 
