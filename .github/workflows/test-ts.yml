@@ -43,3 +43,7 @@ jobs:
       - name: Build Solana demo
         run: npm --workspace @yellow-org/solana-deposit-demo run build
         working-directory: sdk/ts
+
+      - name: Build XRPL demo
+        run: npm --workspace @yellow-org/xrpl-deposit-demo run build
+        working-directory: sdk/ts
