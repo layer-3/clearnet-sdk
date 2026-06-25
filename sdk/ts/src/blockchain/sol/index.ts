@@ -1,4 +1,8 @@
-export { SolanaVaultDepositor } from "./depositor.js";
+export {
+  eventAuthorityPda,
+  SolanaVaultDepositor,
+  vaultPda,
+} from "./depositor.js";
 export {
   SOLANA_CUSTODY_PROGRAM_ID,
   SOLANA_NATIVE_ASSET,

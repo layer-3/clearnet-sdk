@@ -10,12 +10,13 @@ import bs58 from "bs58";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import {
-  SOLANA_CUSTODY_PROGRAM_ID,
   SOLANA_NATIVE_ASSET,
   SolanaVaultDepositor,
+  vaultPda,
 } from "../../../src/index.js";
 import type { SolanaSigner } from "../../../src/index.js";
 import { DEPOSITED_EVENT_DISCRIMINATOR } from "../../../src/blockchain/sol/constants.js";
+import { bytes32Hex } from "../../../src/blockchain/sol/validation.js";
 import {
   createAssociatedTokenAccountIdempotent,
   createMint,
@@ -25,7 +26,6 @@ import {
 } from "./spl-test-helpers.js";
 
 const RPC_URL = process.env.SOL_RPC_URL ?? "http://127.0.0.1:8899";
-const PROGRAM_ID = new PublicKey(SOLANA_CUSTODY_PROGRAM_ID);
 const ACCOUNT = "00000000000000000000000000000000000000a1";
 const REFERENCE =
   "0x3333333333333333333333333333333333333333333333333333333333333333";
@@ -96,6 +96,7 @@ describe("SolanaVaultDepositor validator integration", () => {
     const vaultAta = getAssociatedTokenAddress(mint, vaultPda());
     expect(vaultTokenAccount.toBase58()).toBe(vaultAta.toBase58());
     const beforeBalance = await tokenBalance(connection, vaultAta);
+    expect(beforeBalance).toBe(0n);
 
     const ref = await depositor.submitDeposit({
       asset: mint.toBase58(),
@@ -158,27 +159,37 @@ async function expectDepositedEvent(
 ): Promise<void> {
   const event = await readDepositedEvent(signature);
   expect(event.depositor.toBase58()).toBe(expected.depositor.toBase58());
-  expect(bytesToHex(event.account)).toBe(stripHexPrefix(expected.account));
-  expect(bytesToHex(event.reference)).toBe(stripHexPrefix(expected.reference));
+  expect(stripHexPrefix(bytes32Hex(event.account))).toBe(
+    stripHexPrefix(expected.account),
+  );
+  expect(stripHexPrefix(bytes32Hex(event.reference))).toBe(
+    stripHexPrefix(expected.reference),
+  );
   expect(event.mint.toBase58()).toBe(expected.mint.toBase58());
   expect(event.amount).toBe(expected.amount);
 }
 
 async function readDepositedEvent(signature: string): Promise<DepositedEvent> {
-  const transaction = await connection.getTransaction(signature, {
-    commitment: "confirmed",
-    maxSupportedTransactionVersion: 0,
-  });
-  const innerInstructions = transaction?.meta?.innerInstructions ?? [];
-  for (const group of innerInstructions) {
-    for (const instruction of group.instructions) {
-      const event = decodeDepositedEvent(bs58.decode(instruction.data));
-      if (event !== undefined) {
-        return event;
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const transaction = await connection.getTransaction(signature, {
+      commitment: "confirmed",
+      maxSupportedTransactionVersion: 0,
+    });
+    const innerInstructions = transaction?.meta?.innerInstructions ?? [];
+    for (const group of innerInstructions) {
+      for (const instruction of group.instructions) {
+        const event = decodeDepositedEvent(bs58.decode(instruction.data));
+        if (event !== undefined) {
+          return event;
+        }
       }
     }
+    if (Date.now() >= deadline) {
+      throw new Error(`Deposited event not found in ${signature}`);
+    }
+    await sleep(250);
   }
-  throw new Error(`Deposited event not found in ${signature}`);
 }
 
 function decodeDepositedEvent(data: Uint8Array): DepositedEvent | undefined {
@@ -213,21 +224,8 @@ function findBytes(data: Uint8Array, needle: readonly number[]): number {
   return -1;
 }
 
-function bytesToHex(bytes: Uint8Array): string {
-  return [...bytes]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 function stripHexPrefix(value: string): string {
   return value.startsWith("0x") ? value.slice(2) : value;
-}
-
-function vaultPda(): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [new TextEncoder().encode("vault")],
-    PROGRAM_ID,
-  )[0];
 }
 
 async function waitForLamports(

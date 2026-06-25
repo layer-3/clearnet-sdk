@@ -136,12 +136,23 @@ import {
   SOLANA_NATIVE_ASSET,
   SolanaVaultDepositor,
 } from "@yellow-org/clearnet-sdk";
-import { Connection, Keypair, sendAndConfirmTransaction } from "@solana/web3.js";
+import {
+  Connection,
+  Keypair,
+  LAMPORTS_PER_SOL,
+  sendAndConfirmTransaction,
+} from "@solana/web3.js";
 import type { SolanaSigner } from "@yellow-org/clearnet-sdk";
 
 const rpcUrl = "http://127.0.0.1:8899";
 const keypair = Keypair.generate();
 const connection = new Connection(rpcUrl, "confirmed");
+
+const airdrop = await connection.requestAirdrop(
+  keypair.publicKey,
+  LAMPORTS_PER_SOL,
+);
+await connection.confirmTransaction(airdrop, "confirmed");
 
 const signer: SolanaSigner = {
   publicKey: keypair.publicKey.toBase58(),

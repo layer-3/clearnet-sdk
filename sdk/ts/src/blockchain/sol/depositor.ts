@@ -19,6 +19,7 @@ import {
   DEFAULT_RECEIPT_TIMEOUT_MS,
   DEPOSIT_SOL_DISCRIMINATOR,
   DEPOSIT_SPL_DISCRIMINATOR,
+  POLL_INTERVAL_MS,
   SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID,
   SOLANA_CUSTODY_PROGRAM_ID,
   SOLANA_TOKEN_PROGRAM_ID,
@@ -37,6 +38,7 @@ import {
   publicKeyFromString,
   requireAmount,
   requireClearnetAccount,
+  requireDepositDestination,
   requireProgramId,
   requireReceiptTimeout,
   requireReference,
@@ -50,28 +52,39 @@ type SignatureStatusValue = Awaited<
   ReturnType<Connection["getSignatureStatuses"]>
 >["value"][number];
 
+const SOLANA_CUSTODY_PUBLIC_KEY = new PublicKey(SOLANA_CUSTODY_PROGRAM_ID);
+const SOLANA_TOKEN_PROGRAM_PUBLIC_KEY = new PublicKey(SOLANA_TOKEN_PROGRAM_ID);
+const SOLANA_ASSOCIATED_TOKEN_PROGRAM_PUBLIC_KEY = new PublicKey(
+  SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID,
+);
+const VAULT_SEED = new TextEncoder().encode("vault");
+const EVENT_AUTHORITY_SEED = new TextEncoder().encode("__event_authority");
+
 export class SolanaVaultDepositor
   implements VaultDepositor<SolanaSubmitDepositInput>
 {
-  private readonly rpcUrl: string;
   private readonly signer: SolanaSigner;
   private readonly depositor: PublicKey;
   private readonly programId: PublicKey;
   private readonly commitment: SolanaCommitment;
   private readonly receiptTimeoutMs: number;
   private readonly connection: Connection;
+  private readonly vault: PublicKey;
+  private readonly eventAuthority: PublicKey;
 
   constructor(config: SolanaDepositorConfig) {
-    this.rpcUrl = requireRpcUrl(config.rpcUrl);
+    const rpcUrl = requireRpcUrl(config.rpcUrl);
     this.signer = requireSigner(config.signer);
     this.depositor = publicKeyFromString(this.signer.publicKey, "signer.publicKey");
     this.programId = requireProgramId(config.programId);
+    this.vault = vaultPda(this.programId);
+    this.eventAuthority = eventAuthorityPda(this.programId);
     this.commitment = normalizeCommitment(config.commitment);
     this.receiptTimeoutMs =
       config.receiptTimeoutMs === undefined
         ? DEFAULT_RECEIPT_TIMEOUT_MS
         : requireReceiptTimeout(config.receiptTimeoutMs);
-    this.connection = new Connection(this.rpcUrl, {
+    this.connection = new Connection(rpcUrl, {
       commitment: this.commitment,
       fetch: (input, init) => globalThis.fetch(input, init),
     });
@@ -81,10 +94,17 @@ export class SolanaVaultDepositor
     input: SolanaSubmitDepositInput,
     options: SubmitDepositOptions = {},
   ): Promise<TxRef> {
-    const account = requireClearnetAccount(input.destination.account);
-    const reference = requireReference(input.destination.ref);
-    const amount = requireAmount(input.amount);
-    const mint = resolveMint(input.asset);
+    const waitOptions = requireSubmitDepositOptions(options);
+    const fields =
+      input && typeof input === "object"
+        ? (input as Partial<SolanaSubmitDepositInput>)
+        : {};
+    const destination = requireDepositDestination(fields.destination);
+    const account = requireClearnetAccount(destination.account);
+    const reference = requireReference(destination.ref);
+    const amount = requireAmount(fields.amount);
+    const mint = resolveMint(fields.asset);
+    validateWaitOptions(waitOptions);
     const transaction = new Transaction();
     transaction.feePayer = this.depositor;
     transaction.add(
@@ -95,8 +115,8 @@ export class SolanaVaultDepositor
 
     const signature = await this.signAndSend(transaction);
     const ref = txRef(signature);
-    options.onSubmitted?.(ref);
-    await this.waitForCommitment(signature, ref, options);
+    waitOptions.onSubmitted?.(ref);
+    await this.waitForCommitment(signature, ref, waitOptions);
     return ref;
   }
 
@@ -106,7 +126,7 @@ export class SolanaVaultDepositor
   ): Promise<DepositStatus> {
     requireTxRef(ref);
     const minConf = normalizeMinConfirmations(minConfirmations);
-    const status = await this.getSignatureStatus(ref.raw, undefined);
+    const status = await this.getSignatureStatus(ref.raw, ref);
     return mapStatus(status, minConf);
   }
 
@@ -119,10 +139,10 @@ export class SolanaVaultDepositor
       programId: this.programId,
       keys: [
         { pubkey: this.depositor, isSigner: true, isWritable: true },
-        { pubkey: vaultPda(this.programId), isSigner: false, isWritable: true },
+        { pubkey: this.vault, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         {
-          pubkey: eventAuthorityPda(this.programId),
+          pubkey: this.eventAuthority,
           isSigner: false,
           isWritable: false,
         },
@@ -143,7 +163,6 @@ export class SolanaVaultDepositor
     reference: Uint8Array,
     amount: bigint,
   ): TransactionInstruction {
-    const vault = vaultPda(this.programId);
     return new TransactionInstruction({
       programId: this.programId,
       keys: [
@@ -154,24 +173,24 @@ export class SolanaVaultDepositor
           isSigner: false,
           isWritable: true,
         },
-        { pubkey: vault, isSigner: false, isWritable: false },
+        { pubkey: this.vault, isSigner: false, isWritable: false },
         {
-          pubkey: associatedTokenAddress(vault, mint),
+          pubkey: associatedTokenAddress(this.vault, mint),
           isSigner: false,
           isWritable: true,
         },
         {
-          pubkey: new PublicKey(SOLANA_TOKEN_PROGRAM_ID),
+          pubkey: SOLANA_TOKEN_PROGRAM_PUBLIC_KEY,
           isSigner: false,
           isWritable: false,
         },
         {
-          pubkey: new PublicKey(SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID),
+          pubkey: SOLANA_ASSOCIATED_TOKEN_PROGRAM_PUBLIC_KEY,
           isSigner: false,
           isWritable: false,
         },
         {
-          pubkey: eventAuthorityPda(this.programId),
+          pubkey: this.eventAuthority,
           isSigner: false,
           isWritable: false,
         },
@@ -204,10 +223,9 @@ export class SolanaVaultDepositor
     ref: TxRef,
     options: SubmitDepositOptions,
   ): Promise<void> {
-    const timeoutMs = options.receiptTimeoutMs ?? this.receiptTimeoutMs;
-    if (options.receiptTimeoutMs !== undefined) {
-      requireReceiptTimeout(options.receiptTimeoutMs);
-    }
+    const timeoutMs = requireReceiptTimeout(
+      options.receiptTimeoutMs ?? this.receiptTimeoutMs,
+    );
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       if (options.signal?.aborted === true) {
@@ -215,7 +233,12 @@ export class SolanaVaultDepositor
           txRef: ref,
         });
       }
-      const status = await this.getSignatureStatus(signature, ref);
+      const status = await waitWithControls(
+        () => this.getSignatureStatus(signature, ref),
+        remainingMs(deadline, ref),
+        options.signal,
+        ref,
+      );
       if (status?.err != null) {
         throw new ClearnetSdkError("TX_REVERTED", "sol: transaction failed", {
           txRef: ref,
@@ -229,7 +252,7 @@ export class SolanaVaultDepositor
           txRef: ref,
         });
       }
-      await sleep(250, options.signal);
+      await sleep(Math.min(POLL_INTERVAL_MS, remainingMs(deadline, ref)), options.signal, ref);
     }
   }
 
@@ -252,35 +275,36 @@ export class SolanaVaultDepositor
   }
 }
 
-export function vaultPda(programId = new PublicKey(SOLANA_CUSTODY_PROGRAM_ID)): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [new TextEncoder().encode("vault")],
-    programId,
-  )[0];
+export function vaultPda(programId = SOLANA_CUSTODY_PUBLIC_KEY): PublicKey {
+  return PublicKey.findProgramAddressSync([VAULT_SEED], programId)[0];
 }
 
 export function eventAuthorityPda(
-  programId = new PublicKey(SOLANA_CUSTODY_PROGRAM_ID),
+  programId = SOLANA_CUSTODY_PUBLIC_KEY,
 ): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [new TextEncoder().encode("__event_authority")],
-    programId,
-  )[0];
+  return PublicKey.findProgramAddressSync([EVENT_AUTHORITY_SEED], programId)[0];
 }
 
 function associatedTokenAddress(owner: PublicKey, mint: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(
     [
       owner.toBytes(),
-      new PublicKey(SOLANA_TOKEN_PROGRAM_ID).toBytes(),
+      SOLANA_TOKEN_PROGRAM_PUBLIC_KEY.toBytes(),
       mint.toBytes(),
     ],
-    new PublicKey(SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID),
+    SOLANA_ASSOCIATED_TOKEN_PROGRAM_PUBLIC_KEY,
   )[0];
 }
 
 function txRef(signature: string): TxRef {
-  const signatureBytes = bs58.decode(signature);
+  let signatureBytes: Uint8Array;
+  try {
+    signatureBytes = bs58.decode(signature);
+  } catch (error) {
+    throw new ClearnetSdkError("INVALID_TX_REF", "Solana signature must be base58", {
+      cause: error,
+    });
+  }
   if (signatureBytes.length !== 64) {
     throw new ClearnetSdkError(
       "INVALID_TX_REF",
@@ -326,20 +350,128 @@ function statusSatisfiesCommitment(
   return status.confirmationStatus === "finalized";
 }
 
-async function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+function validateWaitOptions(options: SubmitDepositOptions): void {
+  if (options.receiptTimeoutMs !== undefined) {
+    requireReceiptTimeout(options.receiptTimeoutMs);
+  }
+  if (options.signal?.aborted === true) {
+    throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted");
+  }
+}
+
+function requireSubmitDepositOptions(options: unknown): SubmitDepositOptions {
+  if (options === null || typeof options !== "object") {
+    throw new ClearnetSdkError(
+      "RECEIPT_TIMEOUT",
+      "submit options must be an object",
+    );
+  }
+  return options;
+}
+
+function remainingMs(deadline: number, ref: TxRef): number {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt timeout", {
+      txRef: ref,
+    });
+  }
+  return remaining;
+}
+
+async function waitWithControls<T>(
+  wait: () => Promise<T>,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+  ref: TxRef,
+): Promise<T> {
+  if (signal?.aborted === true) {
+    throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
+      txRef: ref,
+    });
+  }
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(
+        new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt timeout", {
+          txRef: ref,
+        }),
+      );
+    }, timeoutMs);
+  });
+
+  const abortPromise =
+    signal === undefined
+      ? undefined
+      : new Promise<never>((_, reject) => {
+          abortHandler = () => {
+            reject(
+              new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
+                txRef: ref,
+              }),
+            );
+          };
+          signal.addEventListener("abort", abortHandler, { once: true });
+        });
+
+  try {
+    return await Promise.race(
+      abortPromise === undefined
+        ? [wait(), timeoutPromise]
+        : [wait(), timeoutPromise, abortPromise],
+    );
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+    if (signal !== undefined && abortHandler !== undefined) {
+      signal.removeEventListener("abort", abortHandler);
+    }
+  }
+}
+
+async function sleep(
+  ms: number,
+  signal: AbortSignal | undefined,
+  txRef: TxRef,
+): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     if (signal?.aborted === true) {
-      reject(new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted"));
+      reject(
+        new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
+          txRef,
+        }),
+      );
       return;
     }
-    const timeout = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
+    let abortHandler: (() => void) | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timeout !== undefined) {
         clearTimeout(timeout);
-        reject(new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted"));
-      },
-      { once: true },
-    );
+      }
+      if (signal !== undefined && abortHandler !== undefined) {
+        signal.removeEventListener("abort", abortHandler);
+      }
+    };
+    timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    if (signal !== undefined) {
+      abortHandler = () => {
+        cleanup();
+        reject(
+          new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
+            txRef,
+          }),
+        );
+      };
+      signal.addEventListener("abort", abortHandler, { once: true });
+    }
   });
 }

@@ -1,10 +1,11 @@
 import { Buffer } from "buffer";
 
 import bs58 from "bs58";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { PublicKey } from "@solana/web3.js";
 
 import { ClearnetSdkError } from "../../core/errors.js";
-import type { Bytes32Hex, TxRef } from "../../core/types.js";
+import type { Bytes32Hex, DepositDestination, TxRef } from "../../core/types.js";
 import {
   DEFAULT_SOLANA_COMMITMENT,
   SOLANA_CUSTODY_PROGRAM_ID,
@@ -99,6 +100,18 @@ export function requireAmount(amount: unknown): bigint {
     throw new ClearnetSdkError("INVALID_AMOUNT", "amount must fit in uint64");
   }
   return amount;
+}
+
+export function requireDepositDestination(
+  destination: unknown,
+): DepositDestination {
+  if (!destination || typeof destination !== "object") {
+    throw new ClearnetSdkError(
+      "INVALID_ADDRESS",
+      "destination.account must be a 20-byte hex address",
+    );
+  }
+  return destination as DepositDestination;
 }
 
 export function requireClearnetAccount(account: unknown): Uint8Array {
@@ -196,6 +209,12 @@ export function requireTxRef(ref: unknown): Uint8Array {
     throw new ClearnetSdkError(
       "INVALID_TX_REF",
       "ref.raw must decode to a 64-byte Solana signature",
+    );
+  }
+  if (fields.hash.toLowerCase() !== bytes32Hex(sha256(signature))) {
+    throw new ClearnetSdkError(
+      "INVALID_TX_REF",
+      "ref.hash must match the Solana signature hash",
     );
   }
   return signature;
