@@ -25,16 +25,27 @@
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "vitest run test/blockchain/evm/depositor.test.ts",
+    "test": "npm run test:evm && npm run test:sol",
+    "test:evm": "vitest run test/blockchain/evm/depositor.test.ts",
+    "test:sol": "vitest run test/blockchain/sol/depositor.test.ts",
     "test:integration:evm": "vitest run test/blockchain/evm/depositor.integration.test.ts",
-    "demo:evm": "npm --workspace @yellow-org/evm-deposit-demo run dev"
+    "test:integration:sol": "vitest run test/blockchain/sol/depositor.integration.test.ts",
+    "demo:evm": "npm --workspace @yellow-org/evm-deposit-demo run dev",
+    "demo:sol": "npm --workspace @yellow-org/solana-deposit-demo run dev"
   },
   "dependencies": {
+    "@noble/hashes": "^2.2.0",
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
+    "buffer": "^6.0.3",
     "viem": "^2.39.0"
   },
   "overrides": {
     "esbuild": "^0.28.1",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "jayson": {
+      "uuid": "11.1.1"
+    }
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

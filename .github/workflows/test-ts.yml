@@ -36,6 +36,10 @@ jobs:
         run: npm test
         working-directory: sdk/ts
 
-      - name: Build demo
+      - name: Build EVM demo
         run: npm --workspace @yellow-org/evm-deposit-demo run build
+        working-directory: sdk/ts
+
+      - name: Build Solana demo
+        run: npm --workspace @yellow-org/solana-deposit-demo run build
         working-directory: sdk/ts

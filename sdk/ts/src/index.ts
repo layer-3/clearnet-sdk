@@ -1,4 +1,5 @@
 export type {
+  Bytes32Hex,
   DepositDestination,
   DepositStatus,
   EvmDepositDestination,
@@ -13,3 +14,18 @@ export { ClearnetSdkError } from "./core/errors.js";
 export type { ClearnetSdkErrorCode } from "./core/errors.js";
 export { EvmVaultDepositor } from "./blockchain/evm/depositor.js";
 export { EVM_NATIVE_ASSET } from "./blockchain/evm/constants.js";
+export {
+  eventAuthorityPda,
+  SOLANA_CUSTODY_PROGRAM_ID,
+  SOLANA_NATIVE_ASSET,
+  SolanaVaultDepositor,
+  vaultPda,
+} from "./blockchain/sol/index.js";
+export type {
+  SolanaAsset,
+  SolanaCommitment,
+  SolanaDepositDestination,
+  SolanaDepositorConfig,
+  SolanaSigner,
+  SolanaSubmitDepositInput,
+} from "./blockchain/sol/index.js";

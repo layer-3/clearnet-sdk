@@ -1,4 +1,4 @@
-.PHONY: build lint test generate devnet devnet-evm devnet-down ts-deps integration
+.PHONY: build lint test generate devnet devnet-evm devnet-sol devnet-down ts-deps integration
 
 build:
 	go build ./...
@@ -27,6 +27,10 @@ devnet-evm:
 	docker compose -f devnet/docker-compose.yml up -d anvil
 	go run ./devnet/wait --networks anvil
 
+devnet-sol:
+	docker compose -f devnet/docker-compose.yml up -d solana
+	go run ./devnet/wait --networks solana
+
 devnet-down:
 	docker compose -f devnet/docker-compose.yml down -v
 
@@ -34,7 +38,8 @@ ts-deps:
 	npm --prefix sdk/ts ci
 
 # Blockchain flow tests against the devnet. Go tests cover deposit + withdrawal
-# per chain; the TS suite covers EVM deposits. See devnet/README.md.
+# per chain; the TS suite covers EVM and Solana deposits. See devnet/README.md.
 integration: ts-deps
 	go test -tags integration ./pkg/blockchain/... -v
 	npm --prefix sdk/ts run test:integration:evm
+	npm --prefix sdk/ts run test:integration:sol
