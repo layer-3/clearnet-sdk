@@ -23,6 +23,7 @@ import type {
   DepositStatus,
   TxRef,
   VaultDepositor,
+  XrplDepositDestination,
   XrplIssuedDepositInput,
   XrplNativeDepositInput,
   XrplSigner,
@@ -78,9 +79,21 @@ describe("XrplVaultDepositor", () => {
     expectTypeOf<XrplVaultDepositor>().toMatchTypeOf<
       VaultDepositor<XrplSubmitDepositInput>
     >();
-    expectTypeOf<XrplSubmitDepositInput["amount"]>().toEqualTypeOf<bigint | string>();
+    expectTypeOf<XrplSubmitDepositInput>().toEqualTypeOf<
+      XrplNativeDepositInput | XrplIssuedDepositInput
+    >();
     expectTypeOf<XrplNativeDepositInput["amount"]>().toEqualTypeOf<bigint>();
     expectTypeOf<XrplIssuedDepositInput["amount"]>().toEqualTypeOf<string>();
+    expectTypeOf<{
+      asset: "XRP";
+      amount: string;
+      destination: XrplDepositDestination;
+    }>().not.toMatchTypeOf<XrplSubmitDepositInput>();
+    expectTypeOf<{
+      asset: `USD.${string}`;
+      amount: bigint;
+      destination: XrplDepositDestination;
+    }>().not.toMatchTypeOf<XrplSubmitDepositInput>();
     expectTypeOf<TxRef>().toEqualTypeOf<{ hash: Bytes32Hex; raw: string }>();
     expectTypeOf<DepositStatus>().toEqualTypeOf<
       "absent" | "pending" | "confirmed"
@@ -186,6 +199,26 @@ describe("XrplVaultDepositor", () => {
     const depositor = createDepositor(signer);
 
     await expect(
+      depositor.submitDeposit(null as unknown as XrplSubmitDepositInput),
+    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    await expect(
+      depositor.submitDeposit(
+        {
+          asset: XRPL_NATIVE_ASSET,
+          amount: 1n,
+          destination: { account: ACCOUNT },
+        },
+        null as never,
+      ),
+    ).rejects.toMatchObject({ code: "RPC_ERROR" });
+    await expect(
+      depositor.submitDeposit({
+        asset: XRPL_NATIVE_ASSET,
+        amount: 1n,
+        destination: null as unknown as XrplDepositDestination,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
         amount: 0n,
@@ -215,7 +248,7 @@ describe("XrplVaultDepositor", () => {
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     await expect(
       depositor.submitDeposit({
-        asset: "USD",
+        asset: "USD" as XrplIssuedDepositInput["asset"],
         amount: "1",
         destination: { account: ACCOUNT },
       }),
@@ -232,6 +265,13 @@ describe("XrplVaultDepositor", () => {
         asset: XRPL_NATIVE_ASSET,
         amount: 1n,
         destination: { account: "0x1234" },
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    await expect(
+      depositor.submitDeposit({
+        asset: XRPL_NATIVE_ASSET,
+        amount: 1n,
+        destination: { account: `yellow://local/user/${ACCOUNT}` },
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
@@ -255,7 +295,7 @@ describe("XrplVaultDepositor", () => {
         signer: undefined as unknown as XrplSigner,
       }),
     ).toThrowError(
-      expect.objectContaining({ code: "INVALID_ADDRESS" }),
+      expect.objectContaining({ code: "MISSING_WALLET_ACCOUNT" }),
     );
     expect(() =>
       new XrplVaultDepositor({
@@ -273,7 +313,7 @@ describe("XrplVaultDepositor", () => {
         signer: { classicAddress: DEPOSITOR_ADDRESS } as XrplSigner,
       }),
     ).toThrowError(
-      expect.objectContaining({ code: "INVALID_ADDRESS" }),
+      expect.objectContaining({ code: "MISSING_WALLET_ACCOUNT" }),
     );
     expect(() =>
       new XrplVaultDepositor({
@@ -314,7 +354,7 @@ describe("XrplVaultDepositor", () => {
         amount: 1n,
         destination: { account: ACCOUNT },
       }),
-    ).rejects.toMatchObject({ code: "RPC_ERROR" });
+    ).rejects.toMatchObject({ code: "TX_REVERTED", txRef: HASH_REF });
 
     signer.sign.mockResolvedValueOnce({ txBlob: TX_BLOB, hash: "not-a-hash" });
     await expect(
@@ -335,7 +375,10 @@ describe("XrplVaultDepositor", () => {
     client.request.mockResolvedValueOnce(txResponse(false));
     await expect(depositor.verifyDeposit(HASH_REF, 1n)).resolves.toBe("pending");
 
-    client.request.mockRejectedValueOnce(new Error("txnNotFound"));
+    client.request.mockRejectedValueOnce({
+      message: "Transaction not found.",
+      data: { error: "txnNotFound" },
+    });
     await expect(depositor.verifyDeposit(HASH_REF, 0)).resolves.toBe("absent");
 
     const rpcError = new Error("node offline");

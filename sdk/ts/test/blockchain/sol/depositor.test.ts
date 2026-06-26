@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
-
 import bs58 from "bs58";
+import { sha256 } from "@noble/hashes/sha2.js";
 import {
   PublicKey,
   SystemProgram,
@@ -11,15 +10,25 @@ import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import {
   ClearnetSdkError,
+  eventAuthorityPda as sdkEventAuthorityPda,
   SOLANA_CUSTODY_PROGRAM_ID,
   SOLANA_NATIVE_ASSET,
   SolanaVaultDepositor,
+  vaultPda as sdkVaultPda,
 } from "../../../src/index.js";
+import {
+  DEPOSIT_SOL_DISCRIMINATOR,
+  DEPOSIT_SPL_DISCRIMINATOR,
+  SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID,
+  SOLANA_TOKEN_PROGRAM_ID,
+} from "../../../src/blockchain/sol/constants.js";
+import { bytes32Hex } from "../../../src/blockchain/sol/validation.js";
 import type {
   Bytes32Hex,
   DepositStatus,
   SolanaSigner,
   SolanaSubmitDepositInput,
+  SubmitDepositOptions,
   TxRef,
   VaultDepositor,
 } from "../../../src/index.js";
@@ -35,12 +44,11 @@ const REFERENCE =
   "0x2222222222222222222222222222222222222222222222222222222222222222" as Bytes32Hex;
 const SIGNATURE = bs58.encode(Uint8Array.from({ length: 64 }, (_, i) => i + 1));
 
-const DEPOSIT_SOL_DISCRIMINATOR = [108, 81, 78, 117, 125, 155, 56, 200];
-const DEPOSIT_SPL_DISCRIMINATOR = [224, 0, 198, 175, 198, 47, 105, 204];
 const SYSTEM_PROGRAM_ID = SystemProgram.programId.toBase58();
-const TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-const ASSOCIATED_TOKEN_PROGRAM_ID =
-  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const TOKEN_PROGRAM_ID = SOLANA_TOKEN_PROGRAM_ID;
+const ASSOCIATED_TOKEN_PROGRAM_ID = SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID;
+const VAULT_PDA = sdkVaultPda(PROGRAM_ID).toBase58();
+const EVENT_AUTHORITY_PDA = sdkEventAuthorityPda(PROGRAM_ID).toBase58();
 
 interface MockSigner extends SolanaSigner {
   signAndSend: ReturnType<
@@ -50,6 +58,7 @@ interface MockSigner extends SolanaSigner {
 
 describe("SolanaVaultDepositor", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -91,9 +100,9 @@ describe("SolanaVaultDepositor", () => {
     expect(instruction.programId.toBase58()).toBe(EXPECTED_PROGRAM_ID);
     expect(metas(instruction)).toEqual([
       meta(DEPOSITOR, true, true),
-      meta(vaultPda(), false, true),
+      meta(VAULT_PDA, false, true),
       meta(SYSTEM_PROGRAM_ID, false, false),
-      meta(eventAuthorityPda(), false, false),
+      meta(EVENT_AUTHORITY_PDA, false, false),
       meta(PROGRAM_ID, false, false),
     ]);
     expect([...instruction.data]).toEqual([
@@ -123,11 +132,11 @@ describe("SolanaVaultDepositor", () => {
       meta(DEPOSITOR, true, true),
       meta(MINT, false, false),
       meta(ata(DEPOSITOR, MINT), false, true),
-      meta(vaultPda(), false, false),
-      meta(ata(vaultPda(), MINT), false, true),
+      meta(VAULT_PDA, false, false),
+      meta(ata(VAULT_PDA, MINT), false, true),
       meta(TOKEN_PROGRAM_ID, false, false),
       meta(ASSOCIATED_TOKEN_PROGRAM_ID, false, false),
-      meta(eventAuthorityPda(), false, false),
+      meta(EVENT_AUTHORITY_PDA, false, false),
       meta(PROGRAM_ID, false, false),
     ]);
     expect([...instruction.data]).toEqual([
@@ -144,6 +153,26 @@ describe("SolanaVaultDepositor", () => {
     const signer = createSigner();
     const depositor = createDepositor(signer);
 
+    await expect(
+      depositor.submitDeposit(null as unknown as SolanaSubmitDepositInput),
+    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    await expect(
+      depositor.submitDeposit(
+        {
+          asset: SOLANA_NATIVE_ASSET,
+          amount: 1n,
+          destination: { account: ACCOUNT },
+        },
+        null as unknown as SubmitDepositOptions,
+      ),
+    ).rejects.toMatchObject({ code: "RECEIPT_TIMEOUT" });
+    await expect(
+      depositor.submitDeposit({
+        asset: SOLANA_NATIVE_ASSET,
+        amount: 1n,
+        destination: null as unknown as SolanaSubmitDepositInput["destination"],
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
         asset: SOLANA_NATIVE_ASSET,
@@ -162,6 +191,20 @@ describe("SolanaVaultDepositor", () => {
       depositor.submitDeposit({
         asset: SOLANA_NATIVE_ASSET,
         amount: 0n,
+        destination: { account: ACCOUNT },
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
+    await expect(
+      depositor.submitDeposit({
+        asset: SOLANA_NATIVE_ASSET,
+        amount: 1 as unknown as bigint,
+        destination: { account: ACCOUNT },
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
+    await expect(
+      depositor.submitDeposit({
+        asset: SOLANA_NATIVE_ASSET,
+        amount: 1n << 64n,
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
@@ -187,6 +230,89 @@ describe("SolanaVaultDepositor", () => {
         programId: publicKey(33).toBase58(),
       }),
     ).toThrow(ClearnetSdkError);
+    expect(() =>
+      new SolanaVaultDepositor({ rpcUrl: "", signer }),
+    ).toThrow(ClearnetSdkError);
+    expect(() =>
+      new SolanaVaultDepositor({
+        rpcUrl: RPC_URL,
+        signer: undefined as unknown as SolanaSigner,
+      }),
+    ).toThrow(ClearnetSdkError);
+    expect(() =>
+      new SolanaVaultDepositor({
+        rpcUrl: RPC_URL,
+        signer: {
+          publicKey: "not-base58",
+          signAndSend: async () => SIGNATURE,
+        },
+      }),
+    ).toThrow(ClearnetSdkError);
+    expect(() =>
+      new SolanaVaultDepositor({
+        rpcUrl: RPC_URL,
+        signer: { publicKey: DEPOSITOR.toBase58() } as unknown as SolanaSigner,
+      }),
+    ).toThrow(ClearnetSdkError);
+    expect(() =>
+      new SolanaVaultDepositor({
+        rpcUrl: RPC_URL,
+        signer,
+        commitment: "recent" as never,
+      }),
+    ).toThrow(ClearnetSdkError);
+    expect(() =>
+      new SolanaVaultDepositor({
+        rpcUrl: RPC_URL,
+        signer,
+        receiptTimeoutMs: 0,
+      }),
+    ).toThrow(ClearnetSdkError);
+  });
+
+  it("wraps signer failures before a tx ref exists", async () => {
+    const cause = new Error("wallet rejected");
+    stubSignatureStatus({ confirmationStatus: "finalized" });
+    const signer = createSigner();
+    signer.signAndSend.mockRejectedValue(cause);
+    const depositor = createDepositor(signer);
+    const onSubmitted = vi.fn();
+
+    await expect(
+      depositor.submitDeposit(
+        {
+          asset: SOLANA_NATIVE_ASSET,
+          amount: 1n,
+          destination: { account: ACCOUNT },
+        },
+        { onSubmitted },
+      ),
+    ).rejects.toMatchObject({
+      code: "RPC_ERROR",
+      cause,
+      txRef: undefined,
+    });
+    expect(onSubmitted).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid signer-returned signatures before submission callback", async () => {
+    stubSignatureStatus({ confirmationStatus: "finalized" });
+    const signer = createSigner();
+    signer.signAndSend.mockResolvedValue("not a base58 signature");
+    const depositor = createDepositor(signer);
+    const onSubmitted = vi.fn();
+
+    await expect(
+      depositor.submitDeposit(
+        {
+          asset: SOLANA_NATIVE_ASSET,
+          amount: 1n,
+          destination: { account: ACCOUNT },
+        },
+        { onSubmitted },
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_TX_REF" });
+    expect(onSubmitted).not.toHaveBeenCalled();
   });
 
   it("attaches txRef when a post-broadcast status lookup fails", async () => {
@@ -231,10 +357,63 @@ describe("SolanaVaultDepositor", () => {
   });
 
   it("attaches txRef when a submitted transaction times out", async () => {
+    vi.useFakeTimers();
     stubSignatureStatus(null);
     const signer = createSigner();
     const depositor = createDepositor(signer);
     const expectedRef = txRefForSignature(SIGNATURE);
+
+    const promise = depositor.submitDeposit(
+      {
+        asset: SOLANA_NATIVE_ASSET,
+        amount: 1n,
+        destination: { account: ACCOUNT },
+      },
+      { receiptTimeoutMs: 1_000 },
+    );
+    const assertion = expect(promise).rejects.toMatchObject({
+      code: "RECEIPT_TIMEOUT",
+      txRef: expectedRef,
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await assertion;
+  });
+
+  it("attaches txRef when a submitted transaction is aborted while waiting", async () => {
+    vi.useFakeTimers();
+    stubSignatureStatus(null);
+    const signer = createSigner();
+    const depositor = createDepositor(signer);
+    const controller = new AbortController();
+    const expectedRef = txRefForSignature(SIGNATURE);
+
+    const promise = depositor.submitDeposit(
+      {
+        asset: SOLANA_NATIVE_ASSET,
+        amount: 1n,
+        destination: { account: ACCOUNT },
+      },
+      {
+        signal: controller.signal,
+        receiptTimeoutMs: 10_000,
+        onSubmitted() {
+          setTimeout(() => controller.abort(), 1);
+        },
+      },
+    );
+    const assertion = expect(promise).rejects.toMatchObject({
+      code: "RECEIPT_TIMEOUT",
+      txRef: expectedRef,
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+  });
+
+  it("rejects invalid wait options before signing", async () => {
+    const signer = createSigner();
+    const depositor = createDepositor(signer);
+    const controller = new AbortController();
+    controller.abort();
 
     await expect(
       depositor.submitDeposit(
@@ -243,12 +422,43 @@ describe("SolanaVaultDepositor", () => {
           amount: 1n,
           destination: { account: ACCOUNT },
         },
-        { receiptTimeoutMs: 1 },
+        { receiptTimeoutMs: 0 },
       ),
-    ).rejects.toMatchObject({
+    ).rejects.toMatchObject({ code: "RECEIPT_TIMEOUT" });
+    await expect(
+      depositor.submitDeposit(
+        {
+          asset: SOLANA_NATIVE_ASSET,
+          amount: 1n,
+          destination: { account: ACCOUNT },
+        },
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ code: "RECEIPT_TIMEOUT" });
+    expect(signer.signAndSend).not.toHaveBeenCalled();
+  });
+
+  it("bounds a hung post-submit status lookup", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    const signer = createSigner();
+    const depositor = createDepositor(signer);
+    const expectedRef = txRefForSignature(SIGNATURE);
+
+    const promise = depositor.submitDeposit(
+      {
+        asset: SOLANA_NATIVE_ASSET,
+        amount: 1n,
+        destination: { account: ACCOUNT },
+      },
+      { receiptTimeoutMs: 1_000 },
+    );
+    const assertion = expect(promise).rejects.toMatchObject({
       code: "RECEIPT_TIMEOUT",
       txRef: expectedRef,
     });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await assertion;
   });
 
   it("maps Solana signature statuses to the shared deposit status", async () => {
@@ -297,6 +507,15 @@ describe("SolanaVaultDepositor", () => {
       depositor.verifyDeposit({ hash: "0x1234" as Bytes32Hex, raw: SIGNATURE }, 0),
     ).rejects.toMatchObject({ code: "INVALID_TX_REF" });
     await expect(
+      depositor.verifyDeposit(
+        {
+          hash: txRefForSignature(bs58.encode(new Uint8Array(64).fill(9))).hash,
+          raw: SIGNATURE,
+        },
+        0,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_TX_REF" });
+    await expect(
       depositor.verifyDeposit(txRefForSignature(SIGNATURE), -1),
     ).rejects.toMatchObject({ code: "INVALID_CONFIRMATIONS" });
     await expect(
@@ -304,6 +523,19 @@ describe("SolanaVaultDepositor", () => {
     ).rejects.toMatchObject({ code: "INVALID_CONFIRMATIONS" });
 
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("preserves txRef when verifyDeposit status lookup fails", async () => {
+    const rpcError = new Error("node offline");
+    stubRpcFailure(rpcError);
+    const depositor = createDepositor(createSigner());
+    const ref = txRefForSignature(SIGNATURE);
+
+    await expect(depositor.verifyDeposit(ref, 0)).rejects.toMatchObject({
+      code: "RPC_ERROR",
+      txRef: ref,
+      cause: rpcError,
+    });
   });
 });
 
@@ -329,21 +561,6 @@ function signedTransaction(signer: MockSigner): Transaction {
 
 function publicKey(seed: number): PublicKey {
   return new PublicKey(Uint8Array.from({ length: 32 }, (_, i) => seed + i));
-}
-
-function vaultPda(): string {
-  return pda("vault");
-}
-
-function eventAuthorityPda(): string {
-  return pda("__event_authority");
-}
-
-function pda(seed: string): string {
-  return PublicKey.findProgramAddressSync(
-    [new TextEncoder().encode(seed)],
-    PROGRAM_ID,
-  )[0].toBase58();
 }
 
 function ata(owner: PublicKey | string, mint: PublicKey): string {
@@ -389,8 +606,7 @@ function u64(value: bigint): Uint8Array {
 
 function txRefForSignature(signature: string): TxRef {
   const signatureBytes = bs58.decode(signature);
-  const hash = createHash("sha256").update(signatureBytes).digest("hex");
-  return { hash: `0x${hash}`, raw: signature };
+  return { hash: bytes32Hex(sha256(signatureBytes)), raw: signature };
 }
 
 function stubSignatureStatus(

@@ -5,7 +5,7 @@ import { isValidClassicAddress } from "xrpl";
 import { ClearnetSdkError } from "../../core/errors.js";
 import type { Bytes32Hex, TxRef } from "../../core/types.js";
 import { UINT64_MAX, XRPL_NATIVE_ASSET } from "./constants.js";
-import type { XrplSigner } from "./types.js";
+import type { XrplDepositDestination, XrplSigner } from "./types.js";
 
 const BYTES32_HEX_PATTERN = /^0x[a-fA-F0-9]{64}$/;
 const HASH_PATTERN = /^[a-fA-F0-9]{64}$/;
@@ -56,7 +56,7 @@ export function requireClassicAddress(value: unknown, field: string): string {
 export function requireSigner(signer: unknown): XrplSigner {
   if (!signer || typeof signer !== "object") {
     throw new ClearnetSdkError(
-      "INVALID_ADDRESS",
+      "MISSING_WALLET_ACCOUNT",
       "XRPL signer is required",
     );
   }
@@ -64,11 +64,23 @@ export function requireSigner(signer: unknown): XrplSigner {
   requireClassicAddress(candidate.classicAddress, "signer.classicAddress");
   if (typeof candidate.sign !== "function") {
     throw new ClearnetSdkError(
-      "INVALID_ADDRESS",
+      "MISSING_WALLET_ACCOUNT",
       "XRPL signer.sign is required",
     );
   }
   return candidate as XrplSigner;
+}
+
+export function requireDepositDestination(
+  destination: unknown,
+): XrplDepositDestination {
+  if (!destination || typeof destination !== "object") {
+    throw new ClearnetSdkError(
+      "INVALID_ADDRESS",
+      "destination.account must be a 20-byte hex address",
+    );
+  }
+  return destination as XrplDepositDestination;
 }
 
 export function requireClearnetAccount(account: unknown): Uint8Array {
@@ -79,8 +91,7 @@ export function requireClearnetAccount(account: unknown): Uint8Array {
     );
   }
   const trimmed = account.trim();
-  const segment = trimmed.slice(trimmed.lastIndexOf("/") + 1);
-  const hex = segment.toLowerCase().replace(/^0x/, "");
+  const hex = trimmed.toLowerCase().replace(/^0x/, "");
   if (!/^[a-f0-9]+$/.test(hex) || hex.length !== 40) {
     throw new ClearnetSdkError(
       "INVALID_ADDRESS",

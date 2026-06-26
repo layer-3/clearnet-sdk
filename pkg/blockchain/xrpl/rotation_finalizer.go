@@ -58,16 +58,16 @@ var _ core.SignerRotationFinalizer = (*RotationFinalizer)(nil)
 // current SignerQuorum (used to size the multi-sign fee and trim the quorum);
 // signer is one of the current SignerList members.
 func NewRotationFinalizer(rpcURL, vaultAddress string, threshold int, signer sign.Signer) (*RotationFinalizer, error) {
-	cfg, err := rpc.NewClientConfig(rpcURL)
+	client, err := newRPCClient(rpcURL)
 	if err != nil {
-		return nil, fmt.Errorf("xrpl: create rpc config: %w", err)
+		return nil, err
 	}
 	id, err := DeriveIdentity(signer)
 	if err != nil {
 		return nil, err
 	}
 	return &RotationFinalizer{
-		client:       rpc.NewClient(cfg),
+		client:       client,
 		vaultAddress: vaultAddress,
 		threshold:    threshold,
 		signer:       signer,
@@ -96,6 +96,9 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 		if err != nil {
 			return nil, fmt.Errorf("xrpl: resolve live quorum: %w", err)
 		}
+	}
+	if err := ensureNetworkID(f.client); err != nil {
+		return nil, err
 	}
 	if err := f.client.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
 		return nil, fmt.Errorf("xrpl: autofill: %w", err)

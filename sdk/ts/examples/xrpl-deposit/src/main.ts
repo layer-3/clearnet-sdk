@@ -1,5 +1,6 @@
 import {
   getAddress,
+  getNetwork,
   isInstalled,
   signTransaction,
 } from "@gemwallet/api";
@@ -13,19 +14,48 @@ import type {
   XrplPreparedPayment,
   XrplSigner,
 } from "@yellow-org/clearnet-sdk";
-import { hashes, type SubmittableTransaction } from "xrpl";
+import { Client, Wallet, hashes, type SubmittableTransaction } from "xrpl";
+import {
+  createLocalXrplSigner,
+  LOCAL_XRPL_GENESIS_SEED,
+} from "./local-signer.js";
 
 const form = mustElement<HTMLFormElement>("deposit-form");
-const connectButton = mustElement<HTMLButtonElement>("connect");
+const localSignerButton = mustElement<HTMLButtonElement>("connect-local");
+const gemWalletButton = mustElement<HTMLButtonElement>("connect-gemwallet");
+const fundButton = mustElement<HTMLButtonElement>("fund");
 const submitButton = mustElement<HTMLButtonElement>("submit");
 const verifyButton = mustElement<HTMLButtonElement>("verify");
 const logOutput = mustElement<HTMLOutputElement>("log");
 
-let signer: GemWalletSigner | undefined;
+let signer: XrplSigner | undefined;
 let lastRef: TxRef | undefined;
 
-connectButton.addEventListener("click", () => {
-  void connectWallet();
+const GEMWALLET_NETWORK_TIMEOUT_MS = 8_000;
+const GEMWALLET_ADDRESS_TIMEOUT_MS = 60_000;
+const NETWORK_PROBE_TIMEOUT_MS = 5_000;
+
+type GemWalletNetwork = {
+  chain: string;
+  network: string;
+  websocket: string;
+};
+
+type NetworkIdentity = {
+  networkId: number;
+  url: string;
+};
+
+localSignerButton.addEventListener("click", () => {
+  connectLocalSigner();
+});
+
+gemWalletButton.addEventListener("click", () => {
+  void connectGemWallet();
+});
+
+fundButton.addEventListener("click", () => {
+  void fundWallet();
 });
 
 form.addEventListener("submit", (event) => {
@@ -37,57 +67,145 @@ verifyButton.addEventListener("click", () => {
   void verifyLastTx();
 });
 
-writeLog("Connect GemWallet to submit an XRPL deposit.");
+writeLog("Use a local signer, fund it, then submit an XRPL deposit.");
 
-async function connectWallet(): Promise<void> {
-  setBusy(connectButton, true);
+function connectLocalSigner(): void {
+  setBusy(localSignerButton, true);
   try {
+    const localSigner = createLocalXrplSigner(readOptional("local-seed"));
+    signer = localSigner;
+    if (localSigner.seed !== undefined) {
+      setInput("local-seed", localSigner.seed);
+    }
+    writeLog(
+      `Using local signer ${localSigner.classicAddress}\n` +
+        "Click Fund Wallet before submitting on the local devnet.",
+    );
+  } catch (error) {
+    writeError(error);
+  } finally {
+    setBusy(localSignerButton, false);
+  }
+}
+
+async function connectGemWallet(): Promise<void> {
+  setBusy(gemWalletButton, true);
+  try {
+    writeLog("Waiting for GemWallet address approval...");
     const installed = await isInstalled();
     if (installed.result.isInstalled !== true) {
       throw new Error("GemWallet extension is not installed");
     }
-    const response = await getAddress();
+    const response = await withTimeout(
+      getAddress(),
+      "GemWallet address approval",
+      GEMWALLET_ADDRESS_TIMEOUT_MS,
+    );
     const address = response.result?.address;
     if (address === undefined || address === "") {
       throw new Error("GemWallet did not return an address");
     }
     signer = new GemWalletSigner(address);
-    writeLog(`Connected GemWallet ${address}`);
+    writeLog(
+      `Connected GemWallet ${address}\n` +
+        "Network will be verified before signing.",
+    );
   } catch (error) {
     writeError(error);
   } finally {
-    setBusy(connectButton, false);
+    setBusy(gemWalletButton, false);
   }
 }
 
-async function submitDeposit(): Promise<void> {
+async function fundWallet(): Promise<void> {
   if (signer === undefined) {
-    await connectWallet();
+    connectLocalSigner();
   }
   if (signer === undefined) {
     return;
   }
 
-  const ref = readOptional("reference");
-  const maxFeeDrops = readOptional("max-fee-drops");
-  const depositor = new XrplVaultDepositor({
-    rpcUrl: readInput("rpc-url"),
-    vaultAddress: readInput("vault-address"),
-    signer,
-    ...(maxFeeDrops === undefined ? {} : { maxFeeDrops: BigInt(maxFeeDrops) }),
-  });
+  setBusy(fundButton, true);
+  const client = new Client(readInput("rpc-url"));
+  try {
+    const master = Wallet.fromSeed(LOCAL_XRPL_GENESIS_SEED);
+    await client.connect();
+    const prepared = await client.autofill({
+      TransactionType: "Payment",
+      Account: master.classicAddress,
+      Destination: signer.classicAddress,
+      Amount: readInput("fund-drops"),
+    });
+    const signed = master.sign(prepared);
+    const result = await client.submit(signed.tx_blob, { autofill: false });
+    const engineResult = result.result.engine_result;
+    if (engineResult !== "tesSUCCESS" && engineResult !== "terQUEUED") {
+      throw new Error(`Fund rejected: ${engineResult}`);
+    }
+    await ledgerAccept();
+    const account = await client.request({
+      command: "account_info",
+      account: signer.classicAddress,
+      ledger_index: "validated",
+    });
+    writeLog(
+      `Funded ${signer.classicAddress}\n` +
+        `hash: ${signed.hash}\n` +
+        `balance: ${account.result.account_data.Balance} drops`,
+    );
+  } catch (error) {
+    writeError(error);
+  } finally {
+    if (client.isConnected()) {
+      await client.disconnect();
+    }
+    setBusy(fundButton, false);
+  }
+}
+
+async function submitDeposit(): Promise<void> {
+  if (signer === undefined) {
+    connectLocalSigner();
+  }
+  if (signer === undefined) {
+    return;
+  }
 
   setBusy(submitButton, true);
   try {
+    if (signer instanceof GemWalletSigner) {
+      await assertGemWalletMatchesApp();
+    }
+
+    const ref = readOptional("reference");
+    const maxFeeDrops = readOptional("max-fee-drops");
+    const depositor = new XrplVaultDepositor({
+      rpcUrl: readInput("rpc-url"),
+      vaultAddress: readInput("vault-address"),
+      signer,
+      ...(maxFeeDrops === undefined
+        ? {}
+        : { maxFeeDrops: BigInt(maxFeeDrops) }),
+    });
+    const asset = readInput("asset");
     lastRef = await depositor.submitDeposit(
-      {
-        destination: {
-          account: readInput("account"),
-          ...(ref === undefined ? {} : { ref: ref as Bytes32Hex }),
-        },
-        asset: readInput("asset"),
-        amount: readAmount(),
-      },
+      isNativeAsset(asset)
+        ? {
+            destination: {
+              account: readInput("account"),
+              ...(ref === undefined ? {} : { ref: ref as Bytes32Hex }),
+            },
+            asset: asset === "" ? "" : XRPL_NATIVE_ASSET,
+            amount: BigInt(readInput("amount")),
+          }
+        : {
+            destination: {
+              account: readInput("account"),
+              ...(ref === undefined ? {} : { ref: ref as Bytes32Hex }),
+            },
+            asset: asset as `${string}.${string}` | `${string}:${string}`,
+            amount: readInput("amount"),
+          },
       {
         onSubmitted(ref) {
           lastRef = ref;
@@ -96,6 +214,7 @@ async function submitDeposit(): Promise<void> {
         },
       },
     );
+    await ledgerAccept();
     verifyButton.disabled = false;
     writeLog(`Accepted ${lastRef.raw}\nhash: ${lastRef.hash}`);
   } catch (error) {
@@ -129,12 +248,34 @@ async function verifyLastTx(): Promise<void> {
   }
 }
 
+async function ledgerAccept(): Promise<void> {
+  const response = await fetch(readInput("admin-rpc-url"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method: "ledger_accept", params: [] }),
+  });
+  if (!response.ok) {
+    throw new Error(`ledger_accept failed with HTTP ${response.status}`);
+  }
+  const body = (await response.json()) as {
+    result?: { status?: string };
+    error?: unknown;
+  };
+  if (body.result?.status !== "success") {
+    throw new Error(`ledger_accept failed: ${JSON.stringify(body)}`);
+  }
+}
+
 class GemWalletSigner implements XrplSigner {
   constructor(readonly classicAddress: string) {}
 
   async sign(payment: XrplPreparedPayment): Promise<{ txBlob: string; hash: string }> {
+    const transaction = { ...(payment as SubmittableTransaction) };
+    // GemWallet 3.8.2 crashes its review UI for custom NetworkID values, but
+    // it autofills NetworkID from the selected custom endpoint during signing.
+    delete (transaction as { NetworkID?: number }).NetworkID;
     const response = await signTransaction({
-      transaction: payment as SubmittableTransaction,
+      transaction,
     });
     const txBlob = response.result?.signature;
     if (txBlob == null || txBlob === "") {
@@ -147,17 +288,116 @@ class GemWalletSigner implements XrplSigner {
   }
 }
 
-function readAmount(): bigint | string {
-  const asset = readInput("asset");
-  const amount = readInput("amount");
-  if (asset === "" || asset.toUpperCase() === XRPL_NATIVE_ASSET) {
-    return BigInt(amount);
+async function assertGemWalletMatchesApp(): Promise<{
+  walletNetwork: GemWalletNetwork;
+  appIdentity: NetworkIdentity;
+  walletIdentity: NetworkIdentity;
+}> {
+  const walletNetwork = await getGemWalletNetwork();
+  writeLog(
+    `GemWallet selected ${describeGemWalletNetwork(walletNetwork)}\n` +
+      "Checking network IDs...",
+  );
+  const [appIdentity, walletIdentity] = await Promise.all([
+    getNetworkIdentity(readInput("rpc-url")),
+    getNetworkIdentity(walletNetwork.websocket),
+  ]);
+
+  if (walletIdentity.networkId !== appIdentity.networkId) {
+    throw new Error(
+      `GemWallet is on ${describeGemWalletNetwork(walletNetwork)} ` +
+        `(network_id ${walletIdentity.networkId}).\n` +
+        `The demo RPC is ${appIdentity.url} ` +
+        `(network_id ${appIdentity.networkId}).\n` +
+        "Switch GemWallet to a custom WSS endpoint for this chain, or use the local signer.",
+    );
   }
-  return amount;
+
+  return { walletNetwork, appIdentity, walletIdentity };
+}
+
+async function getGemWalletNetwork(): Promise<GemWalletNetwork> {
+  const response = await withTimeout(
+    getNetwork(),
+    "GemWallet network check",
+    GEMWALLET_NETWORK_TIMEOUT_MS,
+  );
+  const result = response.result;
+  if (
+    result === undefined ||
+    result.websocket === undefined ||
+    result.websocket === ""
+  ) {
+    throw new Error("GemWallet did not return its selected network");
+  }
+  return {
+    chain: String(result.chain),
+    network: String(result.network),
+    websocket: result.websocket,
+  };
+}
+
+async function getNetworkIdentity(url: string): Promise<NetworkIdentity> {
+  const client = new Client(url);
+  try {
+    await withTimeout(
+      client.connect(),
+      `Connect to ${url}`,
+      NETWORK_PROBE_TIMEOUT_MS,
+    );
+    const response = await withTimeout(
+      client.request({ command: "server_info" }),
+      `server_info for ${url}`,
+      NETWORK_PROBE_TIMEOUT_MS,
+    );
+    const info = response.result.info as { network_id?: number };
+    return {
+      networkId: info.network_id ?? 0,
+      url,
+    };
+  } finally {
+    if (client.isConnected()) {
+      await client.disconnect();
+    }
+  }
+}
+
+function describeGemWalletNetwork(network: GemWalletNetwork): string {
+  return `${network.chain} ${network.network} (${network.websocket})`;
+}
+
+async function withTimeout<T>(
+  operation: Promise<T>,
+  label: string,
+  timeoutMs: number,
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+function isNativeAsset(asset: string): boolean {
+  return asset === "" || asset.toUpperCase() === XRPL_NATIVE_ASSET;
 }
 
 function readInput(id: string): string {
   return mustElement<HTMLInputElement>(id).value.trim();
+}
+
+function setInput(id: string, value: string): void {
+  mustElement<HTMLInputElement>(id).value = value;
 }
 
 function readOptional(id: string): string | undefined {

@@ -20,6 +20,7 @@ import {
   normalizeTxHash,
   requireClassicAddress,
   requireClearnetAccount,
+  requireDepositDestination,
   requireReference,
   requireRpcUrl,
   requireSigner,
@@ -49,9 +50,15 @@ export class XrplVaultDepositor
     input: XrplSubmitDepositInput,
     options: SubmitDepositOptions = {},
   ): Promise<TxRef> {
-    const account = requireClearnetAccount(input.destination.account);
-    const reference = requireReference(input.destination.ref);
-    const amount = resolveAmount(input.asset, input.amount);
+    const fields =
+      input && typeof input === "object"
+        ? (input as Partial<XrplSubmitDepositInput>)
+        : {};
+    const submitOptions = requireSubmitDepositOptions(options);
+    const destination = requireDepositDestination(fields.destination);
+    const account = requireClearnetAccount(destination.account);
+    const reference = requireReference(destination.ref);
+    const amount = resolveAmount(fields.asset, fields.amount);
     const payment: Payment = {
       TransactionType: "Payment",
       Account: this.signer.classicAddress,
@@ -65,7 +72,7 @@ export class XrplVaultDepositor
     const signed = await this.sign(prepared);
     const ref = normalizeTxHash(signed.hash);
     await this.submit(signed.txBlob, ref);
-    options.onSubmitted?.(ref);
+    submitOptions.onSubmitted?.(ref);
     return ref;
   }
 
@@ -140,7 +147,7 @@ export class XrplVaultDepositor
       const engineResult = response.result.engine_result;
       if (engineResult !== "tesSUCCESS" && engineResult !== "terQUEUED") {
         throw new ClearnetSdkError(
-          "RPC_ERROR",
+          "TX_REVERTED",
           `xrpl: deposit rejected: ${engineResult}`,
           { txRef: ref },
         );
@@ -174,8 +181,33 @@ function isTxnNotFound(error: unknown): boolean {
   if (!error || typeof error !== "object") {
     return false;
   }
+  if (readStringProperty(error, "error") === "txnNotFound") {
+    return true;
+  }
+  const data = "data" in error ? error.data : undefined;
+  if (
+    data &&
+    typeof data === "object" &&
+    readStringProperty(data, "error") === "txnNotFound"
+  ) {
+    return true;
+  }
   const message =
     "message" in error && typeof error.message === "string" ? error.message : "";
-  const data = "data" in error ? String(error.data) : "";
-  return message.includes("txnNotFound") || data.includes("txnNotFound");
+  return message.includes("txnNotFound");
+}
+
+function readStringProperty(value: object, key: string): string | undefined {
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === "string" ? field : undefined;
+}
+
+function requireSubmitDepositOptions(options: unknown): SubmitDepositOptions {
+  if (options === null || typeof options !== "object") {
+    throw new ClearnetSdkError(
+      "RPC_ERROR",
+      "submit options must be an object",
+    );
+  }
+  return options;
 }

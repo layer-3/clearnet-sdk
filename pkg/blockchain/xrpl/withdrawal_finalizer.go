@@ -56,16 +56,16 @@ var _ core.VaultWithdrawalFinalizer = (*WithdrawalFinalizer)(nil)
 // NewWithdrawalFinalizer builds the XRPL vault finalizer. threshold is the
 // SignerQuorum; tickets authorizes each withdrawal's TicketSequence.
 func NewWithdrawalFinalizer(rpcURL, vaultAddress string, threshold int, signer sign.Signer, tickets TicketProvider) (*WithdrawalFinalizer, error) {
-	cfg, err := rpc.NewClientConfig(rpcURL)
+	client, err := newRPCClient(rpcURL)
 	if err != nil {
-		return nil, fmt.Errorf("xrpl: create rpc config: %w", err)
+		return nil, err
 	}
 	id, err := DeriveIdentity(signer)
 	if err != nil {
 		return nil, err
 	}
 	return &WithdrawalFinalizer{
-		client:       rpc.NewClient(cfg),
+		client:       client,
 		vaultAddress: vaultAddress,
 		threshold:    threshold,
 		signer:       signer,
@@ -121,6 +121,9 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 	flatTx["Sequence"] = uint32(0)
 	quorum, err := f.feeQuorum(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureNetworkID(f.client); err != nil {
 		return nil, err
 	}
 	if err := f.client.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {

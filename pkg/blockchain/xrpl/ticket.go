@@ -31,12 +31,12 @@ var _ TicketProvider = (*LedgerTicketProvider)(nil)
 // NewLedgerTicketProvider builds a provider reading Tickets owned by
 // vaultAddress over the JSON-RPC at rpcURL.
 func NewLedgerTicketProvider(rpcURL, vaultAddress string) (*LedgerTicketProvider, error) {
-	cfg, err := rpc.NewClientConfig(rpcURL)
+	client, err := newRPCClient(rpcURL)
 	if err != nil {
-		return nil, fmt.Errorf("xrpl: create rpc config: %w", err)
+		return nil, err
 	}
 	return &LedgerTicketProvider{
-		client:  rpc.NewClient(cfg),
+		client:  client,
 		account: types.Address(vaultAddress),
 	}, nil
 }

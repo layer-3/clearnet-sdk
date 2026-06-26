@@ -15,13 +15,6 @@ export interface XrplDepositDestination extends DepositDestination {
   ref?: Bytes32Hex;
 }
 
-export interface XrplSubmitDepositInput
-  extends SubmitDepositInput<XrplAmount> {
-  asset: XrplAsset;
-  amount: XrplAmount;
-  destination: XrplDepositDestination;
-}
-
 export interface XrplNativeDepositInput extends SubmitDepositInput<bigint> {
   asset: "" | "XRP";
   amount: bigint;
@@ -33,6 +26,10 @@ export interface XrplIssuedDepositInput extends SubmitDepositInput<string> {
   amount: string;
   destination: XrplDepositDestination;
 }
+
+export type XrplSubmitDepositInput =
+  | XrplNativeDepositInput
+  | XrplIssuedDepositInput;
 
 export interface XrplSignedTransaction {
   txBlob: string;

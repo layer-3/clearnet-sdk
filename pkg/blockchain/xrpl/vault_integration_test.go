@@ -52,11 +52,11 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 	defer cancel()
 
 	url := xrplEnv("XRPL_RPC_URL", defaultXRPLRPC)
-	cfg, err := rpc.NewClientConfig(url)
+	client, err := newRPCClient(url)
 	if err != nil {
 		t.Fatalf("rpc config: %v", err)
 	}
-	h := &xrplHarness{url: url, client: rpc.NewClient(cfg), http: &http.Client{Timeout: 30 * time.Second}}
+	h := &xrplHarness{url: url, client: client, http: &http.Client{Timeout: 30 * time.Second}}
 
 	master := masterSigner(t)
 	masterID := mustIdentity(t, master)
@@ -200,6 +200,9 @@ type xrplHarness struct {
 // ledger so the tx validates before the next call reads account state.
 func (h *xrplHarness) submit(ctx context.Context, t *testing.T, s sign.Signer, id Identity, flatTx transaction.FlatTransaction) {
 	t.Helper()
+	if err := ensureNetworkID(h.client); err != nil {
+		t.Fatalf("network id: %v", err)
+	}
 	if err := h.client.Autofill(&flatTx); err != nil {
 		t.Fatalf("autofill: %v", err)
 	}

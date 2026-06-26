@@ -138,12 +138,23 @@ import {
   SOLANA_NATIVE_ASSET,
   SolanaVaultDepositor,
 } from "@yellow-org/clearnet-sdk";
-import { Connection, Keypair, sendAndConfirmTransaction } from "@solana/web3.js";
+import {
+  Connection,
+  Keypair,
+  LAMPORTS_PER_SOL,
+  sendAndConfirmTransaction,
+} from "@solana/web3.js";
 import type { SolanaSigner } from "@yellow-org/clearnet-sdk";
 
 const rpcUrl = "http://127.0.0.1:8899";
 const keypair = Keypair.generate();
 const connection = new Connection(rpcUrl, "confirmed");
+
+const airdrop = await connection.requestAirdrop(
+  keypair.publicKey,
+  LAMPORTS_PER_SOL,
+);
+await connection.confirmTransaction(airdrop, "confirmed");
 
 const signer: SolanaSigner = {
   publicKey: keypair.publicKey.toBase58(),
@@ -239,8 +250,10 @@ const ref = await depositor.submitDeposit({
 Trustlines and balances must already exist before an issued-currency deposit.
 The SDK builds one XRPL `Payment`, adds one `ynet-account` memo carrying the
 Clearnet account/reference, asks the caller-provided signer to sign, submits the
-signed blob, and returns after rippled accepts the submit result. Use
-`verifyDeposit` to observe validated-ledger finality.
+signed blob, and returns after rippled accepts the submit result as `tesSUCCESS`
+or `terQUEUED`. Use `verifyDeposit` to observe validated-ledger finality; a
+just-submitted XRPL payment can return `pending` until it appears in a validated
+ledger.
 
 ## Deposit References
 
@@ -380,10 +393,10 @@ XRPL input fields:
 
 | Field | Type | Notes |
 |---|---|---|
-| `destination.account` | `string` | 20-byte Clearnet account as hex, optional `0x`, or URI-like value whose final path segment is that hex. |
+| `destination.account` | `string` | 20-byte Clearnet account as hex, with optional `0x`. |
 | `destination.ref` | `` `0x${string}` \| undefined `` | Optional 32-byte opaque reference. |
 | `asset` | `string` | `XRP`/empty for native, or issued-currency `CUR.rIssuer` / `CUR:rIssuer`. |
-| `amount` | `bigint \| string` | Native drops as `bigint`, issued-currency decimal value as `string`. |
+| `amount` | `bigint \| string` | Native XRP uses drops as `bigint`; issued currencies use a decimal `string`. |
 
 For XRPL, `TxRef.raw` is the uppercase 64-hex transaction hash and `TxRef.hash`
 is the same bytes as `0x` hex.
@@ -495,10 +508,12 @@ such as `solana:localnet` for a local validator. The local devnet preloads the
 custody program, but the wallet must be funded and SPL token accounts must
 already exist for SPL deposits.
 
-The XRPL demo uses GemWallet's browser API, asks the wallet to sign the prepared
-payment, and submits the signed blob through the configured XRPL WebSocket URL.
-The wallet must be funded, and issued-currency deposits require existing
-trustlines and issued balances.
+The XRPL demo supports a local signer for standalone-devnet smoke tests and
+GemWallet for browser-wallet signing. The GemWallet path requires a custom
+`wss://` endpoint that points at the same local chain as the demo because wallet
+network selection and SDK submission must agree. See
+`examples/xrpl-deposit/README.md` for the full local signer flow, GemWallet
+custom-network setup, funding steps, and troubleshooting notes.
 
 ## Troubleshooting
 
@@ -511,9 +526,9 @@ Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 | `INVALID_CONFIRMATIONS` | `minConfirmations` is negative, fractional, or an unsafe number. |
 | `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value. |
 | `INVALID_TX_REF` | `ref.hash` is not bytes32, Solana `ref.raw` is not a 64-byte signature, or XRPL `ref.raw` is not a 64-hex hash. |
-| `MISSING_WALLET_ACCOUNT` | The EVM wallet account is missing/mismatched, or the Solana signer is missing. |
+| `MISSING_WALLET_ACCOUNT` | The EVM wallet account is missing/mismatched, or the Solana/XRPL signer is missing. |
 | `CHAIN_MISMATCH` | EVM only: the public RPC or wallet chain does not match `chainId`. |
-| `TX_REVERTED` | A submitted approval or deposit transaction reverted. |
+| `TX_REVERTED` | A submitted approval/deposit transaction reverted, or XRPL rejected the payment engine result. |
 | `RECEIPT_TIMEOUT` | Waiting for a receipt timed out or was aborted. |
 | `RPC_ERROR` | The public RPC or wallet provider returned an unexpected error. |
 

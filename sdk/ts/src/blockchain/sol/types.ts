@@ -23,6 +23,12 @@ export interface SolanaSubmitDepositInput extends SubmitDepositInput {
 
 export interface SolanaSigner {
   publicKey: string;
+  /**
+   * Signs and submits a @solana/web3.js v1 Transaction.
+   *
+   * Implementations must set transaction.recentBlockhash, usually from
+   * getLatestBlockhash, before signing.
+   */
   signAndSend(transaction: Transaction): Promise<string>;
 }
 

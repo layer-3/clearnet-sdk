@@ -138,6 +138,22 @@
             Max Fee Drops
             <input id="max-fee-drops" value="" placeholder="optional" />
           </label>
+          <label>
+            Admin HTTP URL
+            <input id="admin-rpc-url" value="/xrpl-admin" />
+          </label>
+          <label>
+            Fund Drops
+            <input id="fund-drops" value="1000000000" />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Signer</legend>
+          <label class="full">
+            Local Wallet Seed
+            <input id="local-seed" value="" placeholder="blank generates a local dev wallet" />
+          </label>
         </fieldset>
 
         <fieldset>
@@ -161,7 +177,9 @@
         </fieldset>
 
         <div class="actions">
-          <button type="button" id="connect">Connect Wallet</button>
+          <button type="button" id="connect-local">Use Local Signer</button>
+          <button type="button" id="connect-gemwallet">Connect GemWallet</button>
+          <button type="button" id="fund">Fund Wallet</button>
           <button type="submit" id="submit">Submit Deposit</button>
           <button type="button" id="verify" disabled>Verify Last Tx</button>
         </div>

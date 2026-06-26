@@ -61,11 +61,13 @@ async function connectWallet(): Promise<void> {
   setBusy(connectButton, true);
   try {
     const chain = readWalletChain();
+    const rpcUrl = readInput("rpc-url");
+    const commitment = readCommitment();
     const wallet = requireWallet(chain);
     const result = await wallet.features[StandardConnect].connect();
     const account = firstSupportedAccount(result.accounts, chain);
-    signer = new BrowserSolanaSigner(wallet, account);
-    const balance = await connection().getBalance(new PublicKey(account.address));
+    signer = new BrowserSolanaSigner(wallet, account, rpcUrl, chain, commitment);
+    const balance = await signer.balance();
     writeLog(
       `Connected ${wallet.name} ${account.address}\nWallet balance: ${balance} lamports`,
     );
@@ -84,16 +86,17 @@ async function submitDeposit(): Promise<void> {
     return;
   }
 
-  const ref = readOptional("reference");
-  const depositor = new SolanaVaultDepositor({
-    rpcUrl: readInput("rpc-url"),
-    signer,
-    programId: readInput("program-id"),
-    commitment: readCommitment(),
-  });
-
   setBusy(submitButton, true);
   try {
+    signer.assertMatches(readInput("rpc-url"), readWalletChain(), readCommitment());
+    const ref = readOptional("reference");
+    const depositor = new SolanaVaultDepositor({
+      rpcUrl: signer.rpcUrl,
+      signer,
+      programId: readInput("program-id"),
+      commitment: signer.commitment,
+    });
+
     lastRef = await depositor.submitDeposit(
       {
         destination: {
@@ -125,15 +128,17 @@ async function verifyLastTx(): Promise<void> {
   if (lastRef === undefined || signer === undefined) {
     return;
   }
-  const depositor = new SolanaVaultDepositor({
-    rpcUrl: readInput("rpc-url"),
-    signer,
-    programId: readInput("program-id"),
-    commitment: readCommitment(),
-  });
 
   setBusy(verifyButton, true);
   try {
+    signer.assertMatches(readInput("rpc-url"), readWalletChain(), readCommitment());
+    const depositor = new SolanaVaultDepositor({
+      rpcUrl: signer.rpcUrl,
+      signer,
+      programId: readInput("program-id"),
+      commitment: signer.commitment,
+    });
+
     const status = await depositor.verifyDeposit(lastRef, 0);
     writeLog(`Verify ${lastRef.raw}\nstatus: ${status}`);
   } catch (error) {
@@ -147,38 +152,59 @@ class BrowserSolanaSigner implements SolanaSigner {
   constructor(
     private readonly wallet: StandardSolanaWallet,
     private readonly account: WalletAccount,
+    readonly rpcUrl: string,
+    private readonly chain: SolanaWalletChain,
+    readonly commitment: SolanaCommitment,
   ) {}
 
   get publicKey(): string {
     return this.account.address;
   }
 
+  async balance(): Promise<number> {
+    return await this.connection().getBalance(new PublicKey(this.publicKey));
+  }
+
+  assertMatches(
+    rpcUrl: string,
+    chain: SolanaWalletChain,
+    commitment: SolanaCommitment,
+  ): void {
+    if (
+      rpcUrl !== this.rpcUrl ||
+      chain !== this.chain ||
+      commitment !== this.commitment
+    ) {
+      throw new Error("network settings changed after wallet connection; reconnect wallet");
+    }
+  }
+
   async signAndSend(transaction: Transaction): Promise<string> {
-    const latest = await connection().getLatestBlockhash(readCommitment());
+    const latest = await this.connection().getLatestBlockhash(this.commitment);
     transaction.recentBlockhash = latest.blockhash;
     transaction.feePayer ??= new PublicKey(this.publicKey);
     const [result] = await this.wallet.features[SolanaSignTransaction].signTransaction({
       account: this.account,
-      chain: readWalletChain(),
+      chain: this.chain,
       transaction: transaction.serialize({
         requireAllSignatures: false,
         verifySignatures: false,
       }),
       options: {
-        preflightCommitment: readCommitment(),
+        preflightCommitment: this.commitment,
       },
     });
     if (result?.signedTransaction === undefined) {
       throw new Error("wallet did not return a signed transaction");
     }
-    return await connection().sendRawTransaction(result.signedTransaction, {
-      preflightCommitment: readCommitment(),
+    return await this.connection().sendRawTransaction(result.signedTransaction, {
+      preflightCommitment: this.commitment,
     });
   }
-}
 
-function connection(): Connection {
-  return new Connection(readInput("rpc-url"), readCommitment());
+  private connection(): Connection {
+    return new Connection(this.rpcUrl, this.commitment);
+  }
 }
 
 function readCommitment(): SolanaCommitment {

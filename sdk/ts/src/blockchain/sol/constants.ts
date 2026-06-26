@@ -16,6 +16,8 @@ export const DEFAULT_SOLANA_COMMITMENT = "finalized";
 
 export const DEFAULT_RECEIPT_TIMEOUT_MS = 60_000;
 
+export const POLL_INTERVAL_MS = 250;
+
 export const DEPOSIT_SOL_DISCRIMINATOR = [
   108, 81, 78, 117, 125, 155, 56, 200,
 ] as const;

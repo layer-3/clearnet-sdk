@@ -18,6 +18,12 @@ const GENESIS_SEED = "snoPBrXtMeMyMHUVTgbuqAfg1SUTb";
 const ACCOUNT = "0x00000000000000000000000000000000000000a1";
 const REFERENCE =
   "0x1111111111111111111111111111111111111111111111111111111111111111" as Bytes32Hex;
+const UNKNOWN_TX_RAW =
+  "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+const UNKNOWN_TX_REF = {
+  hash: `0x${UNKNOWN_TX_RAW.toLowerCase()}`,
+  raw: UNKNOWN_TX_RAW,
+} satisfies TxRef;
 const MEMO_TYPE = "796E65742D6163636F756E74";
 const ASF_DEFAULT_RIPPLE = 8;
 
@@ -108,6 +114,16 @@ describe("XrplVaultDepositor integration", () => {
     });
     expect(payment.Memos).toEqual(expectedMemo(ACCOUNT));
   }, 90_000);
+
+  it("maps an unknown transaction to absent", async () => {
+    const sdk = new XrplVaultDepositor({
+      rpcUrl: XRPL_WS_URL,
+      vaultAddress: vault.classicAddress,
+      signer: signerFromWallet(depositorWallet),
+    });
+
+    await expect(sdk.verifyDeposit(UNKNOWN_TX_REF, 0)).resolves.toBe("absent");
+  }, 60_000);
 });
 
 function signerFromWallet(wallet: Wallet): XrplSigner {
