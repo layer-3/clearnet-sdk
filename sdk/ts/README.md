@@ -223,18 +223,22 @@ const depositor = new XrplVaultDepositor({
   signer,
 });
 
-const ref = await depositor.submitDeposit({
-  destination: {
-    account: "00000000000000000000000000000000000000a1",
-    ref: "0x3333333333333333333333333333333333333333333333333333333333333333",
-  },
-  asset: XRPL_NATIVE_ASSET,
-  amount: 1_000_000n,
-});
+try {
+  const ref = await depositor.submitDeposit({
+    destination: {
+      account: "00000000000000000000000000000000000000a1",
+      ref: "0x3333333333333333333333333333333333333333333333333333333333333333",
+    },
+    asset: XRPL_NATIVE_ASSET,
+    amount: 1_000_000n,
+  });
 
-console.log(ref.raw); // uppercase XRPL transaction hash
-console.log(ref.hash); // same bytes as 0x-prefixed hex
-console.log(await depositor.verifyDeposit(ref, 0));
+  console.log(ref.raw); // uppercase XRPL transaction hash
+  console.log(ref.hash); // same bytes as 0x-prefixed hex
+  console.log(await depositor.verifyDeposit(ref, 0));
+} finally {
+  await depositor.disconnect();
+}
 ```
 
 For issued currencies, pass the asset key and decimal string amount:
@@ -401,6 +405,10 @@ XRPL input fields:
 For XRPL, `TxRef.raw` is the uppercase 64-hex transaction hash and `TxRef.hash`
 is the same bytes as `0x` hex.
 
+`XrplVaultDepositor` owns an XRPL WebSocket client. Call
+`await depositor.disconnect()` when the depositor is no longer needed, such as
+when replacing the signer or shutting down a long-lived process.
+
 ### `verifyDeposit(ref, minConfirmations)`
 
 Returns `Promise<"absent" | "pending" | "confirmed">`.
@@ -521,6 +529,7 @@ Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 
 | Code | Common cause |
 |---|---|
+| `INVALID_INPUT` | XRPL submit options are missing or have the wrong shape. |
 | `INVALID_ADDRESS` | EVM address, Solana public key, Solana mint, program ID, XRPL classic address, XRPL issued-currency key, or Clearnet account is invalid. |
 | `INVALID_AMOUNT` | `amount` is not positive, has the wrong type, or exceeds the chain limit (`uint256` for EVM, `uint64` for Solana/XRPL native drops). |
 | `INVALID_CONFIRMATIONS` | `minConfirmations` is negative, fractional, or an unsafe number. |

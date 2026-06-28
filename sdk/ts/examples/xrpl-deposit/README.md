@@ -130,3 +130,8 @@ The `Fund Wallet` button and `ledger_accept` call are for the repository's local
 standalone devnet. They are not public XRPL or Xahau testnet flows. On a public
 network, fund the wallet through that network's faucet or normal account
 funding process and remove the standalone admin assumptions.
+
+The page reuses the active `XrplVaultDepositor` for `Verify Last Tx` and closes
+that WebSocket connection when the signer is replaced or the page is unloaded.
+Changing the signer, RPC URL, or vault address means submitting again before
+verifying.

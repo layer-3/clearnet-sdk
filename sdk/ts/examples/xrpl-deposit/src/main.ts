@@ -30,6 +30,7 @@ const logOutput = mustElement<HTMLOutputElement>("log");
 
 let signer: XrplSigner | undefined;
 let lastRef: TxRef | undefined;
+let depositor: XrplVaultDepositor | undefined;
 
 const GEMWALLET_NETWORK_TIMEOUT_MS = 8_000;
 const GEMWALLET_ADDRESS_TIMEOUT_MS = 60_000;
@@ -47,7 +48,7 @@ type NetworkIdentity = {
 };
 
 localSignerButton.addEventListener("click", () => {
-  connectLocalSigner();
+  void connectLocalSigner();
 });
 
 gemWalletButton.addEventListener("click", () => {
@@ -67,13 +68,23 @@ verifyButton.addEventListener("click", () => {
   void verifyLastTx();
 });
 
+for (const id of ["rpc-url", "vault-address"]) {
+  mustElement<HTMLInputElement>(id).addEventListener("input", () => {
+    void clearSubmittedDeposit().catch(console.error);
+  });
+}
+
 writeLog("Use a local signer, fund it, then submit an XRPL deposit.");
 
-function connectLocalSigner(): void {
+window.addEventListener("pagehide", () => {
+  void disposeDepositor().catch(console.error);
+});
+
+async function connectLocalSigner(): Promise<void> {
   setBusy(localSignerButton, true);
   try {
     const localSigner = createLocalXrplSigner(readOptional("local-seed"));
-    signer = localSigner;
+    await replaceSigner(localSigner);
     if (localSigner.seed !== undefined) {
       setInput("local-seed", localSigner.seed);
     }
@@ -105,7 +116,7 @@ async function connectGemWallet(): Promise<void> {
     if (address === undefined || address === "") {
       throw new Error("GemWallet did not return an address");
     }
-    signer = new GemWalletSigner(address);
+    await replaceSigner(new GemWalletSigner(address));
     writeLog(
       `Connected GemWallet ${address}\n` +
         "Network will be verified before signing.",
@@ -119,7 +130,7 @@ async function connectGemWallet(): Promise<void> {
 
 async function fundWallet(): Promise<void> {
   if (signer === undefined) {
-    connectLocalSigner();
+    await connectLocalSigner();
   }
   if (signer === undefined) {
     return;
@@ -165,13 +176,14 @@ async function fundWallet(): Promise<void> {
 
 async function submitDeposit(): Promise<void> {
   if (signer === undefined) {
-    connectLocalSigner();
+    await connectLocalSigner();
   }
   if (signer === undefined) {
     return;
   }
 
   setBusy(submitButton, true);
+  let activeDepositor: XrplVaultDepositor | undefined;
   try {
     if (signer instanceof GemWalletSigner) {
       await assertGemWalletMatchesApp();
@@ -179,7 +191,8 @@ async function submitDeposit(): Promise<void> {
 
     const ref = readOptional("reference");
     const maxFeeDrops = readOptional("max-fee-drops");
-    const depositor = new XrplVaultDepositor({
+    await clearSubmittedDeposit();
+    activeDepositor = new XrplVaultDepositor({
       rpcUrl: readInput("rpc-url"),
       vaultAddress: readInput("vault-address"),
       signer,
@@ -187,8 +200,9 @@ async function submitDeposit(): Promise<void> {
         ? {}
         : { maxFeeDrops: BigInt(maxFeeDrops) }),
     });
+    depositor = activeDepositor;
     const asset = readInput("asset");
-    lastRef = await depositor.submitDeposit(
+    const submittedRef = await activeDepositor.submitDeposit(
       isNativeAsset(asset)
         ? {
             destination: {
@@ -208,34 +222,38 @@ async function submitDeposit(): Promise<void> {
           },
       {
         onSubmitted(ref) {
-          lastRef = ref;
-          verifyButton.disabled = false;
-          writeLog(`Submitted ${ref.raw}\nhash: ${ref.hash}`);
+          if (depositor === activeDepositor) {
+            lastRef = ref;
+            writeLog(`Submitted ${ref.raw}\nhash: ${ref.hash}`);
+          }
         },
       },
     );
     await ledgerAccept();
-    verifyButton.disabled = false;
-    writeLog(`Accepted ${lastRef.raw}\nhash: ${lastRef.hash}`);
+    if (depositor === activeDepositor) {
+      lastRef = submittedRef;
+      verifyButton.disabled = false;
+      writeLog(`Accepted ${submittedRef.raw}\nhash: ${submittedRef.hash}`);
+    }
   } catch (error) {
     const txRef = errorTxRef(error);
-    writeError(error, txRef === undefined ? undefined : `Submitted ${txRef.raw}`);
+    if (
+      lastRef !== undefined &&
+      activeDepositor !== undefined &&
+      depositor === activeDepositor
+    ) {
+      verifyButton.disabled = false;
+    }
+    writeError(error, txRef === undefined ? undefined : `TxRef ${txRef.raw}`);
   } finally {
     setBusy(submitButton, false);
   }
 }
 
 async function verifyLastTx(): Promise<void> {
-  if (lastRef === undefined || signer === undefined) {
+  if (lastRef === undefined || depositor === undefined) {
     return;
   }
-  const maxFeeDrops = readOptional("max-fee-drops");
-  const depositor = new XrplVaultDepositor({
-    rpcUrl: readInput("rpc-url"),
-    vaultAddress: readInput("vault-address"),
-    signer,
-    ...(maxFeeDrops === undefined ? {} : { maxFeeDrops: BigInt(maxFeeDrops) }),
-  });
 
   setBusy(verifyButton, true);
   try {
@@ -245,6 +263,26 @@ async function verifyLastTx(): Promise<void> {
     writeError(error);
   } finally {
     setBusy(verifyButton, false);
+  }
+}
+
+async function replaceSigner(nextSigner: XrplSigner): Promise<void> {
+  await clearSubmittedDeposit();
+  signer = nextSigner;
+}
+
+async function clearSubmittedDeposit(): Promise<void> {
+  const cleanup = disposeDepositor();
+  lastRef = undefined;
+  verifyButton.disabled = true;
+  await cleanup;
+}
+
+async function disposeDepositor(): Promise<void> {
+  const current = depositor;
+  depositor = undefined;
+  if (current !== undefined) {
+    await current.disconnect();
   }
 }
 

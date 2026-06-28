@@ -77,7 +77,7 @@ export function requireDepositDestination(
   if (!destination || typeof destination !== "object") {
     throw new ClearnetSdkError(
       "INVALID_ADDRESS",
-      "destination.account must be a 20-byte hex address",
+      "destination is required and must be an object",
     );
   }
   return destination as XrplDepositDestination;

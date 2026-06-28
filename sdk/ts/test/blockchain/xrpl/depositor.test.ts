@@ -21,6 +21,7 @@ import {
 import type {
   Bytes32Hex,
   DepositStatus,
+  SubmitDepositOptions,
   TxRef,
   VaultDepositor,
   XrplDepositDestination,
@@ -200,7 +201,10 @@ describe("XrplVaultDepositor", () => {
 
     await expect(
       depositor.submitDeposit(null as unknown as XrplSubmitDepositInput),
-    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination is required and must be an object",
+    });
     await expect(
       depositor.submitDeposit(
         {
@@ -210,14 +214,43 @@ describe("XrplVaultDepositor", () => {
         },
         null as never,
       ),
-    ).rejects.toMatchObject({ code: "RPC_ERROR" });
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: "submit options must be an object",
+    });
+    await expect(
+      depositor.submitDeposit(
+        {
+          asset: XRPL_NATIVE_ASSET,
+          amount: 1n,
+          destination: { account: ACCOUNT },
+        },
+        { onSubmitted: "bad" } as unknown as SubmitDepositOptions,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: "submit options.onSubmitted must be a function",
+    });
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
         amount: 1n,
         destination: null as unknown as XrplDepositDestination,
       }),
-    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination is required and must be an object",
+    });
+    await expect(
+      depositor.submitDeposit({
+        asset: XRPL_NATIVE_ASSET,
+        amount: 1n,
+        destination: "bad" as unknown as XrplDepositDestination,
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination is required and must be an object",
+    });
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
@@ -370,7 +403,9 @@ describe("XrplVaultDepositor", () => {
     const depositor = createDepositor(createSigner());
 
     client.request.mockResolvedValueOnce(txResponse(true));
-    await expect(depositor.verifyDeposit(HASH_REF, 0)).resolves.toBe("confirmed");
+    await expect(depositor.verifyDeposit(HASH_REF, 100)).resolves.toBe(
+      "confirmed",
+    );
 
     client.request.mockResolvedValueOnce(txResponse(false));
     await expect(depositor.verifyDeposit(HASH_REF, 1n)).resolves.toBe("pending");
@@ -403,6 +438,63 @@ describe("XrplVaultDepositor", () => {
     });
 
     expect(client.request).not.toHaveBeenCalled();
+  });
+
+  it("disconnects the underlying XRPL client only when connected", async () => {
+    const depositor = createDepositor(createSigner());
+
+    client.isConnected.mockReturnValueOnce(false);
+    await depositor.disconnect();
+    expect(client.disconnect).not.toHaveBeenCalled();
+
+    client.isConnected.mockReturnValueOnce(true);
+    await depositor.disconnect();
+    expect(client.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("wraps disconnect failures as RPC errors", async () => {
+    const depositor = createDepositor(createSigner());
+    const cause = new Error("socket close failed");
+    client.isConnected.mockReturnValueOnce(true);
+    client.disconnect.mockRejectedValueOnce(cause);
+
+    await expect(depositor.disconnect()).rejects.toMatchObject({
+      code: "RPC_ERROR",
+      message: "xrpl: disconnect",
+      cause,
+    });
+  });
+
+  it("reconnects after disconnect for later verification", async () => {
+    const depositor = createDepositor(createSigner());
+
+    client.isConnected.mockReturnValueOnce(true);
+    await depositor.disconnect();
+
+    client.isConnected.mockReturnValueOnce(false);
+    await expect(depositor.verifyDeposit(HASH_REF, 0)).resolves.toBe(
+      "confirmed",
+    );
+    expect(client.connect).toHaveBeenCalledOnce();
+  });
+
+  it("disconnects after an in-flight connect settles", async () => {
+    const connect = deferred<void>();
+    client.connect.mockImplementationOnce(() => connect.promise);
+    const depositor = createDepositor(createSigner());
+
+    const verification = depositor.verifyDeposit(HASH_REF, 0);
+    await Promise.resolve();
+
+    const disconnect = depositor.disconnect();
+    await Promise.resolve();
+    expect(client.disconnect).not.toHaveBeenCalled();
+
+    client.isConnected.mockReturnValue(true);
+    connect.resolve();
+    await disconnect;
+    await expect(verification).resolves.toBe("confirmed");
+    expect(client.disconnect).toHaveBeenCalledOnce();
   });
 });
 
@@ -479,4 +571,18 @@ function txResponse(validated: boolean): TxResponse {
       tx_json: { TransactionType: "Payment" },
     },
   } as unknown as TxResponse;
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }

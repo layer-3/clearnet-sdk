@@ -63,19 +63,23 @@ describe("XrplVaultDepositor integration", () => {
       signer: signerFromWallet(depositorWallet),
     });
 
-    const ref = await sdk.submitDeposit({
-      asset: XRPL_NATIVE_ASSET,
-      amount: 10_000_000n,
-      destination: { account: ACCOUNT, ref: REFERENCE },
-    });
-    await admin.ledgerAccept();
+    try {
+      const ref = await sdk.submitDeposit({
+        asset: XRPL_NATIVE_ASSET,
+        amount: 10_000_000n,
+        destination: { account: ACCOUNT, ref: REFERENCE },
+      });
+      await admin.ledgerAccept();
 
-    await expect(sdk.verifyDeposit(ref, 0)).resolves.toBe("confirmed");
-    const payment = await fetchPayment(client, ref);
-    expect(payment.Account).toBe(depositorWallet.classicAddress);
-    expect(payment.Destination).toBe(vault.classicAddress);
-    expect(paymentAmount(payment)).toBe("10000000");
-    expect(payment.Memos).toEqual(expectedMemo(ACCOUNT, REFERENCE));
+      await expect(sdk.verifyDeposit(ref, 0)).resolves.toBe("confirmed");
+      const payment = await fetchPayment(client, ref);
+      expect(payment.Account).toBe(depositorWallet.classicAddress);
+      expect(payment.Destination).toBe(vault.classicAddress);
+      expect(paymentAmount(payment)).toBe("10000000");
+      expect(payment.Memos).toEqual(expectedMemo(ACCOUNT, REFERENCE));
+    } finally {
+      await sdk.disconnect();
+    }
   }, 60_000);
 
   it("submits and verifies an issued-currency deposit", async () => {
@@ -98,21 +102,25 @@ describe("XrplVaultDepositor integration", () => {
       vaultAddress: vault.classicAddress,
       signer: signerFromWallet(depositorWallet),
     });
-    const ref = await sdk.submitDeposit({
-      asset: `USD.${issuer.classicAddress}`,
-      amount: "25",
-      destination: { account: ACCOUNT },
-    });
-    await admin.ledgerAccept();
+    try {
+      const ref = await sdk.submitDeposit({
+        asset: `USD.${issuer.classicAddress}`,
+        amount: "25",
+        destination: { account: ACCOUNT },
+      });
+      await admin.ledgerAccept();
 
-    await expect(sdk.verifyDeposit(ref, 0)).resolves.toBe("confirmed");
-    const payment = await fetchPayment(client, ref);
-    expect(paymentAmount(payment)).toEqual({
-      currency: "USD",
-      issuer: issuer.classicAddress,
-      value: "25",
-    });
-    expect(payment.Memos).toEqual(expectedMemo(ACCOUNT));
+      await expect(sdk.verifyDeposit(ref, 0)).resolves.toBe("confirmed");
+      const payment = await fetchPayment(client, ref);
+      expect(paymentAmount(payment)).toEqual({
+        currency: "USD",
+        issuer: issuer.classicAddress,
+        value: "25",
+      });
+      expect(payment.Memos).toEqual(expectedMemo(ACCOUNT));
+    } finally {
+      await sdk.disconnect();
+    }
   }, 90_000);
 
   it("maps an unknown transaction to absent", async () => {
@@ -122,7 +130,11 @@ describe("XrplVaultDepositor integration", () => {
       signer: signerFromWallet(depositorWallet),
     });
 
-    await expect(sdk.verifyDeposit(UNKNOWN_TX_REF, 0)).resolves.toBe("absent");
+    try {
+      await expect(sdk.verifyDeposit(UNKNOWN_TX_REF, 0)).resolves.toBe("absent");
+    } finally {
+      await sdk.disconnect();
+    }
   }, 60_000);
 });
 

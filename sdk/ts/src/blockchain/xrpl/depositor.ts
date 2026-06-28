@@ -35,6 +35,7 @@ export class XrplVaultDepositor
   private readonly vaultAddress: string;
   private readonly maxFeeDrops: bigint | undefined;
   private readonly client: Client;
+  private connecting: Promise<void> | undefined;
 
   constructor(config: XrplDepositorConfig) {
     this.signer = requireSigner(config.signer);
@@ -81,19 +82,36 @@ export class XrplVaultDepositor
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
     const normalized = requireTxRef(ref);
-    normalizeMinConfirmations(minConfirmations);
+    const minConf = normalizeMinConfirmations(minConfirmations);
     await this.ensureConnected();
     try {
       const response = await this.client.request({
         command: "tx",
         transaction: normalized.raw,
       });
-      return response.result.validated === true ? "confirmed" : "pending";
+      return xrplDepositStatus(response.result.validated === true, minConf);
     } catch (error) {
       if (isTxnNotFound(error)) {
         return "absent";
       }
       throw new ClearnetSdkError("RPC_ERROR", "xrpl: tx lookup", {
+        cause: error,
+      });
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    const connecting = this.connecting;
+    if (connecting !== undefined) {
+      await connecting;
+    }
+    if (!this.client.isConnected()) {
+      return;
+    }
+    try {
+      await this.client.disconnect();
+    } catch (error) {
+      throw new ClearnetSdkError("RPC_ERROR", "xrpl: disconnect", {
         cause: error,
       });
     }
@@ -167,6 +185,19 @@ export class XrplVaultDepositor
     if (this.client.isConnected()) {
       return;
     }
+    if (this.connecting !== undefined) {
+      await this.connecting;
+      return;
+    }
+    this.connecting = this.connect();
+    try {
+      await this.connecting;
+    } finally {
+      this.connecting = undefined;
+    }
+  }
+
+  private async connect(): Promise<void> {
     try {
       await this.client.connect();
     } catch (error) {
@@ -202,11 +233,28 @@ function readStringProperty(value: object, key: string): string | undefined {
   return typeof field === "string" ? field : undefined;
 }
 
+function xrplDepositStatus(validated: boolean, minConfirmations: bigint): DepositStatus {
+  // XRPL finality is binary: a transaction in a validated ledger is final.
+  // The shared minConfirmations argument is validated for API parity only.
+  void minConfirmations;
+  return validated ? "confirmed" : "pending";
+}
+
 function requireSubmitDepositOptions(options: unknown): SubmitDepositOptions {
   if (options === null || typeof options !== "object") {
     throw new ClearnetSdkError(
-      "RPC_ERROR",
+      "INVALID_INPUT",
       "submit options must be an object",
+    );
+  }
+  const candidate = options as Partial<SubmitDepositOptions>;
+  if (
+    candidate.onSubmitted !== undefined &&
+    typeof candidate.onSubmitted !== "function"
+  ) {
+    throw new ClearnetSdkError(
+      "INVALID_INPUT",
+      "submit options.onSubmitted must be a function",
     );
   }
   return options;
