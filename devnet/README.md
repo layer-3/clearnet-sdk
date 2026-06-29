@@ -15,7 +15,7 @@ the same `make integration` target.
 ```sh
 make devnet        # anvil + bitcoind + rippled + solana-test-validator; blocks until all answer RPC
 npm --prefix sdk/ts ci
-make integration   # Go blockchain integrations + TS EVM and Solana integration
+make integration   # Go blockchain integrations + TS EVM, Solana, and XRPL integration
 make devnet-down
 ```
 
@@ -39,7 +39,10 @@ wallet, the XRPL genesis master).
 - **XRPL** — funds a fresh vault + depositor from the genesis master,
   `SignerListSet`s the vault over fresh signer keys, `TicketCreate`s a ticket,
   then deposits and runs the quorum withdrawal. Standalone rippled does not
-  auto-close ledgers, so the test calls `ledger_accept` after each submit.
+  auto-close ledgers, so the test calls `ledger_accept` after each submit. The
+  TypeScript XRPL integration test creates fresh accounts, submits native XRP
+  and issued-currency deposits, verifies each returned transaction reference,
+  and asserts the `ynet-account` memo carried the deposit destination.
 - **Solana** — the validator preloads the custody program **upgradeable** at its
   fixed id (`--upgradeable-program`), upgrade authority = the vendored
   `devnet/sol-upgrade-authority.json`. The test airdrop-funds the authority +
@@ -60,6 +63,9 @@ npm --prefix sdk/ts run test:integration:evm
 
 make devnet-sol
 npm --prefix sdk/ts run test:integration:sol
+
+make devnet-xrpl
+npm --prefix sdk/ts run test:integration:xrpl
 ```
 
 ## Optional overrides
@@ -71,6 +77,7 @@ Defaults target the devnet; override the endpoints if pointing elsewhere:
 | `EVM_RPC_URL` / `EVM_DEPLOYER_KEY` | `http://127.0.0.1:8545` / anvil account 0 |
 | `BTC_RPC_URL` / `BTC_RPC_USER` / `BTC_RPC_PASS` | `http://127.0.0.1:18443` / `sdk` / `sdk` |
 | `XRPL_RPC_URL` | `http://127.0.0.1:5005` |
+| `XRPL_WS_URL` / `XRPL_ADMIN_RPC_URL` | `ws://127.0.0.1:6006` / `http://127.0.0.1:5005` |
 | `SOL_RPC_URL` | `http://127.0.0.1:8899` |
 
 ## Notes

@@ -1,6 +1,7 @@
 import type { TxRef } from "./types.js";
 
 export type ClearnetSdkErrorCode =
+  | "INVALID_INPUT"
   | "INVALID_ADDRESS"
   | "INVALID_AMOUNT"
   | "INVALID_CONFIRMATIONS"

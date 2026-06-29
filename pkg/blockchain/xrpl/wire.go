@@ -36,7 +36,7 @@ const maxAcceptableFeeDrops uint64 = 1_000_000
 var canonicalAllowedFields = map[string]struct{}{
 	"TransactionType": {}, "Account": {}, "Destination": {}, "Amount": {},
 	"InvoiceID": {}, "TicketSequence": {}, "Sequence": {}, "Fee": {},
-	"SigningPubKey": {}, "Flags": {},
+	"SigningPubKey": {}, "Flags": {}, "NetworkID": {},
 }
 
 // Identity is a signer's XRPL classic address + signing pubkey hex.
@@ -212,7 +212,7 @@ func ValidateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, 
 // canonical SignerListSet flatTx before signing.
 var rotationAllowedFields = map[string]struct{}{
 	"TransactionType": {}, "Account": {}, "SignerQuorum": {}, "SignerEntries": {},
-	"Sequence": {}, "Fee": {}, "SigningPubKey": {}, "Flags": {},
+	"Sequence": {}, "Fee": {}, "SigningPubKey": {}, "Flags": {}, "NetworkID": {},
 }
 
 // validateCanonicalRotation asserts the canonical SignerListSet flatTx rotates

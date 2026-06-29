@@ -29,3 +29,19 @@ export type {
   SolanaSigner,
   SolanaSubmitDepositInput,
 } from "./blockchain/sol/index.js";
+export {
+  XRPL_NATIVE_ASSET,
+  XrplVaultDepositor,
+} from "./blockchain/xrpl/index.js";
+export type {
+  XrplAmount,
+  XrplAsset,
+  XrplDepositDestination,
+  XrplDepositorConfig,
+  XrplIssuedDepositInput,
+  XrplNativeDepositInput,
+  XrplPreparedPayment,
+  XrplSignedTransaction,
+  XrplSigner,
+  XrplSubmitDepositInput,
+} from "./blockchain/xrpl/index.js";

@@ -1,0 +1,19 @@
+{
+  "name": "@yellow-org/xrpl-deposit-demo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@gemwallet/api": "^3.8.0",
+    "@yellow-org/clearnet-sdk": "file:../..",
+    "xrpl": "^5.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "vite": "^7.0.0"
+  }
+}

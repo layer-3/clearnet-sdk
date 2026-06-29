@@ -32,15 +32,15 @@ var _ core.VaultDepositor = (*Depositor)(nil)
 
 // NewDepositor builds the XRPL depositor against the rippled JSON-RPC at rpcURL.
 func NewDepositor(rpcURL, vaultAddress string, signer sign.Signer) (*Depositor, error) {
-	cfg, err := rpc.NewClientConfig(rpcURL)
+	client, err := newRPCClient(rpcURL)
 	if err != nil {
-		return nil, fmt.Errorf("xrpl: create rpc config: %w", err)
+		return nil, err
 	}
 	id, err := DeriveIdentity(signer)
 	if err != nil {
 		return nil, err
 	}
-	return &Depositor{client: rpc.NewClient(cfg), vaultAddress: vaultAddress, signer: signer, id: id}, nil
+	return &Depositor{client: client, vaultAddress: vaultAddress, signer: signer, id: id}, nil
 }
 
 // DepositorAddress returns the depositor's classic r-address.
@@ -69,6 +69,9 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 		Amount:      xrplAmount,
 	}
 	flatTx := payment.Flatten()
+	if err := ensureNetworkID(d.client); err != nil {
+		return core.TxRef{}, err
+	}
 	if err := d.client.Autofill(&flatTx); err != nil {
 		return core.TxRef{}, fmt.Errorf("xrpl: autofill: %w", err)
 	}

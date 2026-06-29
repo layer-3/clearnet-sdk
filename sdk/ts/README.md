@@ -1,17 +1,19 @@
 # Clearnet TypeScript SDK
 
-TypeScript SDK for Clearnet integration. This package currently exposes EVM and
-Solana vault depositors. EVM supports native ETH and ERC-20 deposits. Solana
-supports native SOL and SPL token deposits. Deposits credit a `destination` made
-of an account and an optional ADR-015 opaque reference.
+TypeScript SDK for Clearnet integration. This package currently exposes EVM,
+Solana, and XRPL vault depositors. EVM supports native ETH and ERC-20 deposits.
+Solana supports native SOL and SPL token deposits. XRPL supports native XRP and
+issued-currency deposits. Deposits credit a `destination` made of an account and
+an optional ADR-015 opaque reference.
 
 The package is ESM-first. EVM callers use `viem` clients and primitives. Solana
-callers provide an SDK-owned signer adapter around their wallet or local keypair.
+and XRPL callers provide SDK-owned signer adapters around their wallet or local
+keypair.
 
 ## Install
 
 ```sh
-npm install @yellow-org/clearnet-sdk viem @solana/web3.js
+npm install @yellow-org/clearnet-sdk viem @solana/web3.js xrpl
 ```
 
 For local development in this repository:
@@ -189,6 +191,74 @@ deposits, pass the mint public key as `asset` and the amount in token base units
 The SDK does not mint tokens or create token accounts. SPL callers must ensure
 the depositor ATA and vault ATA exist before submitting the deposit.
 
+## XRPL Deposits
+
+XRPL deposits use `XrplVaultDepositor`. Native XRP amounts are `bigint` drops.
+Issued-currency amounts are positive decimal strings and assets use
+`CUR.rIssuer` or `CUR:rIssuer`.
+
+```ts
+import {
+  XRPL_NATIVE_ASSET,
+  XrplVaultDepositor,
+} from "@yellow-org/clearnet-sdk";
+import { Wallet, hashes, type SubmittableTransaction } from "xrpl";
+import type {
+  XrplPreparedPayment,
+  XrplSigner,
+} from "@yellow-org/clearnet-sdk";
+
+const wallet = Wallet.generate();
+const signer: XrplSigner = {
+  classicAddress: wallet.classicAddress,
+  async sign(payment: XrplPreparedPayment) {
+    const signed = wallet.sign(payment as SubmittableTransaction);
+    return { txBlob: signed.tx_blob, hash: hashes.hashSignedTx(signed.tx_blob) };
+  },
+};
+
+const depositor = new XrplVaultDepositor({
+  rpcUrl: "ws://127.0.0.1:6006",
+  vaultAddress: "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+  signer,
+});
+
+try {
+  const ref = await depositor.submitDeposit({
+    destination: {
+      account: "00000000000000000000000000000000000000a1",
+      ref: "0x3333333333333333333333333333333333333333333333333333333333333333",
+    },
+    asset: XRPL_NATIVE_ASSET,
+    amount: 1_000_000n,
+  });
+
+  console.log(ref.raw); // uppercase XRPL transaction hash
+  console.log(ref.hash); // same bytes as 0x-prefixed hex
+  console.log(await depositor.verifyDeposit(ref, 0));
+} finally {
+  await depositor.disconnect();
+}
+```
+
+For issued currencies, pass the asset key and decimal string amount:
+
+```ts
+const ref = await depositor.submitDeposit({
+  destination: { account: "00000000000000000000000000000000000000a1" },
+  asset: "USD.rN7n7otQDd6FczFgLdSqtcsAUxDkw6fzRH",
+  amount: "25",
+});
+```
+
+Trustlines and balances must already exist before an issued-currency deposit.
+The SDK builds one XRPL `Payment`, adds one `ynet-account` memo carrying the
+Clearnet account/reference, asks the caller-provided signer to sign, submits the
+signed blob, and returns after rippled accepts the submit result as `tesSUCCESS`
+or `terQUEUED`. Use `verifyDeposit` to observe validated-ledger finality; a
+just-submitted XRPL payment can return `pending` until it appears in a validated
+ledger.
+
 ## Deposit References
 
 Pass `destination.ref` to attach a 32-byte opaque sub-account reference to the
@@ -206,8 +276,10 @@ const ref = await depositor.submitDeposit({
 ```
 
 For EVM, the reference is passed to `Custody.deposit(...)` as `bytes32`. For
-Solana, it is encoded into `deposit_sol` or `deposit_spl` as `[u8; 32]`. The SDK
-does not interpret it. Omitted references are sent as 32 zero bytes.
+Solana, it is encoded into `deposit_sol` or `deposit_spl` as `[u8; 32]`. For
+XRPL, it is appended after the 20-byte Clearnet account in the `ynet-account`
+payment memo. The SDK does not interpret it. Omitted references are sent as 32
+zero bytes.
 
 ## Verify A Deposit
 
@@ -226,7 +298,8 @@ const status = await depositor.verifyDeposit(ref, 1);
 `minConfirmations` accepts a non-negative safe integer `number` or a non-negative
 `bigint`. EVM treats it as an inclusive receipt confirmation count. Solana maps
 it onto the commitment ladder: `0` accepts `confirmed`; `>= 1` requires
-`finalized`.
+`finalized`. XRPL validates the shape for cross-chain parity but treats XRPL
+finality as binary: a validated transaction is `confirmed`.
 
 ## API Reference
 
@@ -305,6 +378,37 @@ Solana input fields:
 For Solana, `TxRef.raw` is the base58 signature and `TxRef.hash` is `0x` plus
 the SHA-256 digest of the signature bytes.
 
+### `XrplVaultDepositor`
+
+```ts
+new XrplVaultDepositor(config: XrplDepositorConfig)
+```
+
+Config fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `rpcUrl` | `string` | XRPL WebSocket URL used for autofill, submit, and verification. |
+| `vaultAddress` | `string` | XRPL classic address that receives deposits. |
+| `signer` | `XrplSigner` | Provides `classicAddress` and `sign(payment)`. |
+| `maxFeeDrops` | `bigint \| number` | Optional positive fee ceiling checked after autofill and before signing. |
+
+XRPL input fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `destination.account` | `string` | 20-byte Clearnet account as hex, with optional `0x`. |
+| `destination.ref` | `` `0x${string}` \| undefined `` | Optional 32-byte opaque reference. |
+| `asset` | `string` | `XRP`/empty for native, or issued-currency `CUR.rIssuer` / `CUR:rIssuer`. |
+| `amount` | `bigint \| string` | Native XRP uses drops as `bigint`; issued currencies use a decimal `string`. |
+
+For XRPL, `TxRef.raw` is the uppercase 64-hex transaction hash and `TxRef.hash`
+is the same bytes as `0x` hex.
+
+`XrplVaultDepositor` owns an XRPL WebSocket client. Call
+`await depositor.disconnect()` when the depositor is no longer needed, such as
+when replacing the signer or shutting down a long-lived process.
+
 ### `verifyDeposit(ref, minConfirmations)`
 
 Returns `Promise<"absent" | "pending" | "confirmed">`.
@@ -319,6 +423,7 @@ npm test
 npm run build
 npm --workspace @yellow-org/evm-deposit-demo run build
 npm --workspace @yellow-org/solana-deposit-demo run build
+npm --workspace @yellow-org/xrpl-deposit-demo run build
 ```
 
 Run the EVM integration test against local Anvil:
@@ -355,7 +460,26 @@ The Solana devnet preloads the custody program at
 and funds local signers, creates SPL token accounts needed for the test, submits
 native SOL and SPL deposits, and verifies each returned transaction reference.
 
-To run the repository integration suite, including the TS EVM and Solana
+Run the XRPL integration test against local rippled:
+
+```sh
+# From the repository root:
+make devnet-xrpl
+
+# From sdk/ts:
+npm run test:integration:xrpl
+
+# From the repository root:
+make devnet-down
+```
+
+The XRPL integration test uses rippled WebSocket `ws://127.0.0.1:6006` for SDK
+calls and admin JSON-RPC `http://127.0.0.1:5005` for `ledger_accept`. Override
+with `XRPL_WS_URL` and `XRPL_ADMIN_RPC_URL` if needed. It creates fresh accounts,
+funds them from the standalone genesis wallet, submits native XRP and issued
+currency deposits, and verifies each returned transaction reference.
+
+To run the repository integration suite, including the TS EVM, Solana, and XRPL
 integration tests:
 
 ```sh
@@ -372,6 +496,7 @@ Start the browser demo from `sdk/ts`:
 ```sh
 npm run demo:evm
 npm run demo:sol
+npm run demo:xrpl
 ```
 
 The EVM demo expects:
@@ -391,20 +516,28 @@ such as `solana:localnet` for a local validator. The local devnet preloads the
 custody program, but the wallet must be funded and SPL token accounts must
 already exist for SPL deposits.
 
+The XRPL demo supports a local signer for standalone-devnet smoke tests and
+GemWallet for browser-wallet signing. The GemWallet path requires a custom
+`wss://` endpoint that points at the same local chain as the demo because wallet
+network selection and SDK submission must agree. See
+`examples/xrpl-deposit/README.md` for the full local signer flow, GemWallet
+custom-network setup, funding steps, and troubleshooting notes.
+
 ## Troubleshooting
 
 Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 
 | Code | Common cause |
 |---|---|
-| `INVALID_ADDRESS` | EVM address, Solana public key, Solana mint, program ID, or Clearnet account is invalid. |
-| `INVALID_AMOUNT` | `amount` is not a positive `bigint` or exceeds the chain limit (`uint256` for EVM, `uint64` for Solana). |
+| `INVALID_INPUT` | XRPL submit options are missing or have the wrong shape. |
+| `INVALID_ADDRESS` | EVM address, Solana public key, Solana mint, program ID, XRPL classic address, XRPL issued-currency key, or Clearnet account is invalid. |
+| `INVALID_AMOUNT` | `amount` is not positive, has the wrong type, or exceeds the chain limit (`uint256` for EVM, `uint64` for Solana/XRPL native drops). |
 | `INVALID_CONFIRMATIONS` | `minConfirmations` is negative, fractional, or an unsafe number. |
 | `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value. |
-| `INVALID_TX_REF` | `ref.hash` is not bytes32, or Solana `ref.raw` is not a 64-byte signature. |
-| `MISSING_WALLET_ACCOUNT` | The EVM wallet account is missing/mismatched, or the Solana signer is missing. |
+| `INVALID_TX_REF` | `ref.hash` is not bytes32, Solana `ref.raw` is not a 64-byte signature, or XRPL `ref.raw` is not a 64-hex hash. |
+| `MISSING_WALLET_ACCOUNT` | The EVM wallet account is missing/mismatched, or the Solana/XRPL signer is missing. |
 | `CHAIN_MISMATCH` | EVM only: the public RPC or wallet chain does not match `chainId`. |
-| `TX_REVERTED` | A submitted approval or deposit transaction reverted. |
+| `TX_REVERTED` | A submitted approval/deposit transaction reverted, or XRPL rejected the payment engine result. |
 | `RECEIPT_TIMEOUT` | Waiting for a receipt timed out or was aborted. |
 | `RPC_ERROR` | The public RPC or wallet provider returned an unexpected error. |
 

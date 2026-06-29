@@ -23,9 +23,9 @@ export interface EvmDepositDestination extends DepositDestination {
   account: Address;
 }
 
-export interface SubmitDepositInput {
+export interface SubmitDepositInput<TAmount = bigint> {
   asset: string;
-  amount: bigint;
+  amount: TAmount;
   destination: DepositDestination;
 }
 
@@ -41,7 +41,7 @@ export interface SubmitDepositOptions {
 }
 
 export interface VaultDepositor<
-  TInput extends SubmitDepositInput = SubmitDepositInput,
+  TInput extends SubmitDepositInput<unknown> = SubmitDepositInput,
 > {
   submitDeposit(input: TInput, options?: SubmitDepositOptions): Promise<TxRef>;
   verifyDeposit(
