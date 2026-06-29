@@ -2,9 +2,9 @@ import { p2sh, p2wpkh, p2wsh, Script } from "@scure/btc-signer";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Point } from "@noble/secp256k1";
 
+import { compareBytes, hexToBytes } from "../../core/bytes.js";
 import { ClearnetSdkError } from "../../core/errors.js";
 import { BITCOIN_MAX_VAULT_PUBKEYS } from "./constants.js";
-import { compareBytes, hexToBytes } from "./bytes.js";
 import { networkParams } from "./networks.js";
 import type {
   BitcoinNetwork,

@@ -4,6 +4,7 @@ import {
   Transaction,
 } from "@scure/btc-signer";
 
+import { bytesToHex, concatBytes, hexToBytes } from "../../core/bytes.js";
 import { ClearnetSdkError } from "../../core/errors.js";
 import type {
   DepositStatus,
@@ -11,6 +12,7 @@ import type {
   TxRef,
   VaultDepositor,
 } from "../../core/types.js";
+import { normalizeMinConfirmations as normalizeSharedMinConfirmations } from "../../core/validation.js";
 import {
   depositAddress,
   depositPayment,
@@ -18,7 +20,6 @@ import {
   fundingPayment,
   requireCompressedPublicKey,
 } from "./address.js";
-import { bytesToHex, concatBytes, hexToBytes } from "./bytes.js";
 import { BITCOIN_DUST_THRESHOLD_SATS } from "./constants.js";
 import { BitcoinRpcError } from "./types.js";
 import type {
@@ -66,7 +67,7 @@ export class BitcoinVaultDepositor
       amount: fields.amount,
       publicKey,
     });
-    const tx = await this.signDepositTx(prepared, signer);
+    const tx = await this.signDepositTx(prepared, signer, publicKey);
     return this.broadcastTransaction(tx, submitOptions);
   }
 
@@ -93,7 +94,7 @@ export class BitcoinVaultDepositor
     return {
       psbtHex: bytesToHex(prepared.tx.toPSBT()),
       inputIndexesToSign: prepared.orderedUtxos.map((_, index) => index),
-      ref: txRefFromTxid(prepared.tx.id),
+      unsignedRef: txRefFromTxid(prepared.tx.id),
       fundingAddress: prepared.fundingAddress,
       depositAddress: prepared.depositAddress,
       feeSats: prepared.feeSats,
@@ -130,7 +131,7 @@ export class BitcoinVaultDepositor
     if (raw === null) {
       return "absent";
     }
-    return raw.confirmations > 0 && raw.confirmations >= minConf
+    return minConf === 0 || (raw.confirmations > 0 && raw.confirmations >= minConf)
       ? "confirmed"
       : "pending";
   }
@@ -196,7 +197,12 @@ export class BitcoinVaultDepositor
     const eligible = utxos.filter(
       (utxo) => utxo.scriptPubKey.toLowerCase() === fundingScriptHex,
     );
-    const selected = selectDepositUtxos(eligible, input.amount, feeRate);
+    const selected = selectDepositUtxos(
+      eligible,
+      input.amount,
+      feeRate,
+      input.addressType,
+    );
     const tx = new Transaction({ version: 1 });
     const deposit = depositPayment(
       this.config.network,
@@ -240,6 +246,7 @@ export class BitcoinVaultDepositor
   private async signDepositTx(
     prepared: PreparedUnsignedDepositTx,
     signer: BitcoinSigner,
+    publicKey: Uint8Array,
   ): Promise<Transaction> {
     const scriptCode = OutScript.encode({
       type: "pkh",
@@ -262,14 +269,22 @@ export class BitcoinVaultDepositor
         index,
         {
           partialSig: [[
-            await signerPublicKey(signer),
+            publicKey,
             concatBytes(der, new Uint8Array([SigHash.ALL])),
           ]],
         },
         true,
       );
     }
-    prepared.tx.finalize();
+    try {
+      prepared.tx.finalize();
+    } catch (error) {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        "btc: transaction finalization failed",
+        { cause: error },
+      );
+    }
     return prepared.tx;
   }
 
@@ -288,7 +303,12 @@ export class BitcoinVaultDepositor
         return ref;
       }
       if (isMissingOrSpent(error)) {
-        const raw = await this.config.rpc.getRawTransaction(ref.raw);
+        let raw;
+        try {
+          raw = await this.config.rpc.getRawTransaction(ref.raw);
+        } catch {
+          raw = null;
+        }
         if (raw?.txid.toLowerCase() === ref.raw) {
           submitOptions.onSubmitted?.(ref);
           return ref;
@@ -336,22 +356,14 @@ function errorMessage(error: unknown): string {
 }
 
 function normalizeMinConfirmations(value: bigint | number): number {
-  if (typeof value === "bigint") {
-    if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new ClearnetSdkError(
-        "INVALID_CONFIRMATIONS",
-        "minConfirmations must be a non-negative safe integer",
-      );
-    }
-    return Number(value);
-  }
-  if (!Number.isSafeInteger(value) || value < 0) {
+  const normalized = normalizeSharedMinConfirmations(value);
+  if (normalized > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new ClearnetSdkError(
       "INVALID_CONFIRMATIONS",
       "minConfirmations must be a non-negative safe integer",
     );
   }
-  return value;
+  return Number(normalized);
 }
 
 function requireDerSignature(signature: Uint8Array): void {

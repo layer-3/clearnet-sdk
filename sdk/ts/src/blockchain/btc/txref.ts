@@ -1,9 +1,9 @@
 import { ClearnetSdkError } from "../../core/errors.js";
 import type { Bytes32Hex, TxRef } from "../../core/types.js";
-import { bytesToHex, hexToBytes, reverseBytes } from "./bytes.js";
+import { bytesToHex, hexToBytes, reverseBytes } from "../../core/bytes.js";
+import { BYTES32_HEX_PATTERN } from "../../core/validation.js";
 
 const TXID_PATTERN = /^[a-fA-F0-9]{64}$/;
-const BYTES32_HEX_PATTERN = /^0x[a-fA-F0-9]{64}$/;
 
 export function txRefFromTxid(txid: string): TxRef {
   const normalized = normalizeTxid(txid);

@@ -376,8 +376,9 @@ const status = await depositor.verifyDeposit(ref, 1);
 it onto the commitment ladder: `0` accepts `confirmed`; `>= 1` requires
 `finalized`. XRPL validates the shape for cross-chain parity but treats XRPL
 finality as binary: a validated transaction is `confirmed`. Bitcoin returns
-`pending` for mempool or shallow transactions and `confirmed` when the
-transaction has at least `minConfirmations` confirmations.
+`confirmed` for any known transaction when `minConfirmations` is `0`; otherwise
+it returns `pending` for mempool or shallow transactions and `confirmed` when
+the transaction has at least `minConfirmations` confirmations.
 
 ## API Reference
 
@@ -460,6 +461,11 @@ For Bitcoin, `TxRef.raw` is the display txid and `TxRef.hash` is `0x` plus the
 byte-reversed txid. `submitDeposit` returns after Bitcoin Core accepts the raw
 transaction; use `verifyDeposit` to observe mempool, shallow, and confirmed
 states.
+
+For PSBT wallet signing, `prepareDepositPsbt` returns an `unsignedRef` for the
+unsigned transaction shape. Use the `TxRef` returned by
+`submitSignedDepositPsbt` for verification because wallet finalization can
+change the final txid for nested-SegWit inputs.
 
 `BitcoinCoreRpcClient` is a convenience adapter for Bitcoin Core JSON-RPC:
 
@@ -651,26 +657,34 @@ The EVM demo expects:
 - a funded wallet account on that network
 
 `make devnet-evm` starts Anvil on `http://127.0.0.1:8545` with chain ID `31337`,
-but it does not predeploy `Custody` for the browser demo.
+but it does not predeploy `Custody` for the browser demo. See
+[examples/evm-deposit/README.md](examples/evm-deposit/README.md) for the
+browser flow, required contract setup, and troubleshooting notes.
 
 The Solana demo discovers wallets through Wallet Standard, uses
 `solana:signTransaction`, and broadcasts the signed transaction through the
 configured RPC URL. The selected wallet chain must be one the wallet advertises,
 such as `solana:localnet` for a local validator. The local devnet preloads the
 custody program, but the wallet must be funded and SPL token accounts must
-already exist for SPL deposits.
+already exist for SPL deposits. See
+[examples/solana-deposit/README.md](examples/solana-deposit/README.md) for
+local funding notes and troubleshooting.
 
 The XRPL demo supports a local signer for standalone-devnet smoke tests and
 GemWallet for browser-wallet signing. The GemWallet path requires a custom
 `wss://` endpoint that points at the same local chain as the demo because wallet
 network selection and SDK submission must agree. See
-`examples/xrpl-deposit/README.md` for the full local signer flow, GemWallet
-custom-network setup, funding steps, and troubleshooting notes.
+[examples/xrpl-deposit/README.md](examples/xrpl-deposit/README.md) for the full
+local signer flow, GemWallet custom-network setup, funding steps, and
+troubleshooting notes.
 
 The Bitcoin demo uses local generated keys and Bitcoin Core regtest through a
 Vite proxy at `/btc-rpc`. Start `make devnet-btc`, then `npm run demo:btc`.
 The browser never receives the Bitcoin Core username or password; the Vite proxy
-adds Basic Auth before forwarding to `http://127.0.0.1:18443`.
+adds Basic Auth before forwarding to `http://127.0.0.1:18443`. The demo includes
+both a deterministic local-signer flow and an Xverse PSBT signing flow; see
+[examples/bitcoin-deposit/README.md](examples/bitcoin-deposit/README.md) for the
+Xverse Electrs facade, local funding steps, and troubleshooting notes.
 
 ## Troubleshooting
 
@@ -678,14 +692,14 @@ Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 
 | Code | Common cause |
 |---|---|
-| `INVALID_INPUT` | XRPL submit options are missing or have the wrong shape. |
+| `INVALID_INPUT` | Submit options are missing or have the wrong shape, an asset is unsupported, or Bitcoin transaction/PSBT finalization input is invalid. |
 | `INVALID_ADDRESS` | EVM address, Solana public key, Solana mint, program ID, XRPL classic address, XRPL issued-currency key, or Clearnet account is invalid. |
 | `INVALID_AMOUNT` | `amount` is not positive, has the wrong type, or exceeds the chain limit (`uint256` for EVM, `uint64` for Solana/XRPL native drops, signed 64-bit satoshis for Bitcoin). |
 | `INVALID_CONFIRMATIONS` | `minConfirmations` is negative, fractional, or an unsafe number. |
-| `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value. |
+| `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value, or Bitcoin received a non-zero reference. |
 | `INVALID_TX_REF` | `ref.hash` is not bytes32, Solana `ref.raw` is not a 64-byte signature, XRPL `ref.raw` is not a 64-hex hash, or Bitcoin `ref.raw` is not a 64-hex txid matching the byte-reversed `hash`. |
 | `MISSING_WALLET_ACCOUNT` | The EVM wallet account is missing/mismatched, or the Solana/XRPL signer is missing. |
-| `CHAIN_MISMATCH` | EVM only: the public RPC or wallet chain does not match `chainId`. |
+| `CHAIN_MISMATCH` | The configured chain or network does not match the RPC or wallet network, such as an EVM chain ID mismatch or unsupported Bitcoin network. |
 | `INSUFFICIENT_FUNDS` | Bitcoin only: confirmed depositor UTXOs cannot cover the deposit amount plus fee. |
 | `TX_REVERTED` | A submitted approval/deposit transaction reverted, or XRPL rejected the payment engine result. |
 | `RECEIPT_TIMEOUT` | Waiting for a receipt timed out or was aborted. |

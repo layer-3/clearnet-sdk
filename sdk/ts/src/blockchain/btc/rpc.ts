@@ -15,6 +15,11 @@ interface JsonRpcEnvelope {
   error?: { code: number; message: string } | null;
 }
 
+const BITCOIN_CORE_MAX_CONFIRMATIONS = 9_999_999;
+const SATS_PER_BTC = 100_000_000n;
+const VBYTES_PER_KILOVBYTE = 1000;
+const BTC_DECIMAL_PATTERN = /^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,8})?$/;
+
 export class BitcoinCoreRpcClient implements BitcoinRpc {
   private readonly url: string;
   private readonly username: string | undefined;
@@ -47,7 +52,7 @@ export class BitcoinCoreRpcClient implements BitcoinRpc {
   ): Promise<readonly BitcoinUnspent[]> {
     const result = await this.call("wallet", "listunspent", [
       minConfirmations,
-      9999999,
+      BITCOIN_CORE_MAX_CONFIRMATIONS,
       addresses,
     ]);
     if (!Array.isArray(result)) {
@@ -80,7 +85,10 @@ export class BitcoinCoreRpcClient implements BitcoinRpc {
     if (typeof feeRate !== "number" || !Number.isFinite(feeRate) || feeRate <= 0) {
       return fallbackRate;
     }
-    const sats = Math.round(feeRate * 100_000_000 / 1000);
+    // Bitcoin Core estimatesmartfee returns BTC/kvB; SDK callers use sats/vB.
+    const sats = Math.round(
+      (feeRate * Number(SATS_PER_BTC)) / VBYTES_PER_KILOVBYTE,
+    );
     return sats > 0 ? BigInt(sats) : fallbackRate;
   }
 
@@ -120,19 +128,49 @@ export class BitcoinCoreRpcClient implements BitcoinRpc {
         `${this.username}:${this.password}`,
       ).toString("base64")}`;
     }
-    const response = await this.fetchImpl(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        jsonrpc: "1.0",
-        id: "sdk",
-        method,
-        params,
-      }),
-    });
-    const envelope = (await response.json()) as JsonRpcEnvelope;
+    let response: Response;
+    try {
+      response = await this.fetchImpl(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "1.0",
+          id: "sdk",
+          method,
+          params,
+        }),
+      });
+    } catch (error) {
+      throw new ClearnetSdkError(
+        "RPC_ERROR",
+        `btc rpc ${method} request failed`,
+        { cause: error },
+      );
+    }
+    let envelope: JsonRpcEnvelope;
+    try {
+      envelope = (await response.json()) as JsonRpcEnvelope;
+    } catch (error) {
+      throw new ClearnetSdkError(
+        "RPC_ERROR",
+        `btc rpc ${method} HTTP ${response.status}`,
+        { cause: error },
+      );
+    }
     if (envelope.error !== null && envelope.error !== undefined) {
-      throw new BitcoinRpcError(envelope.error.code, envelope.error.message);
+      if (
+        typeof envelope.error.code === "number" &&
+        typeof envelope.error.message === "string"
+      ) {
+        throw new BitcoinRpcError(envelope.error.code, envelope.error.message);
+      }
+      throw new ClearnetSdkError("RPC_ERROR", `btc rpc ${method} returned invalid error`);
+    }
+    if (!response.ok) {
+      throw new ClearnetSdkError(
+        "RPC_ERROR",
+        `btc rpc ${method} HTTP ${response.status}`,
+      );
     }
     return envelope.result;
   }
@@ -143,11 +181,11 @@ function btcToSats(value: unknown): bigint {
     if (!Number.isFinite(value) || value < 0) {
       throw new ClearnetSdkError("RPC_ERROR", "Bitcoin Core amount must be non-negative");
     }
-    return BigInt(Math.round(value * 100_000_000));
+    return btcToSats(value.toFixed(8));
   }
-  if (typeof value === "string" && /^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,8})?$/.test(value)) {
+  if (typeof value === "string" && BTC_DECIMAL_PATTERN.test(value)) {
     const [whole = "0", frac = ""] = value.split(".");
-    return BigInt(whole) * 100_000_000n + BigInt(frac.padEnd(8, "0"));
+    return BigInt(whole) * SATS_PER_BTC + BigInt(frac.padEnd(8, "0"));
   }
   throw new ClearnetSdkError("RPC_ERROR", "Bitcoin Core amount is invalid");
 }

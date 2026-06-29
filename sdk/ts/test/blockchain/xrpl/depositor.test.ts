@@ -407,6 +407,11 @@ describe("XrplVaultDepositor", () => {
       "confirmed",
     );
 
+    client.request.mockResolvedValueOnce(txResponse(true));
+    await expect(depositor.verifyDeposit(HASH_REF, 1n << 80n)).resolves.toBe(
+      "confirmed",
+    );
+
     client.request.mockResolvedValueOnce(txResponse(false));
     await expect(depositor.verifyDeposit(HASH_REF, 1n)).resolves.toBe("pending");
 

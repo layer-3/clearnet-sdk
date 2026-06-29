@@ -1,6 +1,10 @@
 import { ClearnetSdkError } from "../../core/errors.js";
 import type { SubmitDepositOptions } from "../../core/types.js";
 import {
+  BYTES32_HEX_PATTERN,
+  ZERO_BYTES32_PATTERN,
+} from "../../core/validation.js";
+import {
   BITCOIN_DEFAULT_FALLBACK_FEE_RATE_SAT_PER_VBYTE,
   BITCOIN_DEFAULT_FEE_TARGET_BLOCKS,
   BITCOIN_DEFAULT_MIN_FUNDING_CONFIRMATIONS,
@@ -16,9 +20,6 @@ import type {
   BitcoinSigner,
   NormalizedBitcoinConfig,
 } from "./types.js";
-
-const BYTES32_HEX_PATTERN = /^0x[a-fA-F0-9]{64}$/;
-const ZERO_BYTES32_PATTERN = /^0x0{64}$/i;
 
 export function normalizeConfig(
   config: BitcoinDepositorConfig,
@@ -36,25 +37,25 @@ export function normalizeConfig(
     vaultPubkeys,
     threshold,
     minFundingConfirmations: Number(
-      normalizeIntegerLike(
+      normalizeNonNegativeIntegerLike(
         config.minFundingConfirmations,
         BITCOIN_DEFAULT_MIN_FUNDING_CONFIRMATIONS,
         "minFundingConfirmations",
       ),
     ),
     feeTargetBlocks: Number(
-      normalizeIntegerLike(
+      normalizePositiveIntegerLike(
         config.feeTargetBlocks,
         BITCOIN_DEFAULT_FEE_TARGET_BLOCKS,
         "feeTargetBlocks",
       ),
     ),
-    fallbackFeeRateSatPerVByte: normalizeIntegerLike(
+    fallbackFeeRateSatPerVByte: normalizePositiveIntegerLike(
       config.fallbackFeeRateSatPerVByte,
       BITCOIN_DEFAULT_FALLBACK_FEE_RATE_SAT_PER_VBYTE,
       "fallbackFeeRateSatPerVByte",
     ),
-    dustThresholdSats: normalizeIntegerLike(
+    dustThresholdSats: normalizePositiveIntegerLike(
       config.dustThresholdSats,
       BITCOIN_DUST_THRESHOLD_SATS,
       "dustThresholdSats",
@@ -228,7 +229,19 @@ function requireThreshold(threshold: unknown, keyCount: number): number {
   return value;
 }
 
-function normalizeIntegerLike(
+function normalizePositiveIntegerLike(
+  value: bigint | number | undefined,
+  fallback: bigint,
+  field: string,
+): bigint {
+  const normalized = normalizeNonNegativeIntegerLike(value, fallback, field);
+  if (normalized === 0n) {
+    throw new ClearnetSdkError("INVALID_INPUT", `${field} must be a positive safe integer`);
+  }
+  return normalized;
+}
+
+function normalizeNonNegativeIntegerLike(
   value: bigint | number | undefined,
   fallback: bigint,
   field: string,
@@ -237,13 +250,13 @@ function normalizeIntegerLike(
     return fallback;
   }
   if (typeof value === "bigint") {
-    if (value <= 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new ClearnetSdkError("INVALID_INPUT", `${field} must be a positive safe integer`);
+    if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new ClearnetSdkError("INVALID_INPUT", `${field} must be a non-negative safe integer`);
     }
     return value;
   }
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new ClearnetSdkError("INVALID_INPUT", `${field} must be a positive safe integer`);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new ClearnetSdkError("INVALID_INPUT", `${field} must be a non-negative safe integer`);
   }
   return BigInt(value);
 }

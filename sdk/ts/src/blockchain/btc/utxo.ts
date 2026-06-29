@@ -1,6 +1,6 @@
 import { ClearnetSdkError } from "../../core/errors.js";
-import { compareBytes, hexToBytes, reverseBytes } from "./bytes.js";
-import type { BitcoinUnspent } from "./types.js";
+import { compareBytes, hexToBytes, reverseBytes } from "../../core/bytes.js";
+import type { BitcoinUnspent, BitcoinWalletAddressType } from "./types.js";
 
 export interface SelectedUtxos {
   utxos: readonly BitcoinUnspent[];
@@ -10,14 +10,18 @@ export interface SelectedUtxos {
 export function estimateDepositFeeSats(
   inputCount: number,
   feeRateSatPerVByte: bigint,
+  addressType: BitcoinWalletAddressType = "p2wpkh",
 ): bigint {
-  return (97n + 120n * BigInt(inputCount)) * feeRateSatPerVByte;
+  return (
+    DEPOSIT_BASE_VBYTES + inputVbytes(addressType) * BigInt(inputCount)
+  ) * feeRateSatPerVByte;
 }
 
 export function selectDepositUtxos(
   available: readonly BitcoinUnspent[],
   amountSats: bigint,
   feeRateSatPerVByte: bigint,
+  addressType: BitcoinWalletAddressType = "p2wpkh",
 ): SelectedUtxos {
   const ordered = [...available].sort(compareUtxoForSelection);
   const selected: BitcoinUnspent[] = [];
@@ -25,7 +29,11 @@ export function selectDepositUtxos(
   for (const utxo of ordered) {
     selected.push(utxo);
     total += utxo.amountSats;
-    const fee = estimateDepositFeeSats(selected.length, feeRateSatPerVByte);
+    const fee = estimateDepositFeeSats(
+      selected.length,
+      feeRateSatPerVByte,
+      addressType,
+    );
     if (total >= amountSats + fee) {
       return { utxos: selected, feeSats: fee };
     }
@@ -34,6 +42,17 @@ export function selectDepositUtxos(
     "INSUFFICIENT_FUNDS",
     "insufficient eligible BTC balance",
   );
+}
+
+// Conservative final transaction sizing for one P2WSH deposit output plus one
+// P2WPKH change output. The constants intentionally cover finalized
+// max-length DER signatures rather than the smaller unsigned PSBT shape.
+const DEPOSIT_BASE_VBYTES = 85n;
+const P2WPKH_INPUT_VBYTES = 68n;
+const P2SH_P2WPKH_INPUT_VBYTES = 92n;
+
+function inputVbytes(addressType: BitcoinWalletAddressType): bigint {
+  return addressType === "p2sh" ? P2SH_P2WPKH_INPUT_VBYTES : P2WPKH_INPUT_VBYTES;
 }
 
 export function compareUtxoForSelection(a: BitcoinUnspent, b: BitcoinUnspent): number {

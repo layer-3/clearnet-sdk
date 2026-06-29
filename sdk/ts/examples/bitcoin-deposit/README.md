@@ -14,7 +14,7 @@ npm --prefix sdk/ts run build
 npm --prefix sdk/ts run demo:btc
 ```
 
-Open the Vite URL, usually `http://127.0.0.1:5173/`.
+Open the Vite URL printed by Vite, usually `http://127.0.0.1:5173/`.
 
 The demo talks to Bitcoin Core through the Vite proxy at `/btc-rpc`. Browser
 code does not include the Bitcoin Core username or password; the proxy injects
@@ -46,8 +46,9 @@ still use JSON-RPC `POST /btc-rpc`, and the proxy keeps Bitcoin Core credentials
 server-side.
 
 1. Install Xverse and unlock a Bitcoin account.
-2. Confirm **Xverse Electrs URL** points at the running Vite proxy. The default
-   is `http://127.0.0.1:5174/btc-rpc`; update the port if Vite uses another one.
+2. Confirm **Xverse Electrs URL** points at the running Vite proxy. The page
+   derives the default from its own origin, such as
+   `http://127.0.0.1:5173/btc-rpc`.
 3. Click **Add/Switch Xverse Network** and approve the Xverse prompts.
 4. Click **Connect Xverse**. The demo requests the payment address on `Regtest`
    and accepts `p2wpkh` or nested-SegWit `p2sh` payment addresses.
@@ -71,7 +72,7 @@ the deterministic regtest fallback.
 | The log says `Xverse getAccounts failed: Access denied`. | Xverse rejected the account-access request. | Re-run **Connect Xverse** and approve the prompt. If no prompt appears, open Xverse directly, unlock it, confirm the active account, then retry from the demo tab. |
 | **Fund Xverse** says to connect first. | The demo has not stored an Xverse payment address yet. | Complete **Add/Switch Xverse Network** and **Connect Xverse** before funding. |
 | **Fund Xverse** rejects the returned address. | The active Xverse account is not returning a regtest-compatible payment address. | Use an Xverse Bitcoin payment address on the custom regtest network. The demo accepts `bcrt1...` Native SegWit (`p2wpkh`) and `2...` nested-SegWit (`p2sh`) addresses. |
-| Xverse shows `Transaction Error` with `404` for `/address/<address>/utxo` while signing. | The Xverse custom-network URL points at plain Bitcoin Core JSON-RPC or the wrong Vite port. Xverse needs Electrs-style read endpoints while rendering the PSBT review. | Set **Xverse Electrs URL** to the running Vite server's `/btc-rpc` path, for example `http://127.0.0.1:5174/btc-rpc`. Restart the demo after Vite config changes. |
+| Xverse shows `Transaction Error` with `404` for `/address/<address>/utxo` while signing. | The Xverse custom-network URL points at plain Bitcoin Core JSON-RPC or the wrong Vite port. Xverse needs Electrs-style read endpoints while rendering the PSBT review. | Set **Xverse Electrs URL** to the running Vite server's `/btc-rpc` path, for example `http://127.0.0.1:5173/btc-rpc`. Restart the demo after Vite config changes. |
 | **Submit Xverse** logs `PSBT has no inputs for Xverse to sign`. | The funded UTXO is not visible from the wallet/funding address selected in the demo. | Click **Fund Xverse** again, confirm it reports at least one UTXO, then retry **Submit Xverse**. |
 | **Submit Xverse** signs but broadcast or verify fails. | The transaction may still be in the mempool, the local regtest node has not mined a block, or the demo is pointed at a different Bitcoin Core wallet/node. | Click **Verify Last Tx** before mining to check for `pending`, then click **Mine Block** and verify again. Confirm **RPC URL** and **Xverse Electrs URL** point at the same Vite proxy/node. |
 | Xverse cannot reach `127.0.0.1` from the extension environment. | Browser extension networking or custom-network policy is blocking the local URL. | Use a reachable HTTP(S) tunnel to the Vite proxy and put that tunnel URL in **Xverse Electrs URL**, or use the local signer flow. |
@@ -85,7 +86,7 @@ the deterministic regtest fallback.
 | Wallet Name | `sdk` |
 | Network | `regtest` |
 | Xverse Network Name | `clearnet-regtest` |
-| Xverse Electrs URL | `http://127.0.0.1:5174/btc-rpc` |
+| Xverse Electrs URL | Derived from the current page origin, for example `http://127.0.0.1:5173/btc-rpc` |
 | Xverse Network | `Regtest` |
 | Fund Sats | `100000000` |
 | Fallback Fee Sat/VB | `5` |

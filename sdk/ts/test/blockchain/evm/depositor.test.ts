@@ -303,6 +303,12 @@ describe("EvmVaultDepositor", () => {
     await expect(
       depositor.verifyDeposit({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH }, 2),
     ).resolves.toBe("pending");
+    await expect(
+      depositor.verifyDeposit(
+        { hash: DEPOSIT_HASH, raw: DEPOSIT_HASH },
+        1n << 80n,
+      ),
+    ).resolves.toBe("pending");
     expect(clients.publicMock.getBlockNumber).toHaveBeenCalledWith({
       cacheTime: 0,
     });

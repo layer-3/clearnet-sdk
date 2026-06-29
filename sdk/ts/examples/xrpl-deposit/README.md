@@ -17,15 +17,12 @@ From the repository root:
 
 ```sh
 make devnet-xrpl
+npm --prefix sdk/ts ci
+npm --prefix sdk/ts run build
+npm --prefix sdk/ts run demo:xrpl
 ```
 
-From `sdk/ts`:
-
-```sh
-npm run demo:xrpl
-```
-
-Open `http://127.0.0.1:5173/`.
+Open the Vite URL printed by Vite, usually `http://127.0.0.1:5173/`.
 
 The default fields are for the local devnet:
 
@@ -94,7 +91,7 @@ The demo checks GemWallet's selected WebSocket endpoint before signing. If the
 wallet is still on Xahau testnet or another network, the demo reports both
 network IDs and stops before opening the signing request.
 
-## What Went Wrong During Setup
+## Setup Constraints
 
 There were three separate issues:
 

@@ -7,13 +7,16 @@ import { PublicKey } from "@solana/web3.js";
 import { ClearnetSdkError } from "../../core/errors.js";
 import type { Bytes32Hex, DepositDestination, TxRef } from "../../core/types.js";
 import {
+  BYTES32_HEX_PATTERN,
+  normalizeMinConfirmations,
+} from "../../core/validation.js";
+import {
   DEFAULT_SOLANA_COMMITMENT,
   SOLANA_CUSTODY_PROGRAM_ID,
 } from "./constants.js";
 import type { SolanaCommitment, SolanaSigner } from "./types.js";
 
 const UINT64_MAX = (1n << 64n) - 1n;
-const BYTES32_HEX_PATTERN = /^0x[a-fA-F0-9]{64}$/;
 
 export function requireRpcUrl(rpcUrl: unknown): string {
   if (typeof rpcUrl !== "string" || rpcUrl.trim() === "") {
@@ -220,24 +223,7 @@ export function requireTxRef(ref: unknown): Uint8Array {
   return signature;
 }
 
-export function normalizeMinConfirmations(value: bigint | number): bigint {
-  if (typeof value === "bigint") {
-    if (value < 0n) {
-      throw new ClearnetSdkError(
-        "INVALID_CONFIRMATIONS",
-        "minConfirmations must be non-negative",
-      );
-    }
-    return value;
-  }
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new ClearnetSdkError(
-      "INVALID_CONFIRMATIONS",
-      "minConfirmations must be a non-negative safe integer",
-    );
-  }
-  return BigInt(value);
-}
+export { normalizeMinConfirmations };
 
 export function bytes32Hex(bytes: Uint8Array): Bytes32Hex {
   const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");

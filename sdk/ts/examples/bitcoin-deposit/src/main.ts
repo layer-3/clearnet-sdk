@@ -75,8 +75,16 @@ verifyButton.addEventListener("click", () => {
   void verifyLastTx();
 });
 
+initializeXverseRpcUrl();
 generateKeys();
 writeLog("Generate keys, fund a signer, then submit a native BTC deposit.");
+
+function initializeXverseRpcUrl(): void {
+  const input = mustElement<HTMLInputElement>("xverse-rpc-url");
+  if (input.value.trim() === "") {
+    input.value = `${window.location.origin}/btc-rpc`;
+  }
+}
 
 function generateKeys(): void {
   const local = createLocalBitcoinSigner();
@@ -263,7 +271,7 @@ async function submitXverseDeposit(): Promise<void> {
       },
     );
     writeLog(
-      `Prepared PSBT unsigned txid ${prepared.ref.raw}\n` +
+      `Prepared PSBT unsigned txid ${prepared.unsignedRef.raw}\n` +
         `inputs: ${prepared.inputIndexesToSign.join(", ")}\n` +
         "Waiting for Xverse signature...",
     );

@@ -3,9 +3,13 @@ import type { Account, Address, Hash } from "viem";
 
 import { ClearnetSdkError } from "../../core/errors.js";
 import type { TxRef } from "../../core/types.js";
+import {
+  BYTES32_HEX_PATTERN,
+  normalizeMinConfirmations,
+} from "../../core/validation.js";
 
 const UINT256_MAX = (1n << 256n) - 1n;
-const HASH_PATTERN = /^0x[a-fA-F0-9]{64}$/;
+const HASH_PATTERN = BYTES32_HEX_PATTERN;
 
 export interface ValidatedDepositDestination {
   account: Address;
@@ -122,24 +126,7 @@ export function txRef(hash: Hash): TxRef {
   return { hash, raw: hash };
 }
 
-export function normalizeMinConfirmations(value: bigint | number): bigint {
-  if (typeof value === "bigint") {
-    if (value < 0n) {
-      throw new ClearnetSdkError(
-        "INVALID_CONFIRMATIONS",
-        "minConfirmations must be non-negative",
-      );
-    }
-    return value;
-  }
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new ClearnetSdkError(
-      "INVALID_CONFIRMATIONS",
-      "minConfirmations must be a non-negative safe integer",
-    );
-  }
-  return BigInt(value);
-}
+export { normalizeMinConfirmations };
 
 export function isTransactionNotFound(error: unknown): boolean {
   const name = getErrorField(error, "name");

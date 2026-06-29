@@ -90,7 +90,12 @@ export type BitcoinWalletAddressType = "p2wpkh" | "p2sh";
 export interface BitcoinPreparedDepositPsbt {
   psbtHex: string;
   inputIndexesToSign: readonly number[];
-  ref: TxRef;
+  /**
+   * TxRef for the unsigned PSBT transaction shape. Wallet finalization can
+   * change the final txid, especially for nested-SegWit inputs, so callers must
+   * use the TxRef returned by submitSignedDepositPsbt for verification.
+   */
+  unsignedRef: TxRef;
   fundingAddress: string;
   depositAddress: string;
   feeSats: bigint;
