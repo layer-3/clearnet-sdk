@@ -62,6 +62,21 @@ If Xverse cannot add or reach the local RPC URL, use a reachable HTTP(S) tunnel
 for the Vite proxy or use the local signer flow. The local signer path remains
 the deterministic regtest fallback.
 
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| **Add/Switch Xverse Network** opens a prompt, then the demo logs `Access denied`. | The network request was rejected in Xverse, or a previous prompt was still open. | Approve the Xverse prompt. If a stale popup is open, close it and click **Add/Switch Xverse Network** again. The demo only calls `wallet_addNetwork` with `switch: true`; it does not require a separate network-switch request. |
+| **Connect Xverse** disables briefly but does not fill the address fields. | Xverse did not return a payment account, the wallet is locked, or the request was rejected. | Unlock Xverse, make sure the custom regtest network is selected, then click **Connect Xverse** again and approve the connection prompt. The demo requests a payment account with `getAccounts` and falls back to `getAddresses` only when that method is unavailable. |
+| The log says `Xverse getAccounts failed: Access denied`. | Xverse rejected the account-access request. | Re-run **Connect Xverse** and approve the prompt. If no prompt appears, open Xverse directly, unlock it, confirm the active account, then retry from the demo tab. |
+| **Fund Xverse** says to connect first. | The demo has not stored an Xverse payment address yet. | Complete **Add/Switch Xverse Network** and **Connect Xverse** before funding. |
+| **Fund Xverse** rejects the returned address. | The active Xverse account is not returning a regtest-compatible payment address. | Use an Xverse Bitcoin payment address on the custom regtest network. The demo accepts `bcrt1...` Native SegWit (`p2wpkh`) and `2...` nested-SegWit (`p2sh`) addresses. |
+| Xverse shows `Transaction Error` with `404` for `/address/<address>/utxo` while signing. | The Xverse custom-network URL points at plain Bitcoin Core JSON-RPC or the wrong Vite port. Xverse needs Electrs-style read endpoints while rendering the PSBT review. | Set **Xverse Electrs URL** to the running Vite server's `/btc-rpc` path, for example `http://127.0.0.1:5174/btc-rpc`. Restart the demo after Vite config changes. |
+| **Submit Xverse** logs `PSBT has no inputs for Xverse to sign`. | The funded UTXO is not visible from the wallet/funding address selected in the demo. | Click **Fund Xverse** again, confirm it reports at least one UTXO, then retry **Submit Xverse**. |
+| **Submit Xverse** signs but broadcast or verify fails. | The transaction may still be in the mempool, the local regtest node has not mined a block, or the demo is pointed at a different Bitcoin Core wallet/node. | Click **Verify Last Tx** before mining to check for `pending`, then click **Mine Block** and verify again. Confirm **RPC URL** and **Xverse Electrs URL** point at the same Vite proxy/node. |
+| Xverse cannot reach `127.0.0.1` from the extension environment. | Browser extension networking or custom-network policy is blocking the local URL. | Use a reachable HTTP(S) tunnel to the Vite proxy and put that tunnel URL in **Xverse Electrs URL**, or use the local signer flow. |
+| Leather shows local networks as disabled or returns a non-regtest address. | Leather's local network entries are not usable for this demo's regtest funding and PSBT path. | Use Xverse for the browser-wallet path, or use **Submit Local** for deterministic local-signer validation. |
+
 ## Defaults
 
 | Field | Default |
