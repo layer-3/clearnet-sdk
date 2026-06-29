@@ -47,3 +47,7 @@ jobs:
       - name: Build XRPL demo
         run: npm --workspace @yellow-org/xrpl-deposit-demo run build
         working-directory: sdk/ts
+
+      - name: Build Bitcoin demo
+        run: npm --workspace @yellow-org/bitcoin-deposit-demo run build
+        working-directory: sdk/ts
