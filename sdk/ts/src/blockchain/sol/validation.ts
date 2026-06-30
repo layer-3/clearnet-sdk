@@ -9,6 +9,7 @@ import type { Bytes32Hex, DepositDestination, TxRef } from "../../core/types.js"
 import {
   BYTES32_HEX_PATTERN,
   normalizeMinConfirmations,
+  normalizeReceiptTimeoutMs,
 } from "../../core/validation.js";
 import {
   DEFAULT_SOLANA_COMMITMENT,
@@ -77,13 +78,7 @@ export function normalizeCommitment(
 }
 
 export function requireReceiptTimeout(value: number): number {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new ClearnetSdkError(
-      "RECEIPT_TIMEOUT",
-      "receiptTimeoutMs must be a positive safe integer",
-    );
-  }
-  return value;
+  return normalizeReceiptTimeoutMs(value);
 }
 
 export function requireAmount(amount: unknown): bigint {

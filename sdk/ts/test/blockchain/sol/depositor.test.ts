@@ -179,7 +179,20 @@ describe("SolanaVaultDepositor", () => {
         amount: 1n,
         destination: { account: "0x1234" },
       }),
-    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination.account must be a 20-byte hex address",
+    });
+    await expect(
+      depositor.submitDeposit({
+        asset: SOLANA_NATIVE_ASSET,
+        amount: 1n,
+        destination: { account: "yellow://local/user/not-hex" },
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination.account must be a 20-byte hex address",
+    });
     await expect(
       depositor.submitDeposit({
         asset: "not-base58",

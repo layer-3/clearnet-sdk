@@ -1,6 +1,7 @@
 import type { Address, Hash, TransactionReceipt } from "viem";
 
 import { ClearnetSdkError } from "../../core/errors.js";
+import { normalizeReceiptTimeoutMs } from "../../core/validation.js";
 import type {
   DepositStatus,
   EvmDepositorConfig,
@@ -375,11 +376,5 @@ async function waitWithControls(
 }
 
 function requireReceiptTimeout(timeoutMs: number): number {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new ClearnetSdkError(
-      "RECEIPT_TIMEOUT",
-      "receiptTimeoutMs must be a positive safe integer",
-    );
-  }
-  return timeoutMs;
+  return normalizeReceiptTimeoutMs(timeoutMs);
 }

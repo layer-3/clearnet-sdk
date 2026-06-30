@@ -110,7 +110,40 @@ describe("BitcoinVaultDepositor", () => {
         amount: 1n,
         destination: { account: ACCOUNT, ref: NON_ZERO_REF },
       }),
-    ).rejects.toMatchObject({ code: "INVALID_REFERENCE" });
+    ).rejects.toMatchObject({
+      code: "INVALID_REFERENCE",
+      message: "Bitcoin deposits do not support non-zero destination.ref",
+    });
+    await expect(
+      depositor.submitDeposit({
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: 1n,
+        destination: { account: ACCOUNT, ref: "invoice-1" as Bytes32Hex },
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_REFERENCE",
+      message: "destination.ref must be a 32-byte hex value",
+    });
+    await expect(
+      depositor.submitDeposit({
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: 1n,
+        destination: { account: "" },
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination.account must be a non-empty string",
+    });
+    await expect(
+      depositor.submitDeposit({
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: 1n,
+        destination: { account: 123 as unknown as string },
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination.account must be a non-empty string",
+    });
     await expect(
       depositor.submitDeposit(
         {
@@ -382,9 +415,28 @@ describe("BitcoinVaultDepositor", () => {
       rpc: createRpc({ rawTransaction: { txid: DISPLAY_TXID, confirmations: 2 } }),
     });
     await expect(confirmed.verifyDeposit(ref, 2)).resolves.toBe("confirmed");
+    await expect(confirmed.verifyDeposit(ref, 2n)).resolves.toBe("confirmed");
     await expect(
       confirmed.verifyDeposit({ ...ref, hash: ZERO_REF }, 1),
     ).rejects.toMatchObject({ code: "INVALID_TX_REF" });
+
+    const invalidMinConfRpc = createRpc({
+      rawTransaction: { txid: DISPLAY_TXID, confirmations: 2 },
+    });
+    const invalidMinConf = createDepositor({ rpc: invalidMinConfRpc });
+    for (const minConfirmations of [
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      1n << 80n,
+    ]) {
+      await expect(
+        invalidMinConf.verifyDeposit(ref, minConfirmations),
+      ).rejects.toMatchObject({
+        code: "INVALID_CONFIRMATIONS",
+        message: "minConfirmations must be a non-negative safe integer",
+      });
+    }
+    expect(invalidMinConfRpc.getRawTransaction).not.toHaveBeenCalled();
   });
 
   it("allows zero funding confirmations but keeps fee knobs positive", () => {
