@@ -184,4 +184,9 @@ func TestSignerPayload_Rejections(t *testing.T) {
 	if _, _, err := ParseSignerPayload(unsorted); err == nil {
 		t.Error("expected error for non-ascending signers")
 	}
+	// The zero address is a valid hex address but never a valid signer.
+	zero := []byte(`{"v":1,"threshold":1,"signers":["0x0000000000000000000000000000000000000000"]}`)
+	if _, _, err := ParseSignerPayload(zero); err == nil {
+		t.Error("expected error for zero-address signer")
+	}
 }

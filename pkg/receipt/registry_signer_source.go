@@ -141,6 +141,11 @@ func ParseSignerPayload(b []byte) ([]common.Address, int, error) {
 			return nil, 0, fmt.Errorf("signer payload: %q is not a hex address", s)
 		}
 		a := common.HexToAddress(s)
+		if a == (common.Address{}) {
+			// ConfigGovernor rejects the zero operator on-chain, but ParseSignerPayload
+			// is reachable from any PayloadStore where that guard is out of scope.
+			return nil, 0, fmt.Errorf("signer payload: zero address is not a valid signer")
+		}
 		if last != nil && bytes.Compare(a[:], last) <= 0 {
 			return nil, 0, fmt.Errorf("signer payload: signers not strictly ascending at %s", s)
 		}

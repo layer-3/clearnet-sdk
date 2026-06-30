@@ -39,7 +39,10 @@ func TestConfigWatcher_BackfillAndLookup(t *testing.T) {
 		checksums: map[[32]byte][32]byte{kConfig: csum},        // kSigners not committed yet
 		epochs:    map[[32]byte]uint64{kConfig: 3, kSigners: 0}, // genesis for signers
 	}
-	w := NewConfigWatcher(nil, reg, [][32]byte{kConfig, kSigners}, 12)
+	w, err := NewConfigWatcher(nil, reg, [][32]byte{kConfig, kSigners}, 12)
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
 	if err := w.Backfill(context.Background()); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
@@ -71,10 +74,21 @@ func TestConfigWatcher_BackfillAndLookup(t *testing.T) {
 	}
 }
 
+// TestConfigWatcher_RejectsEmptyKeys guards against the eth_getLogs wildcard:
+// an empty key set must fail at construction rather than match every event.
+func TestConfigWatcher_RejectsEmptyKeys(t *testing.T) {
+	if _, err := NewConfigWatcher(nil, fakeConfigReader{}, nil, 0); err == nil {
+		t.Fatal("expected error for empty key set")
+	}
+}
+
 // TestConfigWatcher_OnChangeWiring is a light check that SetOnChange stores the
 // callback (full event-driven coverage needs a chain and lives in integration).
 func TestConfigWatcher_OnChangeWiring(t *testing.T) {
-	w := NewConfigWatcher(nil, fakeConfigReader{}, nil, 0)
+	w, err := NewConfigWatcher(nil, fakeConfigReader{}, [][32]byte{{0x01}}, 0)
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
 	called := false
 	w.SetOnChange(func(_ [32]byte, _ ConfigState) { called = true })
 	if w.onChange == nil {

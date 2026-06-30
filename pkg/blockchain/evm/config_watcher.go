@@ -61,12 +61,22 @@ type ConfigWatcher struct {
 	state     map[[32]byte]ConfigState
 	watermark uint64
 	onChange  func(key [32]byte, st ConfigState)
+	// started guards the documented "Backfill before Watch" precondition: once
+	// Watch is running a second Backfill (e.g. a reconnect path) could race a
+	// poll cycle and silently regress state to an older snapshot, so it errors.
+	started bool
 }
 
 // NewConfigWatcher constructs an empty watcher over the given keys. Call
 // Backfill(ctx) before Watch(ctx). client may be nil for unit-test wiring that
 // only exercises Lookup; production callers supply the live ethclient.
-func NewConfigWatcher(client *ethclient.Client, reg ConfigWatcherReader, keys [][32]byte, confirmations uint64) *ConfigWatcher {
+//
+// keys must be non-empty: an empty indexed-key filter is a wildcard in
+// eth_getLogs, which would match every ConfigSet event on the contract.
+func NewConfigWatcher(client *ethclient.Client, reg ConfigWatcherReader, keys [][32]byte, confirmations uint64) (*ConfigWatcher, error) {
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("config watcher: no keys to watch")
+	}
 	cp := make([][32]byte, len(keys))
 	copy(cp, keys)
 	return &ConfigWatcher{
@@ -77,7 +87,7 @@ func NewConfigWatcher(client *ethclient.Client, reg ConfigWatcherReader, keys []
 		pollInterval:  configWatcherPollInterval,
 		logger:        log.NewNoopLogger(),
 		state:         make(map[[32]byte]ConfigState),
-	}
+	}, nil
 }
 
 // SetLogger sets the watcher's logger (defaults to a no-op). Call before
@@ -130,6 +140,12 @@ func (w *ConfigWatcher) Backfill(ctx context.Context) error {
 	if w.reg == nil {
 		return fmt.Errorf("config watcher: registry not configured")
 	}
+	w.mu.RLock()
+	started := w.started
+	w.mu.RUnlock()
+	if started {
+		return fmt.Errorf("config watcher: Backfill called after Watch started")
+	}
 	opts := &bind.CallOpts{Context: ctx}
 
 	// Snapshot block height FIRST so any later event is guaranteed not already
@@ -172,6 +188,9 @@ func (w *ConfigWatcher) Backfill(ctx context.Context) error {
 // Watch polls the chain for ConfigSet events on the watched keys and applies
 // them once they reach `confirmations` depth. Returns when ctx is cancelled.
 func (w *ConfigWatcher) Watch(ctx context.Context) error {
+	w.mu.Lock()
+	w.started = true
+	w.mu.Unlock()
 	if w.client == nil {
 		<-ctx.Done()
 		return nil
@@ -231,19 +250,28 @@ func (w *ConfigWatcher) pollOnce(ctx context.Context) error {
 	for it.Next() {
 		ev := it.Event
 		cur, ok := w.state[ev.Key]
-		if ok && ev.Epoch <= cur.Epoch {
+		if !ok {
+			// An empty indexed-key filter is a wildcard, so a foreign writer's
+			// ConfigSet on an unwatched key can surface here. Only Backfill-seeded
+			// (watched) keys belong in state — drop the rest.
+			continue
+		}
+		if ev.Epoch <= cur.Epoch {
 			continue // stale or out-of-order log; keep the higher epoch
 		}
 		st := ConfigState{Checksum: ev.Checksum, Epoch: ev.Epoch}
 		w.state[ev.Key] = st
 		changes = append(changes, change{key: ev.Key, st: st})
 	}
-	w.watermark = confirmed
-	w.mu.Unlock()
-
+	// Check the iterator error BEFORE advancing the watermark: a mid-stream
+	// failure means some logs in (watermark, confirmed] went unprocessed, so the
+	// watermark must not move past them or the next poll would skip them forever.
 	if err := it.Error(); err != nil {
+		w.mu.Unlock()
 		return fmt.Errorf("iterate ConfigSet: %w", err)
 	}
+	w.watermark = confirmed
+	w.mu.Unlock()
 
 	for _, c := range changes {
 		w.logger.Info("ConfigWatcher: ConfigSet committed",
