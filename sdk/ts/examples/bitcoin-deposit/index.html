@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bitcoin Deposit Demo</title>
+    <style>
+      :root {
+        color: #151922;
+        background: #f6f8fb;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      main {
+        width: min(1080px, calc(100vw - 32px));
+        margin: 48px auto;
+      }
+
+      h1 {
+        margin: 0 0 24px;
+        font-size: 34px;
+        line-height: 1.1;
+      }
+
+      form {
+        display: grid;
+        gap: 24px;
+      }
+
+      fieldset {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        margin: 0;
+        padding: 24px;
+        border: 1px solid #d7dee8;
+        border-radius: 8px;
+      }
+
+      legend {
+        padding: 0 10px;
+        font-size: 22px;
+        font-weight: 750;
+      }
+
+      label {
+        display: grid;
+        gap: 8px;
+        font-weight: 700;
+      }
+
+      label.full {
+        grid-column: 1 / -1;
+      }
+
+      input,
+      textarea {
+        min-width: 0;
+        padding: 0 16px;
+        border: 1px solid #c7d0dd;
+        border-radius: 6px;
+        background: #fff;
+        color: #151922;
+        font: inherit;
+        font-weight: 650;
+      }
+
+      input {
+        height: 44px;
+      }
+
+      textarea {
+        min-height: 112px;
+        padding-top: 12px;
+        resize: vertical;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      button {
+        min-height: 52px;
+        padding: 0 24px;
+        border: 0;
+        border-radius: 6px;
+        background: #145be8;
+        color: #fff;
+        font: inherit;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        background: #9098a3;
+        cursor: not-allowed;
+      }
+
+      output {
+        display: block;
+        min-height: 120px;
+        padding: 20px;
+        border-radius: 8px;
+        background: #0f1727;
+        color: #eef3fb;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-weight: 700;
+      }
+
+      @media (max-width: 760px) {
+        main {
+          margin: 24px auto;
+        }
+
+        fieldset {
+          grid-template-columns: 1fr;
+          padding: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Bitcoin Deposit Demo</h1>
+      <form id="deposit-form">
+        <fieldset>
+          <legend>Network</legend>
+          <label>
+            RPC URL
+            <input id="rpc-url" value="/btc-rpc" />
+          </label>
+          <label>
+            Wallet Name
+            <input id="wallet-name" value="sdk" />
+          </label>
+          <label>
+            Network
+            <input id="network" value="regtest" />
+          </label>
+          <label>
+            Fund Sats
+            <input id="fund-sats" value="100000000" />
+          </label>
+          <label>
+            Fallback Fee Sat/VB
+            <input id="fee-rate" value="5" />
+          </label>
+          <label>
+            Verify Confirmations
+            <input id="min-confirmations" value="1" />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Signer</legend>
+          <label class="full">
+            Depositor Private Key
+            <input id="depositor-private-key" value="" placeholder="blank generates a local dev key" />
+          </label>
+          <label class="full">
+            Vault Public Keys
+            <textarea id="vault-pubkeys"></textarea>
+          </label>
+          <label>
+            Threshold
+            <input id="threshold" value="2" />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Xverse</legend>
+          <label>
+            Xverse Network Name
+            <input id="xverse-network-name" value="clearnet-regtest" />
+          </label>
+          <label>
+            Xverse Electrs URL
+            <input id="xverse-rpc-url" placeholder="derived from this page URL" />
+          </label>
+          <label>
+            Xverse Network
+            <input id="xverse-network" value="Regtest" />
+          </label>
+          <label>
+            Xverse Address Type
+            <input id="xverse-address-type" placeholder="connect Xverse" />
+          </label>
+          <label>
+            Xverse Address
+            <input id="xverse-address" placeholder="connect Xverse" />
+          </label>
+          <label>
+            Xverse Account ID
+            <input id="xverse-account-id" placeholder="connect Xverse" />
+          </label>
+          <label class="full">
+            Xverse Public Key
+            <input id="xverse-public-key" placeholder="connect Xverse" />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Deposit</legend>
+          <label>
+            Credited Account
+            <input id="account" value="yellow://ynet/user/btc-demo-a1" />
+          </label>
+          <label>
+            Asset
+            <input id="asset" value="BTC" />
+          </label>
+          <label>
+            Reference
+            <input id="reference" placeholder="leave blank" />
+          </label>
+          <label>
+            Amount Sats
+            <input id="amount" value="20000000" />
+          </label>
+        </fieldset>
+
+        <div class="actions">
+          <button type="button" id="generate">Generate Keys</button>
+          <button type="button" id="setup">Fund Local</button>
+          <button type="submit" id="submit">Submit Local</button>
+          <button type="button" id="add-xverse-network">Add/Switch Xverse Network</button>
+          <button type="button" id="connect-xverse">Connect Xverse</button>
+          <button type="button" id="fund-xverse">Fund Xverse</button>
+          <button type="button" id="submit-xverse">Submit Xverse</button>
+          <button type="button" id="mine">Mine Block</button>
+          <button type="button" id="verify" disabled>Verify Last Tx</button>
+        </div>
+        <output id="log"></output>
+      </form>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

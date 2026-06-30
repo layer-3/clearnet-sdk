@@ -1,4 +1,4 @@
-.PHONY: build lint test generate devnet devnet-evm devnet-sol devnet-xrpl devnet-down ts-deps integration
+.PHONY: build lint test generate devnet devnet-evm devnet-sol devnet-xrpl devnet-btc devnet-down ts-deps integration
 
 build:
 	go build ./...
@@ -35,6 +35,10 @@ devnet-xrpl:
 	docker compose -f devnet/docker-compose.yml up -d rippled
 	go run ./devnet/wait --networks rippled
 
+devnet-btc:
+	docker compose -f devnet/docker-compose.yml up -d bitcoind
+	go run ./devnet/wait --networks bitcoind
+
 devnet-down:
 	docker compose -f devnet/docker-compose.yml down -v
 
@@ -42,9 +46,10 @@ ts-deps:
 	npm --prefix sdk/ts ci
 
 # Blockchain flow tests against the devnet. Go tests cover deposit + withdrawal
-# per chain; the TS suite covers EVM, Solana, and XRPL deposits. See devnet/README.md.
+# per chain; the TS suite covers EVM, Solana, XRPL, and Bitcoin deposits. See devnet/README.md.
 integration: ts-deps
 	go test -tags integration ./pkg/blockchain/... -v
 	npm --prefix sdk/ts run test:integration:evm
 	npm --prefix sdk/ts run test:integration:sol
 	npm --prefix sdk/ts run test:integration:xrpl
+	npm --prefix sdk/ts run test:integration:btc

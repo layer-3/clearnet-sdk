@@ -15,6 +15,26 @@ export type { ClearnetSdkErrorCode } from "./core/errors.js";
 export { EvmVaultDepositor } from "./blockchain/evm/depositor.js";
 export { EVM_NATIVE_ASSET } from "./blockchain/evm/constants.js";
 export {
+  BITCOIN_NATIVE_ASSET,
+  BitcoinCoreRpcClient,
+  BitcoinRpcError,
+  BitcoinVaultDepositor,
+} from "./blockchain/btc/index.js";
+export type {
+  BitcoinAsset,
+  BitcoinCoreRpcClientConfig,
+  BitcoinDepositDestination,
+  BitcoinDepositorConfig,
+  BitcoinNetwork,
+  BitcoinPreparedDepositPsbt,
+  BitcoinPsbtSignerInfo,
+  BitcoinRawTransaction,
+  BitcoinRpc,
+  BitcoinSigner,
+  BitcoinSubmitDepositInput,
+  BitcoinUnspent,
+} from "./blockchain/btc/index.js";
+export {
   eventAuthorityPda,
   SOLANA_CUSTODY_PROGRAM_ID,
   SOLANA_NATIVE_ASSET,

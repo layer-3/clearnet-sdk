@@ -4,10 +4,13 @@ import { isValidClassicAddress } from "xrpl";
 
 import { ClearnetSdkError } from "../../core/errors.js";
 import type { Bytes32Hex, TxRef } from "../../core/types.js";
+import {
+  BYTES32_HEX_PATTERN,
+  normalizeMinConfirmations,
+} from "../../core/validation.js";
 import { UINT64_MAX, XRPL_NATIVE_ASSET } from "./constants.js";
 import type { XrplDepositDestination, XrplSigner } from "./types.js";
 
-const BYTES32_HEX_PATTERN = /^0x[a-fA-F0-9]{64}$/;
 const HASH_PATTERN = /^[a-fA-F0-9]{64}$/;
 const DECIMAL_PATTERN = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
 const STANDARD_CURRENCY_PATTERN = /^[A-Za-z0-9]{3}$/;
@@ -189,24 +192,7 @@ export function requireTxRef(ref: unknown): TxRef {
   return normalized;
 }
 
-export function normalizeMinConfirmations(value: bigint | number): bigint {
-  if (typeof value === "bigint") {
-    if (value < 0n) {
-      throw new ClearnetSdkError(
-        "INVALID_CONFIRMATIONS",
-        "minConfirmations must be non-negative",
-      );
-    }
-    return value;
-  }
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new ClearnetSdkError(
-      "INVALID_CONFIRMATIONS",
-      "minConfirmations must be a non-negative safe integer",
-    );
-  }
-  return BigInt(value);
-}
+export { normalizeMinConfirmations };
 
 function isNativeAsset(asset: unknown): boolean {
   if (asset === "" || asset === undefined) {

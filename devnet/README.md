@@ -15,7 +15,7 @@ the same `make integration` target.
 ```sh
 make devnet        # anvil + bitcoind + rippled + solana-test-validator; blocks until all answer RPC
 npm --prefix sdk/ts ci
-make integration   # Go blockchain integrations + TS EVM, Solana, and XRPL integration
+make integration   # Go blockchain integrations + TS EVM, Solana, XRPL, and Bitcoin integration
 make devnet-down
 ```
 
@@ -35,7 +35,10 @@ wallet, the XRPL genesis master).
 - **BTC** — creates a legacy wallet, mines to maturity, generates a fresh vault
   + depositor, watch-imports their addresses, funds the depositor, deposits to
   the per-account P2WSH address, then runs the quorum withdrawal (mining to
-  confirm between steps).
+  confirm between steps). The TypeScript Bitcoin integration test also creates
+  fresh local signers, funds the P2WPKH depositor address, submits a native BTC
+  deposit to the per-account P2WSH address, verifies `pending`, mines, and
+  verifies `confirmed`.
 - **XRPL** — funds a fresh vault + depositor from the genesis master,
   `SignerListSet`s the vault over fresh signer keys, `TicketCreate`s a ticket,
   then deposits and runs the quorum withdrawal. Standalone rippled does not
@@ -66,6 +69,9 @@ npm --prefix sdk/ts run test:integration:sol
 
 make devnet-xrpl
 npm --prefix sdk/ts run test:integration:xrpl
+
+make devnet-btc
+npm --prefix sdk/ts run test:integration:btc
 ```
 
 ## Optional overrides

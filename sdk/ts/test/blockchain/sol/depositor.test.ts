@@ -479,6 +479,11 @@ describe("SolanaVaultDepositor", () => {
       "confirmed",
     );
 
+    stubSignatureStatus({ confirmationStatus: "finalized" });
+    await expect(
+      depositor.verifyDeposit(txRefForSignature(SIGNATURE), 1n << 80n),
+    ).resolves.toBe("confirmed");
+
     stubSignatureStatus({ confirmationStatus: "processed" });
     await expect(depositor.verifyDeposit(txRefForSignature(SIGNATURE), 0)).resolves.toBe(
       "pending",

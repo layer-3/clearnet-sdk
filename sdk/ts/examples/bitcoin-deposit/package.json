@@ -1,0 +1,19 @@
+{
+  "name": "@yellow-org/bitcoin-deposit-demo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@scure/btc-signer": "^2.2.0",
+    "@yellow-org/clearnet-sdk": "file:../..",
+    "sats-connect": "^4.2.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "vite": "^7.0.0"
+  }
+}
