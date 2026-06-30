@@ -13,12 +13,15 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/log"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
-// configLookupWindow bounds the eth_getLogs range when resolving the tx hash of
-// an already-applied config commit / operator rotation.
-const configLookupWindow = uint64(50_000)
+// defaultConfigLookupWindow is the default eth_getLogs lookback (in blocks) when
+// resolving the tx hash of an already-applied config commit / operator rotation.
+// It is ~3.5h on Arbitrum; chains with shorter block times can widen it per
+// instance via SetLookupWindow.
+const defaultConfigLookupWindow = uint64(50_000)
 
 // fetchLiveOperatorQuorum reads ConfigGovernor's current operator set and
 // threshold. The operator quorum is what authorises both setConfig (config
@@ -51,9 +54,11 @@ type ConfigCommitFinalizer struct {
 	registry   *Config
 	govAddr    common.Address
 	chainID    uint64
-	signer     sign.Signer
-	signerAddr common.Address
-	fees       FeeConfig
+	signer       sign.Signer
+	signerAddr   common.Address
+	fees         FeeConfig
+	logger       log.Logger
+	lookupWindow uint64
 }
 
 // NewConfigCommitFinalizer binds the ConfigGovernor at govAddr, resolves the
@@ -86,10 +91,32 @@ func NewConfigCommitFinalizer(ctx context.Context, client *ethclient.Client, gov
 		registry:   registry,
 		govAddr:    govAddr,
 		chainID:    chainID.Uint64(),
-		signer:     signer,
-		signerAddr: addr,
-		fees:       fees,
+		signer:       signer,
+		signerAddr:   addr,
+		fees:         fees,
+		logger:       log.NewNoopLogger(),
+		lookupWindow: defaultConfigLookupWindow,
 	}, nil
+}
+
+// SetLogger sets the finalizer's logger (defaults to a no-op). Used to surface
+// best-effort tx-hash lookups that resolve to the zero hash.
+func (f *ConfigCommitFinalizer) SetLogger(l log.Logger) {
+	if l == nil {
+		l = log.NewNoopLogger()
+	}
+	f.logger = l
+}
+
+// SetLookupWindow overrides the eth_getLogs lookback (in blocks) used to resolve
+// the tx hash of an already-applied commit. A zero value keeps the default
+// (defaultConfigLookupWindow). Widen it on chains with short block times so a
+// slow ceremony doesn't push the event out of range.
+func (f *ConfigCommitFinalizer) SetLookupWindow(blocks uint64) {
+	if blocks == 0 {
+		blocks = defaultConfigLookupWindow
+	}
+	f.lookupWindow = blocks
 }
 
 // SignerAddress is the operator address this finalizer signs as.
@@ -265,17 +292,28 @@ func (f *ConfigCommitFinalizer) estimateGas(ctx context.Context, opts *bind.Tran
 	return nil
 }
 
+// lookupCommitTxHash is a best-effort resolver for the ConfigCommitted tx hash
+// of an already-applied commit. It returns the zero hash on any failure (block
+// number error, filter error, or the event falling outside the
+// configLookupWindow lookback — ~3.5h on Arbitrum), so callers may surface
+// 0x000…000 in TxRef.Raw when the commit is confirmed but its hash is
+// unavailable. Each zero-hash path is logged at Warn so it is distinguishable
+// from a real value (see SetLogger).
 func (f *ConfigCommitFinalizer) lookupCommitTxHash(ctx context.Context, key [32]byte, checksum [32]byte) [32]byte {
 	head, err := f.client.BlockNumber(ctx)
 	if err != nil {
+		f.logger.Warn("config commit tx-hash lookup: block number failed, returning zero hash",
+			"key", hexBytes32(key), "error", err)
 		return [32]byte{}
 	}
 	var from uint64
-	if head > configLookupWindow {
-		from = head - configLookupWindow
+	if head > f.lookupWindow {
+		from = head - f.lookupWindow
 	}
 	it, err := f.governor.FilterConfigCommitted(&bind.FilterOpts{Context: ctx, Start: from, End: &head}, [][32]byte{key})
 	if err != nil {
+		f.logger.Warn("config commit tx-hash lookup: filter failed, returning zero hash",
+			"key", hexBytes32(key), "error", err)
 		return [32]byte{}
 	}
 	defer it.Close()
@@ -284,6 +322,10 @@ func (f *ConfigCommitFinalizer) lookupCommitTxHash(ctx context.Context, key [32]
 		if it.Event.Checksum == checksum {
 			last = it.Event.Raw.TxHash // keep the most recent match
 		}
+	}
+	if last == ([32]byte{}) {
+		f.logger.Warn("config commit tx-hash lookup: no matching ConfigCommitted in window, returning zero hash",
+			"key", hexBytes32(key), "checksum", hexBytes32(checksum), "window", f.lookupWindow)
 	}
 	return last
 }
@@ -297,9 +339,11 @@ type OperatorRotationFinalizer struct {
 	governor   *ConfigGovernor
 	govAddr    common.Address
 	chainID    uint64
-	signer     sign.Signer
-	signerAddr common.Address
-	fees       FeeConfig
+	signer       sign.Signer
+	signerAddr   common.Address
+	fees         FeeConfig
+	logger       log.Logger
+	lookupWindow uint64
 }
 
 // NewOperatorRotationFinalizer binds the ConfigGovernor at govAddr and reads the
@@ -322,10 +366,32 @@ func NewOperatorRotationFinalizer(ctx context.Context, client *ethclient.Client,
 		governor:   gov,
 		govAddr:    govAddr,
 		chainID:    chainID.Uint64(),
-		signer:     signer,
-		signerAddr: addr,
-		fees:       fees,
+		signer:       signer,
+		signerAddr:   addr,
+		fees:         fees,
+		logger:       log.NewNoopLogger(),
+		lookupWindow: defaultConfigLookupWindow,
 	}, nil
+}
+
+// SetLogger sets the finalizer's logger (defaults to a no-op). Used to surface
+// best-effort tx-hash lookups that resolve to the zero hash.
+func (f *OperatorRotationFinalizer) SetLogger(l log.Logger) {
+	if l == nil {
+		l = log.NewNoopLogger()
+	}
+	f.logger = l
+}
+
+// SetLookupWindow overrides the eth_getLogs lookback (in blocks) used to resolve
+// the tx hash of an already-applied rotation. A zero value keeps the default
+// (defaultConfigLookupWindow). Widen it on chains with short block times so a
+// slow ceremony doesn't push the event out of range.
+func (f *OperatorRotationFinalizer) SetLookupWindow(blocks uint64) {
+	if blocks == 0 {
+		blocks = defaultConfigLookupWindow
+	}
+	f.lookupWindow = blocks
 }
 
 // evmOpRotPacked is the canonical operator-rotation payload: the new operator
@@ -506,17 +572,24 @@ func (f *OperatorRotationFinalizer) estimateGas(ctx context.Context, opts *bind.
 	return nil
 }
 
+// lookupRotationTxHash is the best-effort OperatorsUpdated tx-hash resolver; it
+// returns (and logs at Warn) the zero hash on the same failure paths as
+// lookupCommitTxHash.
 func (f *OperatorRotationFinalizer) lookupRotationTxHash(ctx context.Context, addrs []common.Address) [32]byte {
 	head, err := f.client.BlockNumber(ctx)
 	if err != nil {
+		f.logger.Warn("operator rotation tx-hash lookup: block number failed, returning zero hash",
+			"operators", len(addrs), "error", err)
 		return [32]byte{}
 	}
 	var from uint64
-	if head > configLookupWindow {
-		from = head - configLookupWindow
+	if head > f.lookupWindow {
+		from = head - f.lookupWindow
 	}
 	it, err := f.governor.FilterOperatorsUpdated(&bind.FilterOpts{Context: ctx, Start: from, End: &head})
 	if err != nil {
+		f.logger.Warn("operator rotation tx-hash lookup: filter failed, returning zero hash",
+			"operators", len(addrs), "error", err)
 		return [32]byte{}
 	}
 	defer it.Close()
@@ -525,6 +598,10 @@ func (f *OperatorRotationFinalizer) lookupRotationTxHash(ctx context.Context, ad
 		if addrSetEqual(it.Event.NewOperators, addrs) {
 			last = it.Event.Raw.TxHash
 		}
+	}
+	if last == ([32]byte{}) {
+		f.logger.Warn("operator rotation tx-hash lookup: no matching OperatorsUpdated in window, returning zero hash",
+			"operators", len(addrs), "window", f.lookupWindow)
 	}
 	return last
 }
