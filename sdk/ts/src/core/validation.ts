@@ -21,3 +21,13 @@ export function normalizeMinConfirmations(value: bigint | number): bigint {
   }
   return BigInt(value);
 }
+
+export function normalizeReceiptTimeoutMs(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new ClearnetSdkError(
+      "RECEIPT_TIMEOUT",
+      "receiptTimeoutMs must be a positive safe integer",
+    );
+  }
+  return value;
+}
