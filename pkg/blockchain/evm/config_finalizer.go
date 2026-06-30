@@ -1,11 +1,11 @@
 package evm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -127,7 +127,7 @@ func (f *ConfigCommitFinalizer) Validate(ctx context.Context, packed []byte, key
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("decode packed: %w", err)
 	}
-	if !strEqFold(got.Key, hexBytes32(key)) || !strEqFold(got.Checksum, hexBytes32(checksum)) {
+	if !strings.EqualFold(got.Key, hexBytes32(key)) || !strings.EqualFold(got.Checksum, hexBytes32(checksum)) {
 		return fmt.Errorf("packed commit does not match request")
 	}
 	epoch, err := f.registry.ConfigEpoch(&bind.CallOpts{Context: ctx}, key)
@@ -407,10 +407,14 @@ func (f *OperatorRotationFinalizer) Submit(ctx context.Context, packed []byte, s
 		return core.TxRef{Hash: txHash, Raw: common.Hash(txHash).Hex()}, nil
 	}
 
-	digest, err := f.digestFromPacked(packed)
-	if err != nil {
-		return core.TxRef{}, err
+	nonce, ok := new(big.Int).SetString(p.OperatorNonce, 10)
+	if !ok {
+		return core.TxRef{}, fmt.Errorf("bad operator nonce %q", p.OperatorNonce)
 	}
+	newThreshold := big.NewInt(int64(p.NewThreshold))
+	// Derive the digest from the already-parsed operators/threshold/nonce rather
+	// than re-decoding packed via digestFromPacked (which Sign still uses).
+	digest := ComputeOperatorRotationDigest(f.chainID, f.govAddr, addrs, newThreshold, nonce)
 	liveOps, liveThreshold, err := fetchLiveOperatorQuorum(ctx, f.governor)
 	if err != nil {
 		return core.TxRef{}, err
@@ -418,10 +422,6 @@ func (f *OperatorRotationFinalizer) Submit(ctx context.Context, packed []byte, s
 	sigs, err := mergeQuorumSigs(common.Hash(digest), signatures, liveOps, liveThreshold)
 	if err != nil {
 		return core.TxRef{}, err
-	}
-	nonce, ok := new(big.Int).SetString(p.OperatorNonce, 10)
-	if !ok {
-		return core.TxRef{}, fmt.Errorf("bad operator nonce %q", p.OperatorNonce)
 	}
 
 	opts, _, err := signerTransactOpts(ctx, f.client, f.signer)
@@ -431,7 +431,6 @@ func (f *OperatorRotationFinalizer) Submit(ctx context.Context, packed []byte, s
 	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
 		return core.TxRef{}, err
 	}
-	newThreshold := big.NewInt(int64(p.NewThreshold))
 	if err := f.estimateGas(ctx, opts, addrs, newThreshold, nonce, sigs); err != nil {
 		return core.TxRef{}, err
 	}
@@ -553,5 +552,3 @@ func parseBytes32(s string) ([32]byte, error) {
 	copy(out[:], raw)
 	return out, nil
 }
-
-func strEqFold(a, b string) bool { return bytes.EqualFold([]byte(a), []byte(b)) }
