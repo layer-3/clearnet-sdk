@@ -56,6 +56,8 @@ var contracts = []contract{
 	{"NodeID", "nodeid_abi.go"},
 	{"Faucet", "faucet_abi.go"},
 	{"YellowToken", "yellowtoken_abi.go"},
+	{"Config", "config_abi.go"},
+	{"ConfigGovernor", "config_governor_abi.go"},
 }
 
 func main() {
