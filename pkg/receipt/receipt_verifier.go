@@ -208,18 +208,22 @@ func recoverReceiptSigner(digest, sig []byte) (common.Address, bool, error) {
 }
 
 // BurnReceiptDigest is the keccak256 digest custody providers sign over for
-// withdrawal execution attestations.
-// Format: keccak256(WithdrawalID || BlockHash || EntryIndex[uint64be] || L1TxHash).
+// withdrawal terminal attestations.
+// Format: keccak256(WithdrawalID || BlockHash || EntryIndex[uint64be] || L1TxHash || Status[byte]).
+// The trailing Status byte binds the terminal outcome (Executed vs
+// Expired) into the signature, so a quorum can never be tricked into swapping
+// an executed receipt for an expired one (which would authorize a re-credit).
 // Exported so custody-side tooling and the custodytesting package can build
 // matching signatures.
 func BurnReceiptDigest(v *core.BurnReceipt) []byte {
-	buf := make([]byte, 0, 32+32+8+32)
+	buf := make([]byte, 0, 32+32+8+32+1)
 	buf = append(buf, v.WithdrawalID[:]...)
 	buf = append(buf, v.BlockHash[:]...)
 	var index [8]byte
 	binary.BigEndian.PutUint64(index[:], v.EntryIndex)
 	buf = append(buf, index[:]...)
 	buf = append(buf, v.L1TxHash[:]...)
+	buf = append(buf, byte(v.Status))
 	return crypto.Keccak256(buf)
 }
 

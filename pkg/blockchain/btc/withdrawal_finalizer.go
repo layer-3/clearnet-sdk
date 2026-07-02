@@ -150,7 +150,15 @@ func (f *WithdrawalFinalizer) resolveScript(pkScriptHex string) ([]byte, bool) {
 
 // Pack selects vault UTXOs, sizes the fee, and builds the canonical unsigned
 // transaction (recipient, optional change, OP_RETURN <withdrawalID>).
-func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte) ([]byte, error) {
+//
+// deadline is accepted for interface symmetry but deliberately
+// ignored: a Bitcoin transaction has no consensus-level expiry, so the digest
+// carries no time bound. BTC's authorization lifetime is instead governed by the
+// UTXO set (the inputs stop existing once spent) and, for the re-credit path, by
+// a receipt-gated Expired ceremony that requires no local signature share ever
+// existed — see the adapter's AuthorizationDead.
+func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
+	_ = deadline // no consensus expiry on BTC; see doc comment.
 	recipient, amount, err := f.parseOp(op)
 	if err != nil {
 		return nil, err
@@ -182,7 +190,8 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 // tx matches: output 0 pays the exact recipient/amount, the final output is
 // OP_RETURN <withdrawalID>, any middle output is change to the vault, every
 // input is a confirmed vault UTXO, and the implied fee is within the ceiling.
-func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte) error {
+func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
+	_ = deadline // no consensus expiry on BTC; see Pack's doc comment.
 	recipient, amount, err := f.parseOp(op)
 	if err != nil {
 		return err

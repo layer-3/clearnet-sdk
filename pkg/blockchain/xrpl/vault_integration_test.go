@@ -101,6 +101,10 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewWithdrawalFinalizer %d: %v", i, err)
 		}
+		// This devnet rippled is standalone (manual ledger_accept, no auto-close),
+		// so the LastLedgerSequence expiry is omitted here (it would never
+		// fire). Mirrors custody's xrpl_standalone test config.
+		f.SetStandaloneLedgerMode(true)
 		finalizers[i] = f
 	}
 
@@ -108,13 +112,16 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 	wid[0], wid[31] = 0x12, 0x34
 	op := &core.WithdrawalOp{Recipient: recID.ClassicAddress, L1Asset: "XRP", Amount: decimal.NewFromInt(50_000_000)} // 50 XRP
 
-	packed, err := finalizers[0].Pack(ctx, op, wid)
+	// Far-future deadline: the happy path must not expire mid-test. In standalone
+	// mode the value is not bound into LLS, but Pack/Validate still take it.
+	deadline := time.Now().Add(24 * time.Hour).Unix()
+	packed, err := finalizers[0].Pack(ctx, op, wid, deadline)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
 	blobs := make([][]byte, 0, len(finalizers))
 	for i, f := range finalizers {
-		if err := f.Validate(ctx, packed, op, wid); err != nil {
+		if err := f.Validate(ctx, packed, op, wid, deadline); err != nil {
 			t.Fatalf("Validate[%d]: %v", i, err)
 		}
 		b, err := f.Sign(ctx, packed)

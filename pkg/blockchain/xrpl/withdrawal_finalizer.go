@@ -42,6 +42,16 @@ type WithdrawalFinalizer struct {
 	// effect without a fleet restart: the fee is sized against the vault's current
 	// quorum rather than the boot-time threshold. nil falls back to threshold.
 	resolveThreshold func(context.Context) (int, error)
+
+	// resolveLedger reads the current validated LedgerState, used to set (Pack)
+	// and bound (Validate) the withdrawal's LastLedgerSequence. Defaults
+	// to a live-RPC resolver; injectable for followers/tests.
+	resolveLedger LedgerStateResolver
+
+	// standalone marks a test-only standalone rippled (manual ledger_accept):
+	// ledgers do not advance on their own, so LLS-based expiry is meaningless and
+	// the field is omitted / required-absent instead.
+	standalone bool
 }
 
 // SetThresholdResolver installs a hook that resolves the live SignerQuorum used
@@ -49,6 +59,28 @@ type WithdrawalFinalizer struct {
 // it unset get the static threshold passed at construction.
 func (f *WithdrawalFinalizer) SetThresholdResolver(fn func(context.Context) (int, error)) {
 	f.resolveThreshold = fn
+}
+
+// SetLedgerStateResolver overrides the current-ledger resolver used to set and
+// bound LastLedgerSequence. Optional; unset uses a live-RPC resolver.
+func (f *WithdrawalFinalizer) SetLedgerStateResolver(fn LedgerStateResolver) {
+	f.resolveLedger = fn
+}
+
+// SetStandaloneLedgerMode toggles standalone-rippled behavior: LastLedgerSequence
+// is omitted on build and required-absent on validate. TEST-ONLY — enabling it in
+// production removes XRPL withdrawal expiry.
+func (f *WithdrawalFinalizer) SetStandaloneLedgerMode(v bool) {
+	f.standalone = v
+}
+
+// ledgerState resolves the current validated LedgerState, using the injected
+// resolver or a live-RPC default.
+func (f *WithdrawalFinalizer) ledgerState(ctx context.Context) (LedgerState, error) {
+	if f.resolveLedger != nil {
+		return f.resolveLedger(ctx)
+	}
+	return clientLedgerState(f.client)(ctx)
 }
 
 var _ core.VaultWithdrawalFinalizer = (*WithdrawalFinalizer)(nil)
@@ -97,8 +129,10 @@ func (f *WithdrawalFinalizer) feeQuorum(ctx context.Context) (int, error) {
 }
 
 // Pack binds a Ticket and builds the autofilled multi-sign Payment, returning
-// its sorted-key JSON.
-func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte) ([]byte, error) {
+// its sorted-key JSON. It sets LastLedgerSequence to current + a per-attempt
+// budget clamped so the tx's estimated close is at or before the deadline
+//; if too little budget remains it fails and the withdrawal parks.
+func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
 	amount, err := BuildAmount(op)
 	if err != nil {
 		return nil, err
@@ -130,18 +164,41 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 		return nil, fmt.Errorf("xrpl: autofill: %w", err)
 	}
 	flatTx["Sequence"] = uint32(0)
-	delete(flatTx, "LastLedgerSequence")
+	// Autofill sets its own LastLedgerSequence; replace it with our deadline-bound
+	// budget (or drop it entirely in standalone mode).
+	if f.standalone {
+		delete(flatTx, "LastLedgerSequence")
+	} else {
+		state, err := f.ledgerState(ctx)
+		if err != nil {
+			return nil, err
+		}
+		lls, err := buildLLS(state, deadline)
+		if err != nil {
+			return nil, err
+		}
+		flatTx["LastLedgerSequence"] = lls
+	}
 	return CanonicalJSON(flatTx)
 }
 
 // Validate re-derives the trust-bound shape from the op and asserts the packed
-// flatTx matches.
-func (f *WithdrawalFinalizer) Validate(_ context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte) error {
+// flatTx matches, including that LastLedgerSequence is inside this follower's
+// deadline-bound expiry band.
+func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
 	var flat transaction.FlatTransaction
 	if err := json.Unmarshal(packed, &flat); err != nil {
 		return fmt.Errorf("xrpl: decode packed: %w", err)
 	}
-	return ValidateCanonical(flat, op, withdrawalID, f.vaultAddress)
+	policy := llsPolicy{standalone: f.standalone, deadline: deadline}
+	if !f.standalone {
+		state, err := f.ledgerState(ctx)
+		if err != nil {
+			return err
+		}
+		policy.current = state
+	}
+	return ValidateCanonical(flat, op, withdrawalID, f.vaultAddress, policy)
 }
 
 // Sign multi-signs the packed Payment and returns this node's blob.
