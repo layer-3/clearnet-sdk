@@ -368,25 +368,31 @@ func RefFromBlock(block *Block, entryIndex uint64) BlockEntryRef {
 type BurnReceipt struct {
 	WithdrawalID  [32]byte          // keccak256(accountId, blockHash, entryIndex, chainId, recipient, asset, amount, nonce)
 	BlockEntryRef                   // Block hash + entry index of the escrow entry
-	L1TxHash      [32]byte          // Transaction hash on the target chain (zero for an Expired receipt)
+	L1TxHash      [32]byte          // Transaction hash on the target chain (zero unless Executed)
 	Signatures    [][]byte          // k-of-n provider ECDSA signatures over the receipt digest
-	Status        WithdrawalOutcome // Terminal outcome: Executed or Expired
+	Status        WithdrawalOutcome // Terminal outcome: Executed, Expired, or Failed
 }
 
 // WithdrawalOutcome is the terminal status of a withdrawal, carried in a
-// BurnReceipt. It lets clearnet distinguish a withdrawal that
-// executed on L1 from one whose authorization expired unspent: the former
-// settles the burn, the latter authorizes a safe re-credit (with a zero
-// L1TxHash). The status byte is bound into the receipt digest, so a quorum
-// cannot be tricked into swapping one outcome for the other.
+// BurnReceipt. It lets clearnet tell a withdrawal that executed on L1 (settle
+// the burn) apart from one that did not leave the vault (authorize a safe
+// re-credit, with a zero L1TxHash). The status byte is bound into the receipt
+// digest, so a quorum cannot be tricked into swapping one outcome for another.
 type WithdrawalOutcome uint8
 
 const (
-	// WithdrawalExecuted means the withdrawal was executed on the target chain.
+	// WithdrawalExecuted means the withdrawal was executed on the target chain;
+	// L1TxHash is set and the clearing layer settles the burn.
 	WithdrawalExecuted WithdrawalOutcome = 1
 	// WithdrawalExpired means the authorization passed its deadline unspent and
-	// can never execute; clearnet may re-credit the user.
+	// can never execute (time-bound expiry); the clearing layer may re-credit.
 	WithdrawalExpired WithdrawalOutcome = 2
+	// WithdrawalInvalidFormat means the withdrawal has not passed custody's
+	// input validation (e.g. malformed address, or other pre-flight rejection);
+	WithdrawalInvalidFormat WithdrawalOutcome = 3
+	// WithdrawalUnauthorized means the withdrawal is signed by one or more
+	// unauthorized signers
+	WithdrawalUnauthorized WithdrawalOutcome = 4
 )
 
 // MintReceipt is issued by the custody layer after an L1 deposit confirms
