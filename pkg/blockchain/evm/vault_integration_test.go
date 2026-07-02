@@ -126,15 +126,17 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 		Amount:    decimal.NewFromInt(400_000_000_000), // < deposited
 	}
 
-	// 1. Pack (any node — here the first).
-	packed, err := finalizers[0].Pack(ctx, op, withdrawalID)
+	// 1. Pack (any node — here the first). Far-future deadline: the
+	// happy path must not expire mid-test.
+	deadline := time.Now().Add(24 * time.Hour).Unix()
+	packed, err := finalizers[0].Pack(ctx, op, withdrawalID, deadline)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
 	// 2. Every node validates then signs.
 	sigs := make([][]byte, 0, len(finalizers))
 	for i, f := range finalizers {
-		if err := f.Validate(ctx, packed, op, withdrawalID); err != nil {
+		if err := f.Validate(ctx, packed, op, withdrawalID, deadline); err != nil {
 			t.Fatalf("Validate[%d]: %v", i, err)
 		}
 		s, err := f.Sign(ctx, packed)

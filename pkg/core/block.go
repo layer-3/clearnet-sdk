@@ -366,11 +366,28 @@ func RefFromBlock(block *Block, entryIndex uint64) BlockEntryRef {
 // confirm the withdrawal was executed on-chain; the cluster validates the
 // receipt and applies the second leg of the burn (DR 2010 / CR 1020).
 type BurnReceipt struct {
-	WithdrawalID  [32]byte // keccak256(accountId, blockHash, entryIndex, chainId, recipient, asset, amount, nonce)
-	BlockEntryRef          // Block hash + entry index of the escrow entry
-	L1TxHash      [32]byte // Transaction hash on the target chain
-	Signatures    [][]byte // k-of-n provider ECDSA signatures over the receipt digest
+	WithdrawalID  [32]byte          // keccak256(accountId, blockHash, entryIndex, chainId, recipient, asset, amount, nonce)
+	BlockEntryRef                   // Block hash + entry index of the escrow entry
+	L1TxHash      [32]byte          // Transaction hash on the target chain (zero for an Expired receipt)
+	Signatures    [][]byte          // k-of-n provider ECDSA signatures over the receipt digest
+	Status        WithdrawalOutcome // Terminal outcome: Executed or Expired
 }
+
+// WithdrawalOutcome is the terminal status of a withdrawal, carried in a
+// BurnReceipt. It lets clearnet distinguish a withdrawal that
+// executed on L1 from one whose authorization expired unspent: the former
+// settles the burn, the latter authorizes a safe re-credit (with a zero
+// L1TxHash). The status byte is bound into the receipt digest, so a quorum
+// cannot be tricked into swapping one outcome for the other.
+type WithdrawalOutcome uint8
+
+const (
+	// WithdrawalExecuted means the withdrawal was executed on the target chain.
+	WithdrawalExecuted WithdrawalOutcome = 1
+	// WithdrawalExpired means the authorization passed its deadline unspent and
+	// can never execute; clearnet may re-credit the user.
+	WithdrawalExpired WithdrawalOutcome = 2
+)
 
 // MintReceipt is issued by the custody layer after an L1 deposit confirms
 // (ADR-005 §9.1, receipt-model amendment 2026-05-12). Provider ECDSA

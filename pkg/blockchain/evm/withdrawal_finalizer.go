@@ -85,25 +85,28 @@ type evmPacked struct {
 	Asset        string `json:"asset"`        // asset address (hex); zero = ETH
 	Amount       string `json:"amount"`       // base units (decimal string)
 	WithdrawalID string `json:"withdrawalId"` // 32-byte hex
+	Deadline     int64  `json:"deadline"`     // unix seconds; authorization void past this
 }
 
 // Pack returns the canonical JSON for the withdrawal. Pure — no chain access.
-func (f *WithdrawalFinalizer) Pack(_ context.Context, op *core.WithdrawalOp, withdrawalID [32]byte) ([]byte, error) {
-	p, err := packedFromOp(op, withdrawalID)
+func (f *WithdrawalFinalizer) Pack(_ context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
+	p, err := packedFromOp(op, withdrawalID, deadline)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(p)
 }
 
-// Validate re-derives the canonical payload from the op and asserts the packed
-// bytes match it exactly — the defense against a Byzantine packer.
-func (f *WithdrawalFinalizer) Validate(_ context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte) error {
+// Validate re-derives the canonical payload from the op and the caller-supplied
+// deadline and asserts the packed bytes match it exactly — the defense against
+// a Byzantine packer (a peer packing a longer-lived deadline than the quorum
+// agreed is rejected here, before Sign).
+func (f *WithdrawalFinalizer) Validate(_ context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
 	var got evmPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("decode packed: %w", err)
 	}
-	want, err := packedFromOp(op, withdrawalID)
+	want, err := packedFromOp(op, withdrawalID, deadline)
 	if err != nil {
 		return err
 	}
@@ -181,10 +184,11 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, signatu
 	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
 		return core.TxRef{}, err
 	}
-	if err := f.estimateGas(ctx, opts, to, asset, amount, wid, sigs); err != nil {
+	deadline := new(big.Int).SetInt64(p.Deadline)
+	if err := f.estimateGas(ctx, opts, to, asset, amount, wid, deadline, sigs); err != nil {
 		return core.TxRef{}, err
 	}
-	tx, err := f.custody.Execute(opts, to, asset, amount, wid, sigs)
+	tx, err := f.custody.Execute(opts, to, asset, amount, wid, deadline, sigs)
 	if err != nil {
 		return core.TxRef{}, fmt.Errorf("execute: %w", err)
 	}
@@ -227,7 +231,7 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 
 // --- helpers ---
 
-func packedFromOp(op *core.WithdrawalOp, withdrawalID [32]byte) (evmPacked, error) {
+func packedFromOp(op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) (evmPacked, error) {
 	// common.HexToAddress silently zero-fills/truncates a malformed input, which
 	// would sign a withdrawal to the wrong (often zero) recipient. Reject
 	// anything that is not a well-formed hex address up front.
@@ -242,11 +246,12 @@ func packedFromOp(op *core.WithdrawalOp, withdrawalID [32]byte) (evmPacked, erro
 		Asset:        common.HexToAddress(op.L1Asset).Hex(),
 		Amount:       op.Amount.BigInt().String(),
 		WithdrawalID: hex.EncodeToString(withdrawalID[:]),
+		Deadline:     deadline,
 	}, nil
 }
 
 // digest computes the Custody.execute signing digest:
-// keccak256(abi.encode(chainId, vault, to, asset, amount, withdrawalId)).
+// keccak256(abi.encode(chainId, vault, to, asset, amount, withdrawalId, deadline)).
 func (f *WithdrawalFinalizer) digest(p evmPacked) (common.Hash, error) {
 	amount, ok := new(big.Int).SetString(p.Amount, 10)
 	if !ok {
@@ -263,6 +268,7 @@ func (f *WithdrawalFinalizer) digest(p evmPacked) (common.Hash, error) {
 		common.LeftPadBytes(common.HexToAddress(p.Asset).Bytes(), 32),
 		common.LeftPadBytes(amount.Bytes(), 32),
 		wid[:],
+		common.LeftPadBytes(new(big.Int).SetInt64(p.Deadline).Bytes(), 32),
 	), nil
 }
 
@@ -295,12 +301,12 @@ func applyFees(ctx context.Context, client *ethclient.Client, fees FeeConfig, op
 	return nil
 }
 
-func (f *WithdrawalFinalizer) estimateGas(ctx context.Context, opts *bind.TransactOpts, to, asset common.Address, amount *big.Int, withdrawalID [32]byte, sigs [][]byte) error {
+func (f *WithdrawalFinalizer) estimateGas(ctx context.Context, opts *bind.TransactOpts, to, asset common.Address, amount *big.Int, withdrawalID [32]byte, deadline *big.Int, sigs [][]byte) error {
 	abi, err := CustodyMetaData.GetAbi()
 	if err != nil {
 		return fmt.Errorf("parse ABI: %w", err)
 	}
-	data, err := abi.Pack("execute", to, asset, amount, withdrawalID, sigs)
+	data, err := abi.Pack("execute", to, asset, amount, withdrawalID, deadline, sigs)
 	if err != nil {
 		return fmt.Errorf("pack execute calldata: %w", err)
 	}

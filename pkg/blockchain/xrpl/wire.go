@@ -19,6 +19,8 @@ import (
 	xrplcrypto "github.com/Peersyst/xrpl-go/pkg/crypto"
 	"github.com/Peersyst/xrpl-go/xrpl"
 	"github.com/Peersyst/xrpl-go/xrpl/queries/account"
+	"github.com/Peersyst/xrpl-go/xrpl/queries/common"
+	"github.com/Peersyst/xrpl-go/xrpl/queries/ledger"
 	"github.com/Peersyst/xrpl-go/xrpl/rpc"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
@@ -31,12 +33,134 @@ import (
 // maxAcceptableFeeDrops caps the Fee a node will sign on a canonical Payment.
 const maxAcceptableFeeDrops uint64 = 1_000_000
 
+// LastLedgerSequence budget. XRPL has no per-tx timestamp expiry, so
+// a signed-but-unbroadcast Payment would live as a standing bearer claim. Every
+// canonical withdrawal instead carries a LastLedgerSequence: rippled drops the
+// tx once the network passes that ledger, so each blob dies at the ledger level.
+//
+// The critical correctness property: the budget is per-attempt
+// and small — derived from ExecutionMargin, NOT the full validity window — so
+// every blob a retry can produce dies before SealedAt + MaxBlockAge + margin =
+// deadline. A full-window budget would let a blob signed near the freshness
+// cutoff outlive clearnet's re-credit and double-spend.
+const (
+	// LedgerBudget is the number of ledgers of headroom the builder targets when
+	// setting LastLedgerSequence (~2min at ~4s/ledger).
+	LedgerBudget = uint32(30)
+	// MaxLedgerBudget is the upper bound a follower accepts on (LLS - current):
+	// slack over LedgerBudget for the ledgers that close between build and
+	// validation, still far under the deadline.
+	MaxLedgerBudget = uint32(120)
+	// minLedgerBudget is the floor: if fewer than this many ledgers fit before
+	// the deadline, Pack fails and the withdrawal parks and expires cleanly
+	// rather than being signed with a near-dead LLS.
+	minLedgerBudget = uint32(5)
+	// assumedLedgerCloseSec is the conservative average ledger close interval
+	// used to translate a ledger budget into a wall-clock close-time estimate.
+	assumedLedgerCloseSec = int64(4)
+	// rippleEpochOffset converts a Ripple-epoch close time (seconds since
+	// 2000-01-01 UTC) to a unix timestamp.
+	rippleEpochOffset = int64(946684800)
+)
+
 // canonicalAllowedFields is the allowlist of top-level keys a node accepts on a
 // canonical Payment flatTx before signing.
 var canonicalAllowedFields = map[string]struct{}{
 	"TransactionType": {}, "Account": {}, "Destination": {}, "Amount": {},
 	"InvoiceID": {}, "TicketSequence": {}, "Sequence": {}, "Fee": {},
-	"SigningPubKey": {}, "Flags": {}, "NetworkID": {},
+	"SigningPubKey": {}, "Flags": {}, "NetworkID": {}, "LastLedgerSequence": {},
+}
+
+// LedgerState is a snapshot of the network's current validated ledger: its index
+// and close time (as a unix timestamp). Used to set and to bound a withdrawal's
+// LastLedgerSequence against its deadline.
+type LedgerState struct {
+	ValidatedIndex uint32
+	CloseUnix      int64
+}
+
+// LedgerStateResolver reads the current validated LedgerState. Injectable so
+// followers/tests can supply a deterministic snapshot instead of a live RPC.
+type LedgerStateResolver func(ctx context.Context) (LedgerState, error)
+
+// llsPolicy encodes the LastLedgerSequence band a follower enforces before
+// signing. In standalone mode (test-only rippled with manual
+// ledger_accept) ledgers do not advance on their own, so LLS-based expiry is
+// meaningless and the field must be ABSENT; otherwise it must fall inside the
+// two-sided band and close before the deadline.
+type llsPolicy struct {
+	standalone bool
+	current    LedgerState
+	deadline   int64 // 0 = no deadline clamp (rotations)
+}
+
+// estimatedCloseUnix estimates when ledger `index` will close, from the current
+// validated ledger and the assumed close interval.
+func (p llsPolicy) estimatedCloseUnix(index uint32) int64 {
+	return p.current.CloseUnix + int64(index-p.current.ValidatedIndex)*assumedLedgerCloseSec
+}
+
+// buildLLS computes the LastLedgerSequence a builder sets: current + budget,
+// where budget is min(LedgerBudget, ledgers that fit before the deadline). It
+// fails if fewer than minLedgerBudget ledgers fit before the deadline — the
+// withdrawal parks and expires cleanly rather than being signed with a near-dead
+// LLS. deadline == 0 (rotations) skips the deadline clamp.
+func buildLLS(state LedgerState, deadline int64) (uint32, error) {
+	budget := LedgerBudget
+	if deadline != 0 {
+		if deadline <= state.CloseUnix {
+			return 0, fmt.Errorf("xrpl: deadline %d not after current close %d", deadline, state.CloseUnix)
+		}
+		if fit := (deadline - state.CloseUnix) / assumedLedgerCloseSec; fit < int64(budget) {
+			budget = uint32(fit)
+		}
+	}
+	if budget < minLedgerBudget {
+		return 0, fmt.Errorf("xrpl: only %d ledgers of budget before deadline, need %d — withdrawal parks", budget, minLedgerBudget)
+	}
+	return state.ValidatedIndex + budget, nil
+}
+
+// clientLedgerState resolves the current validated LedgerState from a live
+// rippled via the ledger query. The default resolver for the finalizers.
+func clientLedgerState(client *rpc.Client) LedgerStateResolver {
+	return func(_ context.Context) (LedgerState, error) {
+		resp, err := client.GetLedger(&ledger.Request{LedgerIndex: common.Validated})
+		if err != nil {
+			return LedgerState{}, fmt.Errorf("xrpl: get validated ledger: %w", err)
+		}
+		return LedgerState{
+			ValidatedIndex: uint32(resp.LedgerIndex),
+			CloseUnix:      int64(resp.Ledger.CloseTime) + rippleEpochOffset,
+		}, nil
+	}
+}
+
+// checkField enforces the LastLedgerSequence band on a flatTx field value.
+func (p llsPolicy) checkField(raw any, present bool) error {
+	if p.standalone {
+		if present {
+			return fmt.Errorf("xrpl canonical: LastLedgerSequence must be absent in standalone mode")
+		}
+		return nil
+	}
+	if !present {
+		return fmt.Errorf("xrpl canonical: missing LastLedgerSequence")
+	}
+	lls, ok := uint32Field(raw)
+	if !ok {
+		return fmt.Errorf("xrpl canonical: invalid LastLedgerSequence %v", raw)
+	}
+	if lls <= p.current.ValidatedIndex {
+		return fmt.Errorf("xrpl canonical: LastLedgerSequence %d not ahead of current ledger %d", lls, p.current.ValidatedIndex)
+	}
+	if lls > p.current.ValidatedIndex+MaxLedgerBudget {
+		return fmt.Errorf("xrpl canonical: LastLedgerSequence %d exceeds current %d + budget %d", lls, p.current.ValidatedIndex, MaxLedgerBudget)
+	}
+	if p.deadline != 0 && p.estimatedCloseUnix(lls) > p.deadline {
+		return fmt.Errorf("xrpl canonical: LastLedgerSequence %d estimated close %d past deadline %d", lls, p.estimatedCloseUnix(lls), p.deadline)
+	}
+	return nil
 }
 
 // Identity is a signer's XRPL classic address + signing pubkey hex.
@@ -155,8 +279,9 @@ func currencyAmount(asset string, amount decimal.Decimal) (types.CurrencyAmount,
 	return types.IssuedCurrencyAmount{Issuer: types.Address(issuer), Currency: currency, Value: amount.String()}, nil
 }
 
-// ValidateCanonical asserts the canonical flatTx matches the op.
-func ValidateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, withdrawalID [32]byte, vault string) error {
+// ValidateCanonical asserts the canonical flatTx matches the op and that its
+// LastLedgerSequence falls inside the follower's expiry band.
+func ValidateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, withdrawalID [32]byte, vault string, policy llsPolicy) error {
 	if asString(flat["TransactionType"]) != "Payment" {
 		return fmt.Errorf("xrpl canonical: wrong TransactionType %v", flat["TransactionType"])
 	}
@@ -200,6 +325,10 @@ func ValidateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, 
 			return fmt.Errorf("xrpl canonical: non-zero or invalid Flags not permitted: %v", raw)
 		}
 	}
+	llsRaw, llsPresent := flat["LastLedgerSequence"]
+	if err := policy.checkField(llsRaw, llsPresent); err != nil {
+		return err
+	}
 	for k := range flat {
 		if _, ok := canonicalAllowedFields[k]; !ok {
 			return fmt.Errorf("xrpl canonical: unexpected field %q", k)
@@ -213,12 +342,13 @@ func ValidateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, 
 var rotationAllowedFields = map[string]struct{}{
 	"TransactionType": {}, "Account": {}, "SignerQuorum": {}, "SignerEntries": {},
 	"Sequence": {}, "Fee": {}, "SigningPubKey": {}, "Flags": {}, "NetworkID": {},
+	"LastLedgerSequence": {},
 }
 
 // validateCanonicalRotation asserts the canonical SignerListSet flatTx rotates
 // the vault to exactly newSigners / newThreshold (each entry weight 1, quorum ==
 // newThreshold), with a fee within the ceiling and no unexpected fields.
-func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []string, newThreshold int, vault string) error {
+func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []string, newThreshold int, vault string, policy llsPolicy) error {
 	if asString(flat["TransactionType"]) != "SignerListSet" {
 		return fmt.Errorf("xrpl rotation: wrong TransactionType %v", flat["TransactionType"])
 	}
@@ -258,6 +388,10 @@ func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []st
 		if v, ok := uint32Field(raw); !ok || v != 0 {
 			return fmt.Errorf("xrpl rotation: non-zero or invalid Flags not permitted: %v", raw)
 		}
+	}
+	llsRaw, llsPresent := flat["LastLedgerSequence"]
+	if err := policy.checkField(llsRaw, llsPresent); err != nil {
+		return err
 	}
 	for k := range flat {
 		if _, ok := rotationAllowedFields[k]; !ok {

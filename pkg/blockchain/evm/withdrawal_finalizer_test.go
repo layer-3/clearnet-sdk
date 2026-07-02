@@ -17,13 +17,13 @@ func TestPackedFromOp_RejectsMalformedAddress(t *testing.T) {
 	addr := "0x" + strings.Repeat("ab", 20)
 	asset := "0x" + strings.Repeat("cd", 20)
 
-	if _, err := packedFromOp(&core.WithdrawalOp{Recipient: addr, L1Asset: asset, Amount: decimal.NewFromInt(1)}, wid); err != nil {
+	if _, err := packedFromOp(&core.WithdrawalOp{Recipient: addr, L1Asset: asset, Amount: decimal.NewFromInt(1)}, wid, 0); err != nil {
 		t.Fatalf("valid op rejected: %v", err)
 	}
-	if _, err := packedFromOp(&core.WithdrawalOp{Recipient: "not-an-address", L1Asset: asset, Amount: decimal.NewFromInt(1)}, wid); err == nil {
+	if _, err := packedFromOp(&core.WithdrawalOp{Recipient: "not-an-address", L1Asset: asset, Amount: decimal.NewFromInt(1)}, wid, 0); err == nil {
 		t.Error("malformed recipient accepted")
 	}
-	if _, err := packedFromOp(&core.WithdrawalOp{Recipient: addr, L1Asset: "0xzz", Amount: decimal.NewFromInt(1)}, wid); err == nil {
+	if _, err := packedFromOp(&core.WithdrawalOp{Recipient: addr, L1Asset: "0xzz", Amount: decimal.NewFromInt(1)}, wid, 0); err == nil {
 		t.Error("malformed asset accepted")
 	}
 }

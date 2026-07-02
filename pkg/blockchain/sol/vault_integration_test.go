@@ -146,13 +146,15 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	recipientPub, _ := solanaPub(recipient)
 	op := &core.WithdrawalOp{Recipient: recipientPub.String(), L1Asset: "SOL", Amount: decimal.NewFromInt(40_000_000)}
 
-	packed, err := finalizers[0].Pack(ctx, op, wid)
+	// Far-future deadline: the happy path must not expire mid-test.
+	deadline := time.Now().Add(24 * time.Hour).Unix()
+	packed, err := finalizers[0].Pack(ctx, op, wid, deadline)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
 	shares := make([][]byte, 0, len(finalizers))
 	for i, f := range finalizers {
-		if err := f.Validate(ctx, packed, op, wid); err != nil {
+		if err := f.Validate(ctx, packed, op, wid, deadline); err != nil {
 			t.Fatalf("Validate[%d]: %v", i, err)
 		}
 		s, e := f.Sign(ctx, packed)
@@ -202,13 +204,13 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	splRecipientPub, _ := solanaPub(splRecipient)
 	splOp := &core.WithdrawalOp{Recipient: splRecipientPub.String(), L1Asset: mint.String(), Amount: decimal.NewFromInt(40)}
 
-	splPacked, err := splFinalizers[0].Pack(ctx, splOp, splWid)
+	splPacked, err := splFinalizers[0].Pack(ctx, splOp, splWid, deadline)
 	if err != nil {
 		t.Fatalf("SPL Pack: %v", err)
 	}
 	splShares := make([][]byte, 0, len(splFinalizers))
 	for i, f := range splFinalizers {
-		if err := f.Validate(ctx, splPacked, splOp, splWid); err != nil {
+		if err := f.Validate(ctx, splPacked, splOp, splWid, deadline); err != nil {
 			t.Fatalf("SPL Validate[%d]: %v", i, err)
 		}
 		s, e := f.Sign(ctx, splPacked)
