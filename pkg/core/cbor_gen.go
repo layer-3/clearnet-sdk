@@ -2520,7 +2520,7 @@ func (t *BlockEntryRef) UnmarshalCBOR(r io.Reader) (err error) {
 	return nil
 }
 
-var lengthBufBurnReceipt = []byte{132}
+var lengthBufBurnReceipt = []byte{133}
 
 func (t *BurnReceipt) MarshalCBOR(w io.Writer) error {
 	if t == nil {
@@ -2587,6 +2587,11 @@ func (t *BurnReceipt) MarshalCBOR(w io.Writer) error {
 		}
 
 	}
+
+	// t.Status (core.WithdrawalOutcome) (uint8)
+	if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.Status)); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2609,7 +2614,7 @@ func (t *BurnReceipt) UnmarshalCBOR(r io.Reader) (err error) {
 		return fmt.Errorf("cbor input should be of type array")
 	}
 
-	if extra != 4 {
+	if extra != 5 {
 		return fmt.Errorf("cbor input had wrong number of fields")
 	}
 
@@ -2714,6 +2719,19 @@ func (t *BurnReceipt) UnmarshalCBOR(r io.Reader) (err error) {
 
 		}
 	}
+	// t.Status (core.WithdrawalOutcome) (uint8)
+
+	maj, extra, err = cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+	if maj != cbg.MajUnsignedInt {
+		return fmt.Errorf("wrong type for uint8 field")
+	}
+	if extra > math.MaxUint8 {
+		return fmt.Errorf("integer in input was too large for uint8 field")
+	}
+	t.Status = WithdrawalOutcome(extra)
 	return nil
 }
 

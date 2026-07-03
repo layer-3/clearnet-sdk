@@ -41,14 +41,14 @@ func TestBuildExecuteIx_SPLAccounts(t *testing.T) {
 	wid[0], wid[31] = 0x5A, 0x01
 
 	// Native: base account list, no token accounts.
-	nativeIx, err := f.buildExecuteIx(to, solana.PublicKey{}, 100, wid, 2)
+	nativeIx, err := f.buildExecuteIx(to, solana.PublicKey{}, 100, wid, 2, 1700000000)
 	if err != nil {
 		t.Fatalf("native buildExecuteIx: %v", err)
 	}
 	base := len(nativeIx.Accounts())
 
 	// SPL: base + 3 token remaining-accounts.
-	splIx, err := f.buildExecuteIx(to, mint, 100, wid, 3)
+	splIx, err := f.buildExecuteIx(to, mint, 100, wid, 3, 1700000000)
 	if err != nil {
 		t.Fatalf("spl buildExecuteIx: %v", err)
 	}

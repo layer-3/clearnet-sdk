@@ -115,9 +115,12 @@ type VaultDepositor interface {
 //     withdrawal a peer has already executed.
 //   - VerifyExecution reads canonical chain state to answer "already executed?"
 //     for the retry/finalize loop.
+// deadline (unix seconds) is threaded into Pack/Validate: it is a
+// digest input on every chain, so the packed bytes — and thus the signature —
+// bind it. Sign/Submit are unchanged; the packed body already carries it.
 type VaultWithdrawalFinalizer interface {
-	Pack(ctx context.Context, op *WithdrawalOp, withdrawalID [32]byte) ([]byte, error)
-	Validate(ctx context.Context, packed []byte, op *WithdrawalOp, withdrawalID [32]byte) error
+	Pack(ctx context.Context, op *WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error)
+	Validate(ctx context.Context, packed []byte, op *WithdrawalOp, withdrawalID [32]byte, deadline int64) error
 	Sign(ctx context.Context, packed []byte) ([]byte, error)
 	Submit(ctx context.Context, packed []byte, signatures [][]byte) (TxRef, error)
 	VerifyExecution(ctx context.Context, withdrawalID [32]byte) (txHash [32]byte, executed bool, err error)

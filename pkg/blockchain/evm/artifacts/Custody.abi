@@ -72,6 +72,11 @@
         "internalType": "bytes32"
       },
       {
+        "name": "deadline",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
         "name": "signatures",
         "type": "bytes[]",
         "internalType": "bytes[]"

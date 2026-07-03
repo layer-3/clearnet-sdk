@@ -57,26 +57,111 @@ func TestValidateCanonical_FlagsRejected(t *testing.T) {
 		}
 	}
 
-	if err := ValidateCanonical(roundTrip(t, base()), op, wid, vault); err != nil {
+	if err := ValidateCanonical(roundTrip(t, base()), op, wid, vault, llsPolicy{standalone: true}); err != nil {
 		t.Fatalf("valid canonical rejected: %v", err)
 	}
 
 	zero := base()
 	zero["Flags"] = uint32(0)
-	if err := ValidateCanonical(roundTrip(t, zero), op, wid, vault); err != nil {
+	if err := ValidateCanonical(roundTrip(t, zero), op, wid, vault, llsPolicy{standalone: true}); err != nil {
 		t.Errorf("Flags=0 rejected: %v", err)
 	}
 
 	partial := base()
 	partial["Flags"] = uint32(131072) // tfPartialPayment
-	if err := ValidateCanonical(roundTrip(t, partial), op, wid, vault); err == nil {
+	if err := ValidateCanonical(roundTrip(t, partial), op, wid, vault, llsPolicy{standalone: true}); err == nil {
 		t.Error("tfPartialPayment Flags accepted")
 	}
 
 	nonNumeric := base()
 	nonNumeric["Flags"] = "deadbeef"
-	if err := ValidateCanonical(roundTrip(t, nonNumeric), op, wid, vault); err == nil {
+	if err := ValidateCanonical(roundTrip(t, nonNumeric), op, wid, vault, llsPolicy{standalone: true}); err == nil {
 		t.Error("non-numeric Flags accepted")
+	}
+}
+
+// TestValidateCanonical_LLSBand covers the LastLedgerSequence band a
+// follower enforces: present, ahead of current, within MaxLedgerBudget, and
+// estimated to close at or before the deadline.
+func TestValidateCanonical_LLSBand(t *testing.T) {
+	const vault = "rVaULtAdd1111111111111111111111111"
+	op := &core.WithdrawalOp{Recipient: "rDeST1111111111111111111111111111", Amount: decimal.NewFromInt(1_000_000)}
+	amt, err := BuildAmount(op)
+	if err != nil {
+		t.Fatalf("BuildAmount: %v", err)
+	}
+	var wid [32]byte
+	wid[0], wid[31] = 0xAB, 0xCD
+
+	// current ledger 1000 closing at t=10000; deadline far in the future.
+	current := LedgerState{ValidatedIndex: 1000, CloseUnix: 10_000}
+	deadline := int64(10_000 + 10_000) // ~2500 ledgers of headroom
+	policy := llsPolicy{current: current, deadline: deadline}
+
+	withLLS := func(lls uint32) transaction.FlatTransaction {
+		return roundTrip(t, transaction.FlatTransaction{
+			"TransactionType":    "Payment",
+			"Account":            vault,
+			"Destination":        op.Recipient,
+			"Amount":             amt,
+			"InvoiceID":          strings.ToUpper(hex.EncodeToString(wid[:])),
+			"TicketSequence":     uint32(5),
+			"Sequence":           uint32(0),
+			"Fee":                uint32(100),
+			"LastLedgerSequence": lls,
+		})
+	}
+
+	// In-band: current + LedgerBudget.
+	if err := ValidateCanonical(withLLS(current.ValidatedIndex+LedgerBudget), op, wid, vault, policy); err != nil {
+		t.Errorf("in-band LLS rejected: %v", err)
+	}
+	// Missing LLS is rejected in non-standalone mode.
+	missing := withLLS(0)
+	delete(missing, "LastLedgerSequence")
+	if err := ValidateCanonical(missing, op, wid, vault, policy); err == nil {
+		t.Error("missing LastLedgerSequence accepted")
+	}
+	// Not ahead of current.
+	if err := ValidateCanonical(withLLS(current.ValidatedIndex), op, wid, vault, policy); err == nil {
+		t.Error("LLS == current accepted")
+	}
+	// Beyond MaxLedgerBudget.
+	if err := ValidateCanonical(withLLS(current.ValidatedIndex+MaxLedgerBudget+1), op, wid, vault, policy); err == nil {
+		t.Error("LLS beyond MaxLedgerBudget accepted")
+	}
+	// Estimated close past the deadline: tight deadline of only 4 ledgers.
+	tight := llsPolicy{current: current, deadline: current.CloseUnix + 4*assumedLedgerCloseSec}
+	if err := ValidateCanonical(withLLS(current.ValidatedIndex+LedgerBudget), op, wid, vault, tight); err == nil {
+		t.Error("LLS closing past deadline accepted")
+	}
+}
+
+// TestBuildLLS covers the builder's deadline clamp and the park-on-too-little
+// budget behavior.
+func TestBuildLLS(t *testing.T) {
+	current := LedgerState{ValidatedIndex: 1000, CloseUnix: 10_000}
+
+	// No deadline (rotation): current + full LedgerBudget.
+	if lls, err := buildLLS(current, 0); err != nil || lls != current.ValidatedIndex+LedgerBudget {
+		t.Fatalf("buildLLS(no deadline) = %d, %v; want %d", lls, err, current.ValidatedIndex+LedgerBudget)
+	}
+	// Generous deadline: clamp does not bite.
+	if lls, err := buildLLS(current, current.CloseUnix+10_000); err != nil || lls != current.ValidatedIndex+LedgerBudget {
+		t.Fatalf("buildLLS(generous) = %d, %v; want %d", lls, err, current.ValidatedIndex+LedgerBudget)
+	}
+	// Tight-but-viable deadline: clamps below LedgerBudget but above the floor.
+	tight := current.CloseUnix + int64(10)*assumedLedgerCloseSec
+	if lls, err := buildLLS(current, tight); err != nil || lls != current.ValidatedIndex+10 {
+		t.Fatalf("buildLLS(tight) = %d, %v; want %d", lls, err, current.ValidatedIndex+10)
+	}
+	// Too little budget: parks (error).
+	if _, err := buildLLS(current, current.CloseUnix+int64(minLedgerBudget-1)*assumedLedgerCloseSec); err == nil {
+		t.Error("buildLLS accepted a deadline with less than minLedgerBudget")
+	}
+	// Deadline already passed.
+	if _, err := buildLLS(current, current.CloseUnix-1); err == nil {
+		t.Error("buildLLS accepted a deadline before current close")
 	}
 }
 
@@ -100,13 +185,13 @@ func TestValidateCanonicalRotation_FlagsRejected(t *testing.T) {
 		}
 	}
 
-	if err := validateCanonicalRotation(roundTrip(t, base()), newSigners, 2, vault); err != nil {
+	if err := validateCanonicalRotation(roundTrip(t, base()), newSigners, 2, vault, llsPolicy{standalone: true}); err != nil {
 		t.Fatalf("valid rotation rejected: %v", err)
 	}
 
 	partial := base()
 	partial["Flags"] = uint32(131072)
-	if err := validateCanonicalRotation(roundTrip(t, partial), newSigners, 2, vault); err == nil {
+	if err := validateCanonicalRotation(roundTrip(t, partial), newSigners, 2, vault, llsPolicy{standalone: true}); err == nil {
 		t.Error("non-zero Flags accepted on rotation")
 	}
 }

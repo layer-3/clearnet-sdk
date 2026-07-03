@@ -160,6 +160,7 @@ func NewExecuteInstruction(
 	amountParam uint64,
 	withdrawalIdParam [32]uint8,
 	sigIxIndexParam uint8,
+	deadlineParam int64,
 
 	// Accounts:
 	feePayerAccount solanago.PublicKey,
@@ -205,6 +206,11 @@ func NewExecuteInstruction(
 		err = enc__.Encode(sigIxIndexParam)
 		if err != nil {
 			return nil, errors.NewField("sigIxIndexParam", err)
+		}
+		// Serialize `deadlineParam`:
+		err = enc__.Encode(deadlineParam)
+		if err != nil {
+			return nil, errors.NewField("deadlineParam", err)
 		}
 	}
 	accounts__ := solanago.AccountMetaSlice{}

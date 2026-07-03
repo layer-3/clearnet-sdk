@@ -117,13 +117,16 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	wid[0], wid[31] = 0xB7, 0xC0
 	op := &core.WithdrawalOp{Recipient: miner, Amount: decimal.NewFromInt(10_000_000)} // 0.1 BTC to the miner addr
 
-	packed, err := finalizers[0].Pack(ctx, op, wid)
+	// deadline is accepted but ignored on BTC (no consensus expiry); a
+	// far-future value keeps parity with the other chains' happy-path tests.
+	deadline := time.Now().Add(24 * time.Hour).Unix()
+	packed, err := finalizers[0].Pack(ctx, op, wid, deadline)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
 	shares := make([][]byte, 0, len(finalizers))
 	for i, f := range finalizers {
-		if err := f.Validate(ctx, packed, op, wid); err != nil {
+		if err := f.Validate(ctx, packed, op, wid, deadline); err != nil {
 			t.Fatalf("Validate[%d]: %v", i, err)
 		}
 		s, err := f.Sign(ctx, packed)

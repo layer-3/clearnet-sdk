@@ -34,6 +34,16 @@ type RotationFinalizer struct {
 	// against the vault's current (outgoing) quorum rather than a boot-time
 	// threshold. nil falls back to threshold.
 	resolveThreshold func(context.Context) (int, error)
+
+	// resolveLedger reads the current validated LedgerState, used to set (Pack) and
+	// bound (Validate) LastLedgerSequence so a signed-but-unbroadcast rotation blob
+	// dies at the ledger level. Rotations have no withdrawal deadline, so
+	// the budget is ledger-based only. Defaults to a live-RPC resolver.
+	resolveLedger LedgerStateResolver
+
+	// standalone marks a test-only standalone rippled (manual ledger_accept): LLS
+	// is omitted / required-absent. TEST-ONLY.
+	standalone bool
 }
 
 // SetThresholdResolver installs a hook that resolves the live SignerQuorum used
@@ -41,6 +51,26 @@ type RotationFinalizer struct {
 // threshold.
 func (f *RotationFinalizer) SetThresholdResolver(fn func(context.Context) (int, error)) {
 	f.resolveThreshold = fn
+}
+
+// SetLedgerStateResolver overrides the current-ledger resolver used to set and
+// bound LastLedgerSequence. Optional; unset uses a live-RPC resolver.
+func (f *RotationFinalizer) SetLedgerStateResolver(fn LedgerStateResolver) {
+	f.resolveLedger = fn
+}
+
+// SetStandaloneLedgerMode toggles standalone-rippled behavior: LastLedgerSequence
+// is omitted on build and required-absent on validate. TEST-ONLY.
+func (f *RotationFinalizer) SetStandaloneLedgerMode(v bool) {
+	f.standalone = v
+}
+
+// ledgerState resolves the current validated LedgerState.
+func (f *RotationFinalizer) ledgerState(ctx context.Context) (LedgerState, error) {
+	if f.resolveLedger != nil {
+		return f.resolveLedger(ctx)
+	}
+	return clientLedgerState(f.client)(ctx)
 }
 
 // LiveQuorum returns the vault's current on-chain SignerQuorum. Callers wire it
@@ -103,17 +133,41 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 	if err := f.client.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
 		return nil, fmt.Errorf("xrpl: autofill: %w", err)
 	}
-	delete(flatTx, "LastLedgerSequence")
+	// Replace autofill's LastLedgerSequence with a ledger-budget bound (or drop it
+	// in standalone mode). No withdrawal deadline applies to a rotation, so the
+	// budget is ledger-based only.
+	if f.standalone {
+		delete(flatTx, "LastLedgerSequence")
+	} else {
+		state, err := f.ledgerState(ctx)
+		if err != nil {
+			return nil, err
+		}
+		lls, err := buildLLS(state, 0)
+		if err != nil {
+			return nil, err
+		}
+		flatTx["LastLedgerSequence"] = lls
+	}
 	return CanonicalJSON(flatTx)
 }
 
-// Validate asserts the packed SignerListSet rotates to exactly the requested set.
-func (f *RotationFinalizer) Validate(_ context.Context, _ [32]byte, packed []byte, newSigners []string, newThreshold int) error {
+// Validate asserts the packed SignerListSet rotates to exactly the requested set
+// and that its LastLedgerSequence is inside the follower's ledger band.
+func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []byte, newSigners []string, newThreshold int) error {
 	var flat transaction.FlatTransaction
 	if err := json.Unmarshal(packed, &flat); err != nil {
 		return fmt.Errorf("xrpl: decode packed: %w", err)
 	}
-	return validateCanonicalRotation(flat, newSigners, newThreshold, f.vaultAddress)
+	policy := llsPolicy{standalone: f.standalone}
+	if !f.standalone {
+		state, err := f.ledgerState(ctx)
+		if err != nil {
+			return err
+		}
+		policy.current = state
+	}
+	return validateCanonicalRotation(flat, newSigners, newThreshold, f.vaultAddress, policy)
 }
 
 // Sign multi-signs the packed SignerListSet and returns this node's blob.

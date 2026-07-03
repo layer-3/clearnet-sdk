@@ -4,7 +4,7 @@
     "name": "custody",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "Yellow custody Solana vault program — analogue of Custody.sol"
+    "description": "Yellow custody Solana vault program \u2014 analogue of Custody.sol"
   },
   "instructions": [
     {
@@ -417,7 +417,7 @@
           "name": "fee_payer",
           "docs": [
             "Pays the WithdrawalRecord rent and the transaction fee. Authorizes no",
-            "custody action — distinct from the provider custody signers."
+            "custody action \u2014 distinct from the provider custody signers."
           ],
           "writable": true,
           "signer": true
@@ -561,6 +561,10 @@
         {
           "name": "sig_ix_index",
           "type": "u8"
+        },
+        {
+          "name": "deadline",
+          "type": "i64"
         }
       ]
     },
@@ -897,13 +901,18 @@
       "code": 6020,
       "name": "QuorumTooSmall",
       "msg": "fewer than threshold authorized signatures"
+    },
+    {
+      "code": 6021,
+      "name": "DeadlineExpired",
+      "msg": "withdrawal authorization has expired (deadline < cluster time)"
     }
   ],
   "types": [
     {
       "name": "Config",
       "docs": [
-        "Config PDA — seeds `[\"config\"]`. The on-chain analogue of `Custody.sol`'s",
+        "Config PDA \u2014 seeds `[\"config\"]`. The on-chain analogue of `Custody.sol`'s",
         "signer set + threshold + nonce. `signers` is kept strictly ascending so a",
         "linear membership scan in the Ed25519 verifier is unambiguous."
       ],
@@ -1043,7 +1052,7 @@
     {
       "name": "WithdrawalRecord",
       "docs": [
-        "WithdrawalRecord PDA — seeds `[\"withdrawal\", withdrawal_id]`. Its mere",
+        "WithdrawalRecord PDA \u2014 seeds `[\"withdrawal\", withdrawal_id]`. Its mere",
         "existence is the replay guard: `execute` creates it with `init`, so a",
         "second execution of the same `withdrawal_id` fails at account creation.",
         "The analogue of `Custody.sol`'s `executed[withdrawalId]` storage slot;",
