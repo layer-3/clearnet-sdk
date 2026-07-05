@@ -197,6 +197,27 @@ describe("EvmVaultDepositor", () => {
     });
   });
 
+  it("rejects invalid receipt timeout configuration", () => {
+    const clients = createClients();
+
+    expect(
+      () =>
+        new EvmVaultDepositor({
+          publicClient: clients.publicClient,
+          walletClient: clients.walletClient,
+          walletAccount: ACCOUNT,
+          custodyAddress: CUSTODY_ADDRESS,
+          chainId: CHAIN_ID,
+          receiptTimeoutMs: 0,
+        }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "RECEIPT_TIMEOUT",
+        message: "receiptTimeoutMs must be a positive safe integer",
+      }),
+    );
+  });
+
   it("validates deposit reference before chain checks or signing", async () => {
     const clients = createClients();
     const depositor = createDepositor(clients);
