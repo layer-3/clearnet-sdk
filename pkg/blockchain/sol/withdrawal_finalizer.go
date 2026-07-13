@@ -14,6 +14,7 @@ import (
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/rpc"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/blockchain/sol/custody"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
@@ -312,7 +313,11 @@ func (f *WithdrawalFinalizer) packedFromOp(op *core.WithdrawalOp, withdrawalID [
 	if err != nil {
 		return solPacked{}, fmt.Errorf("sol: recipient %q not base58: %w", op.Recipient, err)
 	}
-	mint, err := resolveMint(op.L1Asset)
+	assetAddress, err := blockchain.AssetAddressForFamily(op.AssetURI, blockchain.ChainFamilySOL)
+	if err != nil {
+		return solPacked{}, fmt.Errorf("sol: asset URI: %w", err)
+	}
+	mint, err := resolveMint(assetAddress)
 	if err != nil {
 		return solPacked{}, err
 	}

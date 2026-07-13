@@ -12,7 +12,6 @@ import { UINT64_MAX, XRPL_NATIVE_ASSET } from "./constants.js";
 import type { XrplDepositDestination, XrplSigner } from "./types.js";
 
 const HASH_PATTERN = /^[a-fA-F0-9]{64}$/;
-const DECIMAL_PATTERN = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
 const STANDARD_CURRENCY_PATTERN = /^[A-Za-z0-9]{3}$/;
 const HEX_CURRENCY_PATTERN = /^[a-fA-F0-9]{40}$/;
 
@@ -251,21 +250,17 @@ function requireIssuedAsset(asset: unknown): { currency: string; issuer: string 
 }
 
 function requireIssuedAmount(amount: unknown): string {
-  if (typeof amount !== "string") {
+  if (typeof amount !== "bigint") {
     throw new ClearnetSdkError(
       "INVALID_AMOUNT",
-      "issued XRPL amount must be a decimal string",
+      "issued XRPL amount must be a bigint",
     );
   }
-  const trimmed = amount.trim();
-  if (
-    !DECIMAL_PATTERN.test(trimmed) ||
-    trimmed.replace(".", "").replace(/0/g, "") === ""
-  ) {
+  if (amount <= 0n) {
     throw new ClearnetSdkError(
       "INVALID_AMOUNT",
-      "issued XRPL amount must be a positive decimal string",
+      "issued XRPL amount must be positive",
     );
   }
-  return trimmed;
+  return amount.toString();
 }

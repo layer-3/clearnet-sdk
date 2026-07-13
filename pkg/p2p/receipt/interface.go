@@ -13,8 +13,8 @@ import (
 // delivered to the peer as Accepted=false with the error string.
 //
 // Implementations must be idempotent on the clearing layer's natural de-dupe
-// keys (BurnReceipt: BlockHash+EntryIndex; MintReceipt: ChainID+L1TxHash+
-// LogIndex) so client retries are safe. A consumer that handles only one kind
+// keys (BurnReceipt: BlockHash+EntryIndex; MintReceipt: AssetURI+TxID) so
+// client retries are safe. A consumer that handles only one kind
 // still implements both methods — return a reject ack for the unhandled one.
 type ReceiptHandler interface {
 	OnBurnReceipt(ctx context.Context, r *core.BurnReceipt) (p2pproto.ReceiptAck, error)

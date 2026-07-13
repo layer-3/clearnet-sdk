@@ -105,7 +105,7 @@ describe("XrplVaultDepositor integration", () => {
     try {
       const ref = await sdk.submitDeposit({
         asset: `USD.${issuer.classicAddress}`,
-        amount: "25",
+        amount: 25n,
         destination: { account: ACCOUNT },
       });
       await admin.ledgerAccept();

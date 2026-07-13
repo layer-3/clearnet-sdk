@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -11,7 +12,6 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
-	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
@@ -36,16 +36,19 @@ func NewDepositor(client *ethclient.Client, custodyAddr common.Address, signer s
 	return &Depositor{client: client, custody: custody, custodyAddr: custodyAddr, signer: signer}, nil
 }
 
-// SubmitDeposit credits `account` with `amount` of `asset`. For an ERC-20 (asset is a
-// non-zero hex address) it approves the vault then calls
-// Custody.deposit(account, asset, amount); for the zero address it sends native
-// ETH with msg.value == amount. Blocks until the deposit tx mines.
-func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
-	assetAddr, err := depositAssetAddress(asset)
+// SubmitDeposit credits dest.Account with amount base units of assetAddress. For
+// an ERC-20 (assetAddress is a non-zero hex address) it approves the vault then
+// calls Custody.deposit; for the zero address it sends native ETH with
+// msg.value == amount. Blocks until the deposit tx mines.
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount *big.Int, dest core.DepositDestination) (core.TxRef, error) {
+	assetAddr, err := depositAssetAddress(assetAddress)
 	if err != nil {
 		return core.TxRef{}, err
 	}
-	amt := amount.BigInt()
+	if amount == nil || amount.Sign() <= 0 {
+		return core.TxRef{}, fmt.Errorf("evm: amount must be positive")
+	}
+	amt := new(big.Int).Set(amount)
 	accountAddr := common.HexToAddress(dest.Account)
 
 	if assetAddr == (common.Address{}) {

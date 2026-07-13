@@ -84,7 +84,7 @@ describe("XrplVaultDepositor", () => {
       XrplNativeDepositInput | XrplIssuedDepositInput
     >();
     expectTypeOf<XrplNativeDepositInput["amount"]>().toEqualTypeOf<bigint>();
-    expectTypeOf<XrplIssuedDepositInput["amount"]>().toEqualTypeOf<string>();
+    expectTypeOf<XrplIssuedDepositInput["amount"]>().toEqualTypeOf<bigint>();
     expectTypeOf<{
       asset: "XRP";
       amount: string;
@@ -94,7 +94,7 @@ describe("XrplVaultDepositor", () => {
       asset: `USD.${string}`;
       amount: bigint;
       destination: XrplDepositDestination;
-    }>().not.toMatchTypeOf<XrplSubmitDepositInput>();
+    }>().toMatchTypeOf<XrplSubmitDepositInput>();
     expectTypeOf<TxRef>().toEqualTypeOf<{ hash: Bytes32Hex; raw: string }>();
     expectTypeOf<DepositStatus>().toEqualTypeOf<
       "absent" | "pending" | "confirmed"
@@ -148,12 +148,12 @@ describe("XrplVaultDepositor", () => {
 
     await depositor.submitDeposit({
       asset: `USD.${ISSUER_ADDRESS}`,
-      amount: "12.345",
+      amount: 12n,
       destination: { account: ACCOUNT },
     });
     await depositor.submitDeposit({
       asset: `EUR:${ISSUER_ADDRESS}`,
-      amount: "1",
+      amount: 1n,
       destination: { account: ACCOUNT },
     });
 
@@ -163,7 +163,7 @@ describe("XrplVaultDepositor", () => {
         Amount: {
           currency: "USD",
           issuer: ISSUER_ADDRESS,
-          value: "12.345",
+          value: "12",
         },
       }),
     );
@@ -268,28 +268,28 @@ describe("XrplVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: `USD.${ISSUER_ADDRESS}`,
-        amount: "1e2",
+        amount: "1" as unknown as bigint,
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     await expect(
       depositor.submitDeposit({
         asset: `USD.${ISSUER_ADDRESS}`,
-        amount: "0",
+        amount: 0n,
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     await expect(
       depositor.submitDeposit({
         asset: "USD" as XrplIssuedDepositInput["asset"],
-        amount: "1",
+        amount: 1n,
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
         asset: "USD.rBad",
-        amount: "1",
+        amount: 1n,
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });

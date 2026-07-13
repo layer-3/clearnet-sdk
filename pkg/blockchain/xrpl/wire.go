@@ -25,6 +25,7 @@ import (
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
@@ -250,7 +251,11 @@ func signSingle(ctx context.Context, s sign.Signer, id Identity, tx transaction.
 
 // BuildAmount converts a WithdrawalOp into an XRPL CurrencyAmount.
 func BuildAmount(op *core.WithdrawalOp) (types.CurrencyAmount, error) {
-	return currencyAmount(op.L1Asset, op.Amount)
+	assetAddress, err := blockchain.AssetAddressForFamily(op.AssetURI, blockchain.ChainFamilyXRPL)
+	if err != nil {
+		return nil, fmt.Errorf("xrpl: asset URI: %w", err)
+	}
+	return currencyAmount(assetAddress, op.Amount)
 }
 
 // currencyAmount maps an asset key + decimal amount to an XRPL CurrencyAmount:

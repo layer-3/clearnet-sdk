@@ -6,7 +6,7 @@ import type {
   SubmitDepositInput,
 } from "../../core/types.js";
 
-export type XrplAmount = bigint | string;
+export type XrplAmount = bigint;
 export type XrplAsset = string;
 export type XrplPreparedPayment = Payment;
 
@@ -21,9 +21,9 @@ export interface XrplNativeDepositInput extends SubmitDepositInput<bigint> {
   destination: XrplDepositDestination;
 }
 
-export interface XrplIssuedDepositInput extends SubmitDepositInput<string> {
+export interface XrplIssuedDepositInput extends SubmitDepositInput<bigint> {
   asset: `${string}.${string}` | `${string}:${string}`;
-  amount: string;
+  amount: bigint;
   destination: XrplDepositDestination;
 }
 

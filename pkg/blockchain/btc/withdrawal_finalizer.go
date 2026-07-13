@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
@@ -401,6 +402,13 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 // --- helpers ---
 
 func (f *WithdrawalFinalizer) parseOp(op *core.WithdrawalOp) (btcutil.Address, int64, error) {
+	assetAddress, err := blockchain.AssetAddressForFamily(op.AssetURI, blockchain.ChainFamilyBTC)
+	if err != nil {
+		return nil, 0, fmt.Errorf("btc: asset URI: %w", err)
+	}
+	if a := strings.ToUpper(strings.TrimSpace(assetAddress)); a != "" && a != "BTC" && a != "0" {
+		return nil, 0, fmt.Errorf("btc: only native BTC withdrawals supported, got asset %q", assetAddress)
+	}
 	addr, err := btcutil.DecodeAddress(op.Recipient, f.net)
 	if err != nil {
 		return nil, 0, fmt.Errorf("btc: decode recipient %q: %w", op.Recipient, err)

@@ -101,7 +101,7 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	}
 	account := crypto.PubkeyToAddress(deployerKey.PublicKey)
 	const zeroAsset = "0x0000000000000000000000000000000000000000" // native ETH
-	depositAmt := decimal.NewFromInt(1_000_000_000_000)            // 1e12 wei
+	depositAmt := big.NewInt(1_000_000_000_000)                    // 1e12 wei
 	depRef, err := depositor.SubmitDeposit(ctx, zeroAsset, depositAmt, core.DepositDestination{Account: account.Hex()})
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
@@ -122,7 +122,7 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	withdrawalID[0], withdrawalID[31] = 0x11, 0x22
 	op := &core.WithdrawalOp{
 		Recipient: signerAddrs[0].Hex(),
-		L1Asset:   zeroAsset,
+		AssetURI:  core.AssetURI("yellow://ynet/asset/custody/evm/31337/" + zeroAsset),
 		Amount:    decimal.NewFromInt(400_000_000_000), // < deposited
 	}
 

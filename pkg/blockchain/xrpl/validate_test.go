@@ -36,7 +36,11 @@ func roundTrip(t *testing.T, flat transaction.FlatTransaction) transaction.FlatT
 // 131072) is rejected so an issued-currency withdrawal cannot underdeliver.
 func TestValidateCanonical_FlagsRejected(t *testing.T) {
 	const vault = "rVaULtAdd1111111111111111111111111"
-	op := &core.WithdrawalOp{Recipient: "rDeST1111111111111111111111111111", Amount: decimal.NewFromInt(1_000_000)}
+	op := &core.WithdrawalOp{
+		Recipient: "rDeST1111111111111111111111111111",
+		AssetURI:  "yellow://ynet/asset/custody/xrpl/0/XRP",
+		Amount:    decimal.NewFromInt(1_000_000),
+	}
 	amt, err := BuildAmount(op)
 	if err != nil {
 		t.Fatalf("BuildAmount: %v", err)
@@ -85,7 +89,11 @@ func TestValidateCanonical_FlagsRejected(t *testing.T) {
 // estimated to close at or before the deadline.
 func TestValidateCanonical_LLSBand(t *testing.T) {
 	const vault = "rVaULtAdd1111111111111111111111111"
-	op := &core.WithdrawalOp{Recipient: "rDeST1111111111111111111111111111", Amount: decimal.NewFromInt(1_000_000)}
+	op := &core.WithdrawalOp{
+		Recipient: "rDeST1111111111111111111111111111",
+		AssetURI:  "yellow://ynet/asset/custody/xrpl/0/XRP",
+		Amount:    decimal.NewFromInt(1_000_000),
+	}
 	amt, err := BuildAmount(op)
 	if err != nil {
 		t.Fatalf("BuildAmount: %v", err)

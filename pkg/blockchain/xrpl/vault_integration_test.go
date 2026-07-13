@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"net/http"
 	"os"
 	"strings"
@@ -87,7 +88,7 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDepositor: %v", err)
 	}
-	depRef, err := dep.SubmitDeposit(ctx, "XRP", decimal.NewFromInt(100_000_000), core.DepositDestination{Account: "00000000000000000000000000000000000000a2"}) // 100 XRP
+	depRef, err := dep.SubmitDeposit(ctx, "XRP", big.NewInt(100_000_000), core.DepositDestination{Account: "00000000000000000000000000000000000000a2"}) // 100 XRP
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 
 	var wid [32]byte
 	wid[0], wid[31] = 0x12, 0x34
-	op := &core.WithdrawalOp{Recipient: recID.ClassicAddress, L1Asset: "XRP", Amount: decimal.NewFromInt(50_000_000)} // 50 XRP
+	op := &core.WithdrawalOp{Recipient: recID.ClassicAddress, AssetURI: "yellow://ynet/asset/custody/xrpl/0/XRP", Amount: decimal.NewFromInt(50_000_000)} // 50 XRP
 
 	// Far-future deadline: the happy path must not expire mid-test. In standalone
 	// mode the value is not bound into LLS, but Pack/Validate still take it.

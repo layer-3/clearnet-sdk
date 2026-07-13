@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 
 	"github.com/gagliardetto/solana-go"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/layer-3/clearnet-sdk/pkg/blockchain/sol/custody"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
-	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
@@ -59,20 +59,20 @@ func NewDepositor(rpcURL string, programID solana.PublicKey, signer sign.Signer,
 // DepositorAddress returns the depositor's Solana address.
 func (d *Depositor) DepositorAddress() string { return d.depositorPub.String() }
 
-// SubmitDeposit transfers `amount` of `asset` into the vault, crediting clearnet
-// dest.Account (20-byte hex) with the optional ADR-015 dest.Ref sub-account
-// reference. asset is "" / "SOL" for native or a base58 mint.
-func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
+// SubmitDeposit transfers amount base units of assetAddress into the vault,
+// crediting clearnet dest.Account (20-byte hex) with the optional ADR-015
+// dest.Ref sub-account reference. assetAddress is "" / "SOL" for native or a
+// base58 mint.
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount *big.Int, dest core.DepositDestination) (core.TxRef, error) {
 	acct, err := parseClearnetAccount(dest.Account)
 	if err != nil {
 		return core.TxRef{}, err
 	}
-	amt := amount.BigInt()
-	if !amt.IsUint64() || amt.Sign() <= 0 {
-		return core.TxRef{}, fmt.Errorf("sol: amount %s not a positive uint64", amount.String())
+	if amount == nil || !amount.IsUint64() || amount.Sign() <= 0 {
+		return core.TxRef{}, fmt.Errorf("sol: amount %v not a positive uint64", amount)
 	}
-	lamports := amt.Uint64()
-	mint, err := resolveMint(asset)
+	lamports := amount.Uint64()
+	mint, err := resolveMint(assetAddress)
 	if err != nil {
 		return core.TxRef{}, err
 	}

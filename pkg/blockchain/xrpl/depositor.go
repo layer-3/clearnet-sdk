@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"strings"
 
 	"github.com/Peersyst/xrpl-go/xrpl/queries/transactions"
@@ -46,16 +47,20 @@ func NewDepositor(rpcURL, vaultAddress string, signer sign.Signer) (*Depositor, 
 // DepositorAddress returns the depositor's classic r-address.
 func (d *Depositor) DepositorAddress() string { return d.id.ClassicAddress }
 
-// SubmitDeposit sends `amount` of `asset` to the vault, crediting dest.Account
-// via a `ynet-account` memo carrying the 20-byte account and the 32-byte
-// ADR-015 dest.Ref. asset is "" / "XRP" for native or "CUR.rIssuer" for an
-// issued currency; dest.Account is the 20-byte clearnet account (hex).
-func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
+// SubmitDeposit sends amount base units of assetAddress to the vault, crediting
+// dest.Account via a `ynet-account` memo carrying the 20-byte account and the
+// 32-byte ADR-015 dest.Ref. assetAddress is "" / "XRP" for native or
+// "CUR.rIssuer" for an issued currency; issued-currency generic deposits are
+// integer-valued by this interface.
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount *big.Int, dest core.DepositDestination) (core.TxRef, error) {
 	memo, err := accountMemo(dest)
 	if err != nil {
 		return core.TxRef{}, err
 	}
-	xrplAmount, err := currencyAmount(asset, amount)
+	if amount == nil || amount.Sign() <= 0 {
+		return core.TxRef{}, fmt.Errorf("xrpl: amount must be positive")
+	}
+	xrplAmount, err := currencyAmount(assetAddress, decimal.NewFromBigInt(amount, 0))
 	if err != nil {
 		return core.TxRef{}, err
 	}

@@ -269,7 +269,7 @@ the depositor ATA and vault ATA exist before submitting the deposit.
 ## XRPL Deposits
 
 XRPL deposits use `XrplVaultDepositor`. Native XRP amounts are `bigint` drops.
-Issued-currency amounts are positive decimal strings and assets use
+Issued-currency amounts are positive bigint values and assets use
 `CUR.rIssuer` or `CUR:rIssuer`.
 
 ```ts
@@ -316,13 +316,13 @@ try {
 }
 ```
 
-For issued currencies, pass the asset key and decimal string amount:
+For issued currencies, pass the asset key and integer amount:
 
 ```ts
 const ref = await depositor.submitDeposit({
   destination: { account: "00000000000000000000000000000000000000a1" },
   asset: "USD.rN7n7otQDd6FczFgLdSqtcsAUxDkw6fzRH",
-  amount: "25",
+  amount: 25n,
 });
 ```
 
@@ -531,7 +531,7 @@ XRPL input fields:
 | `destination.account` | `string` | 20-byte Clearnet account as hex, with optional `0x`. |
 | `destination.ref` | `` `0x${string}` \| undefined `` | Optional 32-byte opaque reference. |
 | `asset` | `string` | `XRP`/empty for native, or issued-currency `CUR.rIssuer` / `CUR:rIssuer`. |
-| `amount` | `bigint \| string` | Native XRP uses drops as `bigint`; issued currencies use a decimal `string`. |
+| `amount` | `bigint` | Native XRP uses drops; issued currencies use integer generic SDK amounts. |
 
 For XRPL, `TxRef.raw` is the uppercase 64-hex transaction hash and `TxRef.hash`
 is the same bytes as `0x` hex.

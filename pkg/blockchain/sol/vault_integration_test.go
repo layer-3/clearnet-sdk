@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"sort"
@@ -119,7 +120,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 		t.Fatalf("NewDepositor: %v", err)
 	}
 	const account = "00000000000000000000000000000000000000a1" // 20-byte clearnet addr
-	depRef, err := dep.SubmitDeposit(ctx, "SOL", decimal.NewFromInt(100_000_000), core.DepositDestination{Account: account})
+	depRef, err := dep.SubmitDeposit(ctx, "SOL", big.NewInt(100_000_000), core.DepositDestination{Account: account})
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
@@ -144,7 +145,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	}
 	recipient := fixedEd25519(t, "clearnet-sdk/sol-itest/recipient/"+hex.EncodeToString(wid[:4]))
 	recipientPub, _ := solanaPub(recipient)
-	op := &core.WithdrawalOp{Recipient: recipientPub.String(), L1Asset: "SOL", Amount: decimal.NewFromInt(40_000_000)}
+	op := &core.WithdrawalOp{Recipient: recipientPub.String(), AssetURI: "yellow://ynet/asset/custody/sol/0/SOL", Amount: decimal.NewFromInt(40_000_000)}
 
 	// Far-future deadline: the happy path must not expire mid-test.
 	deadline := time.Now().Add(24 * time.Hour).Unix()
@@ -202,7 +203,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	}
 	splRecipient := fixedEd25519(t, "clearnet-sdk/sol-itest/spl-recipient/"+hex.EncodeToString(splWid[:4]))
 	splRecipientPub, _ := solanaPub(splRecipient)
-	splOp := &core.WithdrawalOp{Recipient: splRecipientPub.String(), L1Asset: mint.String(), Amount: decimal.NewFromInt(40)}
+	splOp := &core.WithdrawalOp{Recipient: splRecipientPub.String(), AssetURI: core.AssetURI("yellow://ynet/asset/custody/sol/0/" + mint.String()), Amount: decimal.NewFromInt(40)}
 
 	splPacked, err := splFinalizers[0].Pack(ctx, splOp, splWid, deadline)
 	if err != nil {

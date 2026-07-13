@@ -1,6 +1,7 @@
 package receipt
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -133,7 +134,7 @@ func (rv *ReceiptVerifier) VerifyMintReceipt(v *core.MintReceipt) error {
 	if v == nil {
 		return errors.New("nil mint receipt")
 	}
-	if v.Amount == nil || v.Amount.Sign() <= 0 {
+	if v.Amount.Sign() <= 0 {
 		return errors.New("mint receipt amount must be positive")
 	}
 	return rv.verifySignatures(MintReceiptDigest(v), v.Signatures)
@@ -209,20 +210,28 @@ func recoverReceiptSigner(digest, sig []byte) (common.Address, bool, error) {
 
 // BurnReceiptDigest is the keccak256 digest custody providers sign over for
 // withdrawal terminal attestations.
-// Format: keccak256(WithdrawalID || BlockHash || EntryIndex[uint64be] || L1TxHash || Status[byte]).
+// Format: keccak256(
+//
+//	WithdrawalID || BlockHash || EntryIndex[uint64be] ||
+//	len(TxID)[uint32be] || TxID || Status[byte]).
+//
 // The trailing Status byte binds the terminal outcome (Executed vs
 // Expired) into the signature, so a quorum can never be tricked into swapping
 // an executed receipt for an expired one (which would authorize a re-credit).
 // Exported so custody-side tooling and the custodytesting package can build
 // matching signatures.
 func BurnReceiptDigest(v *core.BurnReceipt) []byte {
-	buf := make([]byte, 0, 32+32+8+32+1)
+	txID := []byte(v.TxID)
+	buf := make([]byte, 0, 32+32+8+4+len(txID)+1)
 	buf = append(buf, v.WithdrawalID[:]...)
 	buf = append(buf, v.BlockHash[:]...)
 	var index [8]byte
 	binary.BigEndian.PutUint64(index[:], v.EntryIndex)
 	buf = append(buf, index[:]...)
-	buf = append(buf, v.L1TxHash[:]...)
+	var u32 [4]byte
+	binary.BigEndian.PutUint32(u32[:], uint32(len(txID)))
+	buf = append(buf, u32[:]...)
+	buf = append(buf, txID...)
 	buf = append(buf, byte(v.Status))
 	return crypto.Keccak256(buf)
 }
@@ -233,33 +242,37 @@ func BurnReceiptDigest(v *core.BurnReceipt) []byte {
 //
 // Format: keccak256(
 //
-//	ChainID[uint64be] || L1TxHash || LogIndex[uint64be] ||
-//	len(Account)[uint32be] || Account ||
-//	len(Asset)[uint32be]   || Asset ||
-//	Amount[uint256be])
+//	len(TxID)[uint32be]     || TxID ||
+//	len(Account)[uint32be]  || Account ||
+//	len(AssetURI)[uint32be] || AssetURI ||
+//	len(Amount)[uint32be]   || canonical-CBOR(decimal.Decimal))
 //
-// The length prefixes on Account and Asset prevent boundary-shift
-// collisions between variable-length string pairs.
+// The length prefixes prevent boundary-shift collisions between variable-size
+// receipt fields. Idempotency is keyed by (AssetURI, TxID), but the digest also
+// binds the credited account and protocol amount.
 func MintReceiptDigest(v *core.MintReceipt) []byte {
-	var amountBE [32]byte
-	if v.Amount != nil && v.Amount.Sign() > 0 {
-		v.Amount.FillBytes(amountBE[:])
+	var amount bytes.Buffer
+	if err := v.Amount.MarshalCBOR(&amount); err != nil {
+		panic(fmt.Errorf("receipt: decimal MarshalCBOR: %w", err))
 	}
-	buf := make([]byte, 0, 8+32+8+4+len(v.Account)+4+len(v.Asset)+32)
-	var u64 [8]byte
-	binary.BigEndian.PutUint64(u64[:], v.ChainID)
-	buf = append(buf, u64[:]...)
-	buf = append(buf, v.L1TxHash[:]...)
-	binary.BigEndian.PutUint64(u64[:], v.LogIndex)
-	buf = append(buf, u64[:]...)
+	txID := []byte(v.TxID)
+	account := []byte(v.Account)
+	assetURI := []byte(v.AssetURI)
+	amountBytes := amount.Bytes()
+	buf := make([]byte, 0, 4+len(txID)+4+len(account)+4+len(assetURI)+4+len(amountBytes))
 	var u32 [4]byte
-	binary.BigEndian.PutUint32(u32[:], uint32(len(v.Account)))
+	binary.BigEndian.PutUint32(u32[:], uint32(len(txID)))
 	buf = append(buf, u32[:]...)
-	buf = append(buf, []byte(v.Account)...)
-	binary.BigEndian.PutUint32(u32[:], uint32(len(v.Asset)))
+	buf = append(buf, txID...)
+	binary.BigEndian.PutUint32(u32[:], uint32(len(account)))
 	buf = append(buf, u32[:]...)
-	buf = append(buf, []byte(v.Asset)...)
-	buf = append(buf, amountBE[:]...)
+	buf = append(buf, account...)
+	binary.BigEndian.PutUint32(u32[:], uint32(len(assetURI)))
+	buf = append(buf, u32[:]...)
+	buf = append(buf, assetURI...)
+	binary.BigEndian.PutUint32(u32[:], uint32(len(amountBytes)))
+	buf = append(buf, u32[:]...)
+	buf = append(buf, amountBytes...)
 	return crypto.Keccak256(buf)
 }
 

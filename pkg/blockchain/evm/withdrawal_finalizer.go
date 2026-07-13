@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
@@ -238,12 +239,16 @@ func packedFromOp(op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) 
 	if !common.IsHexAddress(op.Recipient) {
 		return evmPacked{}, fmt.Errorf("evm: recipient %q is not a valid hex address", op.Recipient)
 	}
-	if !common.IsHexAddress(op.L1Asset) {
-		return evmPacked{}, fmt.Errorf("evm: l1 asset %q is not a valid hex address", op.L1Asset)
+	assetAddress, err := blockchain.AssetAddressForFamily(op.AssetURI, blockchain.ChainFamilyEVM)
+	if err != nil {
+		return evmPacked{}, fmt.Errorf("evm: asset URI: %w", err)
+	}
+	if !common.IsHexAddress(assetAddress) {
+		return evmPacked{}, fmt.Errorf("evm: asset address %q is not a valid hex address", assetAddress)
 	}
 	return evmPacked{
 		To:           common.HexToAddress(op.Recipient).Hex(),
-		Asset:        common.HexToAddress(op.L1Asset).Hex(),
+		Asset:        common.HexToAddress(assetAddress).Hex(),
 		Amount:       op.Amount.BigInt().String(),
 		WithdrawalID: hex.EncodeToString(withdrawalID[:]),
 		Deadline:     deadline,

@@ -1592,7 +1592,7 @@ func (t *SwapOp) UnmarshalCBOR(r io.Reader) (err error) {
 	return nil
 }
 
-var lengthBufWithdrawalOp = []byte{134}
+var lengthBufWithdrawalOp = []byte{132}
 
 func (t *WithdrawalOp) MarshalCBOR(w io.Writer) error {
 	if t == nil {
@@ -1606,38 +1606,20 @@ func (t *WithdrawalOp) MarshalCBOR(w io.Writer) error {
 		return err
 	}
 
-	// t.Asset (core.AssetID) (string)
-	if len(t.Asset) > 8192 {
-		return xerrors.Errorf("Value in field t.Asset was too long")
+	// t.AssetURI (core.AssetURI) (string)
+	if len(t.AssetURI) > 8192 {
+		return xerrors.Errorf("Value in field t.AssetURI was too long")
 	}
 
-	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(t.Asset))); err != nil {
+	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(t.AssetURI))); err != nil {
 		return err
 	}
-	if _, err := cw.WriteString(string(t.Asset)); err != nil {
-		return err
-	}
-
-	// t.L1Asset (string) (string)
-	if len(t.L1Asset) > 8192 {
-		return xerrors.Errorf("Value in field t.L1Asset was too long")
-	}
-
-	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(t.L1Asset))); err != nil {
-		return err
-	}
-	if _, err := cw.WriteString(string(t.L1Asset)); err != nil {
+	if _, err := cw.WriteString(string(t.AssetURI)); err != nil {
 		return err
 	}
 
 	// t.Amount (decimal.Decimal) (struct)
 	if err := t.Amount.MarshalCBOR(cw); err != nil {
-		return err
-	}
-
-	// t.ChainID (uint64) (uint64)
-
-	if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.ChainID)); err != nil {
 		return err
 	}
 
@@ -1688,11 +1670,11 @@ func (t *WithdrawalOp) UnmarshalCBOR(r io.Reader) (err error) {
 		return fmt.Errorf("cbor input should be of type array")
 	}
 
-	if extra != 6 {
+	if extra != 4 {
 		return fmt.Errorf("cbor input had wrong number of fields")
 	}
 
-	// t.Asset (core.AssetID) (string)
+	// t.AssetURI (core.AssetURI) (string)
 
 	{
 		sval, err := cbg.ReadStringWithMax(cr, 8192)
@@ -1700,17 +1682,7 @@ func (t *WithdrawalOp) UnmarshalCBOR(r io.Reader) (err error) {
 			return err
 		}
 
-		t.Asset = AssetID(sval)
-	}
-	// t.L1Asset (string) (string)
-
-	{
-		sval, err := cbg.ReadStringWithMax(cr, 8192)
-		if err != nil {
-			return err
-		}
-
-		t.L1Asset = string(sval)
+		t.AssetURI = AssetURI(sval)
 	}
 	// t.Amount (decimal.Decimal) (struct)
 
@@ -1719,20 +1691,6 @@ func (t *WithdrawalOp) UnmarshalCBOR(r io.Reader) (err error) {
 		if err := t.Amount.UnmarshalCBOR(cr); err != nil {
 			return xerrors.Errorf("unmarshaling t.Amount: %w", err)
 		}
-
-	}
-	// t.ChainID (uint64) (uint64)
-
-	{
-
-		maj, extra, err = cr.ReadHeader()
-		if err != nil {
-			return err
-		}
-		if maj != cbg.MajUnsignedInt {
-			return fmt.Errorf("wrong type for uint64 field")
-		}
-		t.ChainID = uint64(extra)
 
 	}
 	// t.Recipient (string) (string)
@@ -2552,16 +2510,15 @@ func (t *BurnReceipt) MarshalCBOR(w io.Writer) error {
 		return err
 	}
 
-	// t.L1TxHash ([32]uint8) (array)
-	if len(t.L1TxHash) > 2097152 {
-		return xerrors.Errorf("Byte array in field t.L1TxHash was too long")
+	// t.TxID (string) (string)
+	if len(t.TxID) > 8192 {
+		return xerrors.Errorf("Value in field t.TxID was too long")
 	}
 
-	if err := cw.WriteMajorTypeHeader(cbg.MajByteString, uint64(len(t.L1TxHash))); err != nil {
+	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(t.TxID))); err != nil {
 		return err
 	}
-
-	if _, err := cw.Write(t.L1TxHash[:]); err != nil {
+	if _, err := cw.WriteString(string(t.TxID)); err != nil {
 		return err
 	}
 
@@ -2648,26 +2605,15 @@ func (t *BurnReceipt) UnmarshalCBOR(r io.Reader) (err error) {
 		}
 
 	}
-	// t.L1TxHash ([32]uint8) (array)
+	// t.TxID (string) (string)
 
-	maj, extra, err = cr.ReadHeader()
-	if err != nil {
-		return err
-	}
+	{
+		sval, err := cbg.ReadStringWithMax(cr, 8192)
+		if err != nil {
+			return err
+		}
 
-	if extra > 2097152 {
-		return fmt.Errorf("t.L1TxHash: byte array too large (%d)", extra)
-	}
-	if maj != cbg.MajByteString {
-		return fmt.Errorf("expected byte array")
-	}
-	if extra != 32 {
-		return fmt.Errorf("expected array to have 32 elements")
-	}
-
-	t.L1TxHash = [32]uint8{}
-	if _, err := io.ReadFull(cr, t.L1TxHash[:]); err != nil {
-		return err
+		t.TxID = string(sval)
 	}
 	// t.Signatures ([][]uint8) (slice)
 
@@ -2735,7 +2681,7 @@ func (t *BurnReceipt) UnmarshalCBOR(r io.Reader) (err error) {
 	return nil
 }
 
-var lengthBufMintReceipt = []byte{136}
+var lengthBufMintReceipt = []byte{133}
 
 func (t *MintReceipt) MarshalCBOR(w io.Writer) error {
 	if t == nil {
@@ -2749,28 +2695,15 @@ func (t *MintReceipt) MarshalCBOR(w io.Writer) error {
 		return err
 	}
 
-	// t.ChainID (uint64) (uint64)
+	// t.TxID (string) (string)
+	if len(t.TxID) > 8192 {
+		return xerrors.Errorf("Value in field t.TxID was too long")
+	}
 
-	if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.ChainID)); err != nil {
+	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(t.TxID))); err != nil {
 		return err
 	}
-
-	// t.L1TxHash ([32]uint8) (array)
-	if len(t.L1TxHash) > 2097152 {
-		return xerrors.Errorf("Byte array in field t.L1TxHash was too long")
-	}
-
-	if err := cw.WriteMajorTypeHeader(cbg.MajByteString, uint64(len(t.L1TxHash))); err != nil {
-		return err
-	}
-
-	if _, err := cw.Write(t.L1TxHash[:]); err != nil {
-		return err
-	}
-
-	// t.LogIndex (uint64) (uint64)
-
-	if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.LogIndex)); err != nil {
+	if _, err := cw.WriteString(string(t.TxID)); err != nil {
 		return err
 	}
 
@@ -2786,42 +2719,20 @@ func (t *MintReceipt) MarshalCBOR(w io.Writer) error {
 		return err
 	}
 
-	// t.Asset (string) (string)
-	if len(t.Asset) > 8192 {
-		return xerrors.Errorf("Value in field t.Asset was too long")
+	// t.AssetURI (core.AssetURI) (string)
+	if len(t.AssetURI) > 8192 {
+		return xerrors.Errorf("Value in field t.AssetURI was too long")
 	}
 
-	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(t.Asset))); err != nil {
+	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(t.AssetURI))); err != nil {
 		return err
 	}
-	if _, err := cw.WriteString(string(t.Asset)); err != nil {
+	if _, err := cw.WriteString(string(t.AssetURI)); err != nil {
 		return err
 	}
 
-	// t.Amount (big.Int) (struct)
-	{
-		if t.Amount != nil && t.Amount.Sign() < 0 {
-			return xerrors.Errorf("Value in field t.Amount was a negative big-integer (not supported)")
-		}
-		if err := cw.CborWriteHeader(cbg.MajTag, 2); err != nil {
-			return err
-		}
-		var b []byte
-		if t.Amount != nil {
-			b = t.Amount.Bytes()
-		}
-
-		if err := cw.CborWriteHeader(cbg.MajByteString, uint64(len(b))); err != nil {
-			return err
-		}
-		if _, err := cw.Write(b); err != nil {
-			return err
-		}
-	}
-
-	// t.BlockNumber (uint64) (uint64)
-
-	if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.BlockNumber)); err != nil {
+	// t.Amount (decimal.Decimal) (struct)
+	if err := t.Amount.MarshalCBOR(cw); err != nil {
 		return err
 	}
 
@@ -2869,58 +2780,19 @@ func (t *MintReceipt) UnmarshalCBOR(r io.Reader) (err error) {
 		return fmt.Errorf("cbor input should be of type array")
 	}
 
-	if extra != 8 {
+	if extra != 5 {
 		return fmt.Errorf("cbor input had wrong number of fields")
 	}
 
-	// t.ChainID (uint64) (uint64)
+	// t.TxID (string) (string)
 
 	{
-
-		maj, extra, err = cr.ReadHeader()
+		sval, err := cbg.ReadStringWithMax(cr, 8192)
 		if err != nil {
 			return err
 		}
-		if maj != cbg.MajUnsignedInt {
-			return fmt.Errorf("wrong type for uint64 field")
-		}
-		t.ChainID = uint64(extra)
 
-	}
-	// t.L1TxHash ([32]uint8) (array)
-
-	maj, extra, err = cr.ReadHeader()
-	if err != nil {
-		return err
-	}
-
-	if extra > 2097152 {
-		return fmt.Errorf("t.L1TxHash: byte array too large (%d)", extra)
-	}
-	if maj != cbg.MajByteString {
-		return fmt.Errorf("expected byte array")
-	}
-	if extra != 32 {
-		return fmt.Errorf("expected array to have 32 elements")
-	}
-
-	t.L1TxHash = [32]uint8{}
-	if _, err := io.ReadFull(cr, t.L1TxHash[:]); err != nil {
-		return err
-	}
-	// t.LogIndex (uint64) (uint64)
-
-	{
-
-		maj, extra, err = cr.ReadHeader()
-		if err != nil {
-			return err
-		}
-		if maj != cbg.MajUnsignedInt {
-			return fmt.Errorf("wrong type for uint64 field")
-		}
-		t.LogIndex = uint64(extra)
-
+		t.TxID = string(sval)
 	}
 	// t.Account (string) (string)
 
@@ -2932,7 +2804,7 @@ func (t *MintReceipt) UnmarshalCBOR(r io.Reader) (err error) {
 
 		t.Account = string(sval)
 	}
-	// t.Asset (string) (string)
+	// t.AssetURI (core.AssetURI) (string)
 
 	{
 		sval, err := cbg.ReadStringWithMax(cr, 8192)
@@ -2940,53 +2812,15 @@ func (t *MintReceipt) UnmarshalCBOR(r io.Reader) (err error) {
 			return err
 		}
 
-		t.Asset = string(sval)
+		t.AssetURI = AssetURI(sval)
 	}
-	// t.Amount (big.Int) (struct)
-
-	maj, extra, err = cr.ReadHeader()
-	if err != nil {
-		return err
-	}
-
-	if maj != cbg.MajTag || extra != 2 {
-		return fmt.Errorf("big ints should be cbor bignums")
-	}
-
-	maj, extra, err = cr.ReadHeader()
-	if err != nil {
-		return err
-	}
-
-	if maj != cbg.MajByteString {
-		return fmt.Errorf("big ints should be tagged cbor byte strings")
-	}
-
-	if extra > 256 {
-		return fmt.Errorf("t.Amount: cbor bignum was too large")
-	}
-
-	if extra > 0 {
-		buf := make([]byte, extra)
-		if _, err := io.ReadFull(cr, buf); err != nil {
-			return err
-		}
-		t.Amount = big.NewInt(0).SetBytes(buf)
-	} else {
-		t.Amount = big.NewInt(0)
-	}
-	// t.BlockNumber (uint64) (uint64)
+	// t.Amount (decimal.Decimal) (struct)
 
 	{
 
-		maj, extra, err = cr.ReadHeader()
-		if err != nil {
-			return err
+		if err := t.Amount.UnmarshalCBOR(cr); err != nil {
+			return xerrors.Errorf("unmarshaling t.Amount: %w", err)
 		}
-		if maj != cbg.MajUnsignedInt {
-			return fmt.Errorf("wrong type for uint64 field")
-		}
-		t.BlockNumber = uint64(extra)
 
 	}
 	// t.Signatures ([][]uint8) (slice)

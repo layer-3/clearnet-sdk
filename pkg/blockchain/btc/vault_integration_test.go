@@ -5,6 +5,7 @@ package btc
 import (
 	"context"
 	"encoding/hex"
+	"math/big"
 	"os"
 	"strings"
 	"sync"
@@ -93,7 +94,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	node.generateToAddress(ctx, t, 1, miner)
 
 	// ── Deposit flow ──────────────────────────────────────────────────────────
-	depRef, err := depositor.SubmitDeposit(ctx, "BTC", decimal.NewFromInt(20_000_000), core.DepositDestination{Account: account}) // 0.2 BTC
+	depRef, err := depositor.SubmitDeposit(ctx, "BTC", big.NewInt(20_000_000), core.DepositDestination{Account: account}) // 0.2 BTC
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 
 	var wid [32]byte
 	wid[0], wid[31] = 0xB7, 0xC0
-	op := &core.WithdrawalOp{Recipient: miner, Amount: decimal.NewFromInt(10_000_000)} // 0.1 BTC to the miner addr
+	op := &core.WithdrawalOp{Recipient: miner, AssetURI: "yellow://ynet/asset/custody/btc/0/BTC", Amount: decimal.NewFromInt(10_000_000)} // 0.1 BTC to the miner addr
 
 	// deadline is accepted but ignored on BTC (no consensus expiry); a
 	// far-future value keeps parity with the other chains' happy-path tests.

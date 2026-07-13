@@ -218,7 +218,7 @@ async function submitDeposit(): Promise<void> {
               ...(ref === undefined ? {} : { ref: ref as Bytes32Hex }),
             },
             asset: asset as `${string}.${string}` | `${string}:${string}`,
-            amount: readInput("amount"),
+            amount: BigInt(readInput("amount")),
           },
       {
         onSubmitted(ref) {

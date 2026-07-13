@@ -1,17 +1,18 @@
 package bls
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/big"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/layer-3/clearnet-sdk/pkg/abiutil"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 )
 
 // VerifyClusterSignature verifies an aggregated BLS threshold signature
@@ -147,21 +148,27 @@ func VerifyClusterSignature(data []byte, signature []byte, bitmask [32]byte, k u
 // ComputeVaultWithdrawalID computes the frozen withdrawal ID used at the vault
 // level after a withdrawal entry has been sealed into a block.
 //
-//	WithdrawalID = keccak256(accountId || blockHash || entryIndex || chainId || recipient || asset || amount || nonce)
+//	WithdrawalID = keccak256(accountId || blockHash || entryIndex || assetURI || amount || recipient || nonce)
 //
-// All integer fields use fixed-width big-endian encoding; amount is uint256.
-// Including account identity and block location prevents economic-tuple
-// collisions while still giving the vault a stable replay key for the exact
-// finalized withdrawal.
-func ComputeVaultWithdrawalID(accountID, blockHash [32]byte, entryIndex, chainID uint64, recipient, asset common.Address, amount *big.Int, nonce uint64) [32]byte {
-	buf := make([]byte, 0, 32+32+8+8+20+20+32+8)
+// Integer fields use fixed-width big-endian encoding. Variable-width fields
+// are length-prefixed to prevent boundary-shift collisions. Amount is the
+// canonical CBOR encoding of the protocol decimal amount; chain base-unit
+// quantization is handled by custody before execution.
+func ComputeVaultWithdrawalID(accountID, blockHash [32]byte, entryIndex uint64, assetURI core.AssetURI, amount decimal.Decimal, recipient string, nonce uint64) [32]byte {
+	var amountBuf bytes.Buffer
+	if err := amount.MarshalCBOR(&amountBuf); err != nil {
+		panic(fmt.Errorf("bls: decimal MarshalCBOR: %w", err))
+	}
+	assetBytes := []byte(assetURI)
+	amountBytes := amountBuf.Bytes()
+	recipientBytes := []byte(recipient)
+	buf := make([]byte, 0, 32+32+8+4+len(assetBytes)+4+len(amountBytes)+4+len(recipientBytes)+8)
 	buf = append(buf, accountID[:]...)
 	buf = append(buf, blockHash[:]...)
 	buf = appendUint64BE(buf, entryIndex)
-	buf = appendUint64BE(buf, chainID)
-	buf = append(buf, recipient.Bytes()...)
-	buf = append(buf, asset.Bytes()...)
-	buf = append(buf, uint256Bytes(amount)...)
+	buf = appendBytesWithUint32Len(buf, assetBytes)
+	buf = appendBytesWithUint32Len(buf, amountBytes)
+	buf = appendBytesWithUint32Len(buf, recipientBytes)
 	buf = appendUint64BE(buf, nonce)
 	return crypto.Keccak256Hash(buf)
 }
@@ -173,15 +180,13 @@ func appendUint64BE(buf []byte, v uint64) []byte {
 	)
 }
 
-func uint256Bytes(v *big.Int) []byte {
-	var out [32]byte
-	if v == nil || v.Sign() < 0 {
-		return out[:]
-	}
-	b := v.Bytes()
-	if len(b) > len(out) {
-		b = b[len(b)-len(out):]
-	}
-	copy(out[len(out)-len(b):], b)
-	return out[:]
+func appendUint32BE(buf []byte, v uint32) []byte {
+	return append(buf,
+		byte(v>>24), byte(v>>16), byte(v>>8), byte(v),
+	)
+}
+
+func appendBytesWithUint32Len(buf []byte, v []byte) []byte {
+	buf = appendUint32BE(buf, uint32(len(v)))
+	return append(buf, v...)
 }

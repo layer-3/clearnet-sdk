@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
-	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 )
 
 // stubSignerSource is a controllable SignerSource for tests.
@@ -44,7 +44,7 @@ func makeReceipt(seed byte) *core.BurnReceipt {
 	r.WithdrawalID = [32]byte{seed, 0xA1}
 	r.BlockHash = [32]byte{seed, 0xB2}
 	r.EntryIndex = uint64(seed)
-	r.L1TxHash = [32]byte{seed, 0xC3}
+	r.TxID = string([]byte{seed, 0xC3})
 	return r
 }
 
@@ -338,40 +338,38 @@ func TestReceiptVerifier_DigestIsDeterministic(t *testing.T) {
 		t.Fatalf("digest non-deterministic: %x vs %x", d1, d2)
 	}
 	// Mutating any field changes the digest.
-	r2.L1TxHash[0] ^= 0xFF
+	r2.TxID = "changed"
 	d3 := BurnReceiptDigest(r2)
 	if string(d1) == string(d3) {
-		t.Fatal("digest unchanged after mutating L1TxHash")
+		t.Fatal("digest unchanged after mutating TxID")
 	}
 }
 
-// Without uint32 length prefixes on Account and Asset, ("abc","XYZ") and
-// ("abcX","YZ") would hash to the same preimage.
+// Without uint32 length prefixes on variable-size fields, boundary shifts can
+// hash to the same preimage.
 func TestMintReceiptDigest_NoStringCollision(t *testing.T) {
-	mk := func(account, asset string) *core.MintReceipt {
+	mk := func(txID, account, assetURI string) *core.MintReceipt {
 		return &core.MintReceipt{
-			ChainID: 1,
-			Account: account,
-			Asset:   asset,
-			Amount:  big.NewInt(1),
+			TxID:     txID,
+			Account:  account,
+			AssetURI: core.AssetURI(assetURI),
+			Amount:   decimal.NewFromInt(1),
 		}
 	}
-	d1 := MintReceiptDigest(mk("abc", "XYZ"))
-	d2 := MintReceiptDigest(mk("abcX", "YZ"))
+	d1 := MintReceiptDigest(mk("abc", "def", "ghi"))
+	d2 := MintReceiptDigest(mk("abcd", "ef", "ghi"))
 	if string(d1) == string(d2) {
-		t.Fatalf("digest collided across (Account,Asset) boundary shift: %x", d1)
+		t.Fatalf("digest collided across variable-field boundary shift: %x", d1)
 	}
 }
 
 func TestMintReceiptDigest_FieldSensitivity(t *testing.T) {
 	mk := func() *core.MintReceipt {
 		return &core.MintReceipt{
-			ChainID:  1,
-			L1TxHash: [32]byte{0xAA},
-			LogIndex: 1,
+			TxID:     "0xaaa/1",
 			Account:  "yellow://ynet/user/0xabc",
-			Asset:    "USDC",
-			Amount:   big.NewInt(1),
+			AssetURI: "yellow://ynet/asset/custody/evm/1/0xa0b8000000000000000000000000000000000001",
+			Amount:   decimal.NewFromInt(1),
 		}
 	}
 	base := MintReceiptDigest(mk())
@@ -380,12 +378,12 @@ func TestMintReceiptDigest_FieldSensitivity(t *testing.T) {
 		name string
 		mut  func(*core.MintReceipt)
 	}{
-		{"ChainID", func(r *core.MintReceipt) { r.ChainID = 2 }},
-		{"L1TxHash", func(r *core.MintReceipt) { r.L1TxHash[0] ^= 0xFF }},
-		{"LogIndex", func(r *core.MintReceipt) { r.LogIndex = 2 }},
+		{"TxID", func(r *core.MintReceipt) { r.TxID = "0xaaa/2" }},
 		{"Account", func(r *core.MintReceipt) { r.Account = "yellow://ynet/user/0xabd" }},
-		{"Asset", func(r *core.MintReceipt) { r.Asset = "USDT" }},
-		{"Amount", func(r *core.MintReceipt) { r.Amount = big.NewInt(2) }},
+		{"AssetURI", func(r *core.MintReceipt) {
+			r.AssetURI = "yellow://ynet/asset/custody/evm/1/0xa0b8000000000000000000000000000000000002"
+		}},
+		{"Amount", func(r *core.MintReceipt) { r.Amount = decimal.NewFromInt(2) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
