@@ -13,6 +13,7 @@ import type {
   VaultDepositor,
 } from "../../core/types.js";
 import { normalizeMinConfirmations as normalizeSharedMinConfirmations } from "../../core/validation.js";
+import { decimalToBaseUnits } from "../amounts.js";
 import {
   depositAddress,
   depositPayment,
@@ -169,7 +170,7 @@ export class BitcoinVaultDepositor
     requireReference(destination.ref);
     return {
       account: destination.account,
-      amount: requireBitcoinAmount(fields.amount),
+      amount: requireBitcoinAmount(decimalToBaseUnits(fields.amount, 8)),
     };
   }
 

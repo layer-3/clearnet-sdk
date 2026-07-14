@@ -39,10 +39,10 @@ verifies receipts, use `npm --prefix sdk/ts run test:integration:evm`.
 | Chain ID | `31337` | Local Anvil chain ID. |
 | Custody Address | blank | Deployed `Custody` contract that receives deposits. |
 | Credited Account | blank | Clearnet account credited by the deposit; must be an EVM address-shaped value. |
-| Asset | `0x0000000000000000000000000000000000000000` | Native ETH sentinel. Use an ERC-20 address for token deposits. |
+| Asset | blank | Empty string native ETH sentinel. Use an ERC-20 address for token deposits. |
 | Reference | blank | Optional `bytes32` deposit reference. |
-| Amount | `0.01` | Human-readable amount parsed with `Decimals`. |
-| Decimals | `18` | Unit scale used to convert `Amount` into base units. |
+| Amount | `0.01` | Decimal token amount. |
+| Decimals | `18` | Native ETH decimal override. ERC-20 decimals are read from the token contract. |
 
 ## Demo Flow
 
@@ -71,7 +71,7 @@ deposit transaction.
 | Wallet balance and configured RPC balance differ | The wallet is connected to a different RPC than the demo page. | Switch the wallet to the RPC URL shown in the page, then reconnect. |
 | You do not have a `Custody Address` | The browser demo does not deploy contracts. | Deploy `Custody` with your preferred EVM tooling, or use `npm --prefix sdk/ts run test:integration:evm` for the self-contained local path. |
 | `CHAIN_MISMATCH` | Wallet or public RPC chain ID does not match the configured `Chain ID`. | Use **Connect Wallet** again after switching the wallet network. |
-| `INVALID_ADDRESS` for `Custody Address`, `Credited Account`, or `Asset` | The field is blank or not an EVM address. | Paste a valid `0x` address. Use the zero-address asset only for native ETH. |
+| `INVALID_ADDRESS` for `Custody Address`, `Credited Account`, or `Asset` | A required address field is blank or malformed, or the asset is the zero address. | Paste a valid `0x` address. Leave `Asset` blank for native ETH. |
 | ERC-20 deposit fails during approval | The wallet rejected the approval, the token address is wrong, or the wallet lacks token balance. | Confirm the ERC-20 contract address and wallet balance, then submit again. |
 | `TX_REVERTED` | The custody call or approval mined with a reverted receipt. | Check the custody address, asset, allowance/balance, and chain. |
 | `Verify Last Tx` reports `pending` | The transaction is known but not confirmed enough for `minConfirmations = 1`. | Wait for another block on the configured chain, then verify again. |

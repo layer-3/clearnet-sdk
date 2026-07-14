@@ -123,14 +123,7 @@ export function requireBitcoinAsset(asset: unknown): string {
   if (asset === undefined || asset === "") {
     return BITCOIN_NATIVE_ASSET;
   }
-  if (typeof asset !== "string") {
-    throw new ClearnetSdkError("INVALID_INPUT", "asset must be BTC");
-  }
-  const normalized = asset.trim().toUpperCase();
-  if (normalized !== BITCOIN_NATIVE_ASSET) {
-    throw new ClearnetSdkError("INVALID_INPUT", "asset must be BTC");
-  }
-  return normalized;
+  throw new ClearnetSdkError("INVALID_INPUT", 'asset must be "" for native BTC');
 }
 
 export function requireSubmitDepositOptions(options: unknown): SubmitDepositOptions {

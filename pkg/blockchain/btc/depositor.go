@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math/big"
 	"sort"
 	"strings"
 
@@ -15,7 +14,9 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
@@ -32,6 +33,7 @@ type Depositor struct {
 	vaultPubkeys [][]byte
 	threshold    int
 	cfg          Config
+	assets       blockchain.AssetResolver
 }
 
 var _ core.VaultDepositor = (*Depositor)(nil)
@@ -39,7 +41,10 @@ var _ core.VaultDepositor = (*Depositor)(nil)
 // NewDepositor builds the BTC depositor. signer is the depositor's secp256k1
 // key; vaultPubkeys + threshold define the vault whose per-account deposit
 // addresses funds are sent to.
-func NewDepositor(net *chaincfg.Params, rpc RPC, signer sign.Signer, vaultPubkeys [][]byte, threshold int, cfg Config) (*Depositor, error) {
+func NewDepositor(net *chaincfg.Params, rpc RPC, signer sign.Signer, vaultPubkeys [][]byte, threshold int, cfg Config, assets blockchain.AssetResolver) (*Depositor, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("btc: asset resolver is required")
+	}
 	if signer.Algorithm() != sign.AlgSecp256k1 {
 		return nil, fmt.Errorf("btc: depositor signer must be secp256k1, got %s", signer.Algorithm())
 	}
@@ -57,29 +62,49 @@ func NewDepositor(net *chaincfg.Params, rpc RPC, signer sign.Signer, vaultPubkey
 		vaultPubkeys: vaultPubkeys,
 		threshold:    threshold,
 		cfg:          cfg,
+		assets:       assets,
 	}, nil
 }
 
 // DepositorAddress returns the depositor's own P2WPKH funding address.
 func (d *Depositor) DepositorAddress() string { return d.depositAddr.EncodeAddress() }
 
-// SubmitDeposit sends amount satoshis from the depositor's wallet to the
-// per-account deposit address for dest.Account. assetAddress must be native BTC
-// ("" or "BTC"). Builds, signs (P2WPKH), and broadcasts the funding tx. A
+func normalizeDepositAssetAddress(assetAddress string) string {
+	if strings.TrimSpace(assetAddress) == "" {
+		return nativeAssetAddress
+	}
+	return assetAddress
+}
+
+// SubmitDeposit sends amount from the depositor's wallet to the per-account
+// deposit address for dest.Account. assetAddress must be "" for native BTC.
+// Builds, signs (P2WPKH), and broadcasts the funding tx. A
 // non-zero dest.Ref is rejected: the account is encoded in the deposit address
 // and a plain BTC send has no side-data channel for a sub-account (ADR-015 has
 // no BTC reference).
-func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount *big.Int, dest core.DepositDestination) (core.TxRef, error) {
-	if a := strings.ToUpper(strings.TrimSpace(assetAddress)); a != "" && a != "BTC" {
-		return core.TxRef{}, fmt.Errorf("btc: only native BTC deposits supported, got asset %q", assetAddress)
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
+	assetAddress = normalizeDepositAssetAddress(assetAddress)
+	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
+		return core.TxRef{}, err
 	}
 	if dest.Ref != ([32]byte{}) {
 		return core.TxRef{}, fmt.Errorf("btc: deposit reference not supported")
 	}
-	if amount == nil || !amount.IsInt64() || amount.Int64() <= 0 {
-		return core.TxRef{}, fmt.Errorf("btc: amount %v not a positive int64 satoshi value", amount)
+	if amount.Sign() <= 0 {
+		return core.TxRef{}, fmt.Errorf("btc: amount %s not positive", amount.String())
 	}
-	sats := amount.Int64()
+	decimals, err := d.assets.AssetDecimals(ctx, assetAddress)
+	if err != nil {
+		return core.TxRef{}, err
+	}
+	baseUnits, err := blockchain.DecimalToBaseUnits(amount, decimals)
+	if err != nil {
+		return core.TxRef{}, fmt.Errorf("btc: amount: %w", err)
+	}
+	if !baseUnits.IsInt64() || baseUnits.Int64() <= 0 {
+		return core.TxRef{}, fmt.Errorf("btc: amount %s not a positive int64 satoshi value", amount.String())
+	}
+	sats := baseUnits.Int64()
 
 	depositAddr, _, err := DepositAddress(dest.Account, d.threshold, d.vaultPubkeys, d.net)
 	if err != nil {

@@ -88,12 +88,13 @@ func waitMined(ctx context.Context, client *ethclient.Client, tx *gethtypes.Tran
 	return nil
 }
 
-// depositAssetAddress parses an asset address; the zero address denotes native ETH.
-func depositAssetAddress(asset string) (common.Address, error) {
-	if !common.IsHexAddress(asset) {
-		return common.Address{}, fmt.Errorf("invalid asset address %q", asset)
+// depositAssetAddress converts a validated protocol asset address to the
+// contract address; "0" denotes native ETH.
+func depositAssetAddress(asset string) common.Address {
+	if asset == nativeAssetAddress {
+		return common.Address{}
 	}
-	return common.HexToAddress(asset), nil
+	return common.HexToAddress(asset)
 }
 
 // convertNodeRecord maps a Registry NodeRecord binding struct into a core.Slot.

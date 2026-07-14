@@ -36,12 +36,14 @@ func roundTrip(t *testing.T, flat transaction.FlatTransaction) transaction.FlatT
 // 131072) is rejected so an issued-currency withdrawal cannot underdeliver.
 func TestValidateCanonical_FlagsRejected(t *testing.T) {
 	const vault = "rVaULtAdd1111111111111111111111111"
+	ctx := context.Background()
+	assets := NewAssetResolver(AssetResolverConfig{})
 	op := &core.WithdrawalOp{
 		Recipient: "rDeST1111111111111111111111111111",
-		AssetURI:  "yellow://ynet/asset/custody/xrpl/0/XRP",
-		Amount:    decimal.NewFromInt(1_000_000),
+		AssetURI:  "yellow://ynet/asset/custody/xrpl/0/0",
+		Amount:    decimal.NewFromInt(1),
 	}
-	amt, err := BuildAmount(op)
+	amt, err := BuildAmount(ctx, assets, op)
 	if err != nil {
 		t.Fatalf("BuildAmount: %v", err)
 	}
@@ -61,25 +63,25 @@ func TestValidateCanonical_FlagsRejected(t *testing.T) {
 		}
 	}
 
-	if err := ValidateCanonical(roundTrip(t, base()), op, wid, vault, llsPolicy{standalone: true}); err != nil {
+	if err := ValidateCanonical(ctx, assets, roundTrip(t, base()), op, wid, vault, llsPolicy{standalone: true}); err != nil {
 		t.Fatalf("valid canonical rejected: %v", err)
 	}
 
 	zero := base()
 	zero["Flags"] = uint32(0)
-	if err := ValidateCanonical(roundTrip(t, zero), op, wid, vault, llsPolicy{standalone: true}); err != nil {
+	if err := ValidateCanonical(ctx, assets, roundTrip(t, zero), op, wid, vault, llsPolicy{standalone: true}); err != nil {
 		t.Errorf("Flags=0 rejected: %v", err)
 	}
 
 	partial := base()
 	partial["Flags"] = uint32(131072) // tfPartialPayment
-	if err := ValidateCanonical(roundTrip(t, partial), op, wid, vault, llsPolicy{standalone: true}); err == nil {
+	if err := ValidateCanonical(ctx, assets, roundTrip(t, partial), op, wid, vault, llsPolicy{standalone: true}); err == nil {
 		t.Error("tfPartialPayment Flags accepted")
 	}
 
 	nonNumeric := base()
 	nonNumeric["Flags"] = "deadbeef"
-	if err := ValidateCanonical(roundTrip(t, nonNumeric), op, wid, vault, llsPolicy{standalone: true}); err == nil {
+	if err := ValidateCanonical(ctx, assets, roundTrip(t, nonNumeric), op, wid, vault, llsPolicy{standalone: true}); err == nil {
 		t.Error("non-numeric Flags accepted")
 	}
 }
@@ -89,12 +91,14 @@ func TestValidateCanonical_FlagsRejected(t *testing.T) {
 // estimated to close at or before the deadline.
 func TestValidateCanonical_LLSBand(t *testing.T) {
 	const vault = "rVaULtAdd1111111111111111111111111"
+	ctx := context.Background()
+	assets := NewAssetResolver(AssetResolverConfig{})
 	op := &core.WithdrawalOp{
 		Recipient: "rDeST1111111111111111111111111111",
-		AssetURI:  "yellow://ynet/asset/custody/xrpl/0/XRP",
-		Amount:    decimal.NewFromInt(1_000_000),
+		AssetURI:  "yellow://ynet/asset/custody/xrpl/0/0",
+		Amount:    decimal.NewFromInt(1),
 	}
-	amt, err := BuildAmount(op)
+	amt, err := BuildAmount(ctx, assets, op)
 	if err != nil {
 		t.Fatalf("BuildAmount: %v", err)
 	}
@@ -121,26 +125,26 @@ func TestValidateCanonical_LLSBand(t *testing.T) {
 	}
 
 	// In-band: current + LedgerBudget.
-	if err := ValidateCanonical(withLLS(current.ValidatedIndex+LedgerBudget), op, wid, vault, policy); err != nil {
+	if err := ValidateCanonical(ctx, assets, withLLS(current.ValidatedIndex+LedgerBudget), op, wid, vault, policy); err != nil {
 		t.Errorf("in-band LLS rejected: %v", err)
 	}
 	// Missing LLS is rejected in non-standalone mode.
 	missing := withLLS(0)
 	delete(missing, "LastLedgerSequence")
-	if err := ValidateCanonical(missing, op, wid, vault, policy); err == nil {
+	if err := ValidateCanonical(ctx, assets, missing, op, wid, vault, policy); err == nil {
 		t.Error("missing LastLedgerSequence accepted")
 	}
 	// Not ahead of current.
-	if err := ValidateCanonical(withLLS(current.ValidatedIndex), op, wid, vault, policy); err == nil {
+	if err := ValidateCanonical(ctx, assets, withLLS(current.ValidatedIndex), op, wid, vault, policy); err == nil {
 		t.Error("LLS == current accepted")
 	}
 	// Beyond MaxLedgerBudget.
-	if err := ValidateCanonical(withLLS(current.ValidatedIndex+MaxLedgerBudget+1), op, wid, vault, policy); err == nil {
+	if err := ValidateCanonical(ctx, assets, withLLS(current.ValidatedIndex+MaxLedgerBudget+1), op, wid, vault, policy); err == nil {
 		t.Error("LLS beyond MaxLedgerBudget accepted")
 	}
 	// Estimated close past the deadline: tight deadline of only 4 ledgers.
 	tight := llsPolicy{current: current, deadline: current.CloseUnix + 4*assumedLedgerCloseSec}
-	if err := ValidateCanonical(withLLS(current.ValidatedIndex+LedgerBudget), op, wid, vault, tight); err == nil {
+	if err := ValidateCanonical(ctx, assets, withLLS(current.ValidatedIndex+LedgerBudget), op, wid, vault, tight); err == nil {
 		t.Error("LLS closing past deadline accepted")
 	}
 }

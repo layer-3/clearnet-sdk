@@ -149,12 +149,7 @@ export function requireReference(reference: unknown): Uint8Array {
 }
 
 export function resolveMint(asset: unknown): PublicKey | undefined {
-  if (
-    asset === "" ||
-    asset === "native" ||
-    asset === "SOL" ||
-    asset === "sol"
-  ) {
+  if (asset === "") {
     return undefined;
   }
   return publicKeyFromString(asset, "asset");

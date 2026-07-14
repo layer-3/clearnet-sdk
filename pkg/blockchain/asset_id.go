@@ -1,9 +1,14 @@
 package blockchain
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
+
+	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 )
 
 type ChainFamily string
@@ -20,6 +25,13 @@ type AssetID struct {
 	ChainID      uint64
 	AssetAddress string
 }
+
+type AssetResolver interface {
+	ValidateAssetAddress(ctx context.Context, assetAddress string) error
+	AssetDecimals(ctx context.Context, assetAddress string) (uint8, error)
+}
+
+var ErrInvalidAssetDecimals = errors.New("asset amount cannot be represented in base units")
 
 func ParseAssetID(s string) (AssetID, error) {
 	parts := strings.SplitN(s, "/", 3)
@@ -47,4 +59,19 @@ func ParseAssetID(s string) (AssetID, error) {
 
 func (id AssetID) String() string {
 	return fmt.Sprintf("%s/%d/%s", id.Family, id.ChainID, id.AssetAddress)
+}
+
+func DecimalToBaseUnits(amount decimal.Decimal, decimals uint8) (*big.Int, error) {
+	scaled := amount.Shift(int32(decimals))
+	if !scaled.IsInteger() {
+		return nil, fmt.Errorf("%w: amount %s cannot be represented with %d decimals", ErrInvalidAssetDecimals, amount.String(), decimals)
+	}
+	return scaled.BigInt(), nil
+}
+
+func BaseUnitsToDecimal(amount *big.Int, decimals uint8) decimal.Decimal {
+	if amount == nil {
+		amount = new(big.Int)
+	}
+	return decimal.NewFromBigInt(amount, -int32(decimals))
 }

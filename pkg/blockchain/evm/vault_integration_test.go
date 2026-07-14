@@ -95,14 +95,14 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	t.Logf("deployed Custody at %s (signers=%d threshold=%d)", custodyAddr.Hex(), integrationSignerCount, integrationThreshold)
 
 	// ── Deposit flow ──────────────────────────────────────────────────────────
-	depositor, err := NewDepositor(client, custodyAddr, deployer)
+	assets := NewAssetResolver(client, AssetResolverConfig{})
+	depositor, err := NewDepositor(client, custodyAddr, deployer, assets)
 	if err != nil {
 		t.Fatalf("NewDepositor: %v", err)
 	}
 	account := crypto.PubkeyToAddress(deployerKey.PublicKey)
-	const zeroAsset = "0x0000000000000000000000000000000000000000" // native ETH
-	depositAmt := big.NewInt(1_000_000_000_000)                    // 1e12 wei
-	depRef, err := depositor.SubmitDeposit(ctx, zeroAsset, depositAmt, core.DepositDestination{Account: account.Hex()})
+	depositAmt := decimal.NewFromBigInt(big.NewInt(1_000_000_000_000), -18) // 1e12 wei
+	depRef, err := depositor.SubmitDeposit(ctx, "", depositAmt, core.DepositDestination{Account: account.Hex()})
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	// ── Withdrawal flow (the quorum runs in-process) ──────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, len(signers))
 	for i, s := range signers {
-		f, err := NewWithdrawalFinalizer(ctx, client, custodyAddr, s, FeeConfig{})
+		f, err := NewWithdrawalFinalizer(ctx, client, custodyAddr, s, FeeConfig{}, assets)
 		if err != nil {
 			t.Fatalf("NewWithdrawalFinalizer %d: %v", i, err)
 		}
@@ -122,8 +122,8 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	withdrawalID[0], withdrawalID[31] = 0x11, 0x22
 	op := &core.WithdrawalOp{
 		Recipient: signerAddrs[0].Hex(),
-		AssetURI:  core.AssetURI("yellow://ynet/asset/custody/evm/31337/" + zeroAsset),
-		Amount:    decimal.NewFromInt(400_000_000_000), // < deposited
+		AssetURI:  "yellow://ynet/asset/custody/evm/31337/0",
+		Amount:    decimal.NewFromBigInt(big.NewInt(400_000_000_000), -18), // < deposited
 	}
 
 	// 1. Pack (any node — here the first). Far-future deadline: the

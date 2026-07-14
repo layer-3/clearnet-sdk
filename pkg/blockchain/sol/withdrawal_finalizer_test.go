@@ -30,7 +30,8 @@ func mustEd25519Signer(t *testing.T) sign.Signer {
 // the keys.
 func TestBuildExecuteIx_SPLAccounts(t *testing.T) {
 	programID := solana.MustPublicKeyFromBase58("98eVpih8X9CAcgU9bzNB9V7VtkRrnFZUmqzEnsq7cfmg")
-	f, err := NewWithdrawalFinalizer("http://127.0.0.1:8899", programID, mustEd25519Signer(t), mustEd25519Signer(t), Config{ChainID: 1})
+	assets := NewAssetResolver("http://127.0.0.1:8899", "")
+	f, err := NewWithdrawalFinalizer("http://127.0.0.1:8899", programID, mustEd25519Signer(t), mustEd25519Signer(t), Config{ChainID: 1}, assets)
 	if err != nil {
 		t.Fatalf("NewWithdrawalFinalizer: %v", err)
 	}

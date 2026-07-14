@@ -1,6 +1,7 @@
 import bs58 from "bs58";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
+  Connection,
   PublicKey,
   SystemProgram,
   Transaction,
@@ -59,6 +60,7 @@ interface MockSigner extends SolanaSigner {
 describe("SolanaVaultDepositor", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -70,7 +72,7 @@ describe("SolanaVaultDepositor", () => {
     expectTypeOf<DepositStatus>().toEqualTypeOf<
       "absent" | "pending" | "confirmed"
     >();
-    expect(SOLANA_NATIVE_ASSET).toBe("SOL");
+    expect(SOLANA_NATIVE_ASSET).toBe("");
     expect(SOLANA_CUSTODY_PROGRAM_ID).toBe(EXPECTED_PROGRAM_ID);
   });
 
@@ -83,7 +85,7 @@ describe("SolanaVaultDepositor", () => {
     const ref = await depositor.submitDeposit(
       {
         asset: SOLANA_NATIVE_ASSET,
-        amount: 10n,
+        amount: "0.00000001",
         destination: { account: ACCOUNT_URI, ref: REFERENCE },
       },
       { onSubmitted },
@@ -115,12 +117,15 @@ describe("SolanaVaultDepositor", () => {
 
   it("submits SPL tokens with ATA derivation and the deposit_spl layout", async () => {
     stubSignatureStatus({ confirmationStatus: "finalized" });
+    const getAccountInfo = vi
+      .spyOn(Connection.prototype, "getAccountInfo")
+      .mockResolvedValue({ data: splMintData(0) } as never);
     const signer = createSigner();
     const depositor = createDepositor(signer);
 
     const ref = await depositor.submitDeposit({
       asset: MINT.toBase58(),
-      amount: 25n,
+      amount: "25",
       destination: { account: ACCOUNT },
     });
 
@@ -145,6 +150,7 @@ describe("SolanaVaultDepositor", () => {
       ...new Uint8Array(32),
       ...u64(25n),
     ]);
+    expect(getAccountInfo).toHaveBeenCalledWith(MINT, "finalized");
   });
 
   it("rejects invalid deposit input before signing", async () => {
@@ -160,7 +166,7 @@ describe("SolanaVaultDepositor", () => {
       depositor.submitDeposit(
         {
           asset: SOLANA_NATIVE_ASSET,
-          amount: 1n,
+          amount: "1",
           destination: { account: ACCOUNT },
         },
         null as unknown as SubmitDepositOptions,
@@ -169,49 +175,49 @@ describe("SolanaVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: SOLANA_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: null as unknown as SolanaSubmitDepositInput["destination"],
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
         asset: SOLANA_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: "0x1234" },
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
         asset: "not-base58",
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
         asset: SOLANA_NATIVE_ASSET,
-        amount: 0n,
+        amount: "0",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     await expect(
       depositor.submitDeposit({
         asset: SOLANA_NATIVE_ASSET,
-        amount: 1 as unknown as bigint,
+        amount: 1 as unknown as string,
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     await expect(
       depositor.submitDeposit({
         asset: SOLANA_NATIVE_ASSET,
-        amount: 1n << 64n,
+        amount: "18446744073709551616",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     await expect(
       depositor.submitDeposit({
         asset: SOLANA_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT, ref: "invoice-1" as Bytes32Hex },
       }),
     ).rejects.toMatchObject({ code: "INVALID_REFERENCE" });
@@ -282,7 +288,7 @@ describe("SolanaVaultDepositor", () => {
       depositor.submitDeposit(
         {
           asset: SOLANA_NATIVE_ASSET,
-          amount: 1n,
+          amount: "1",
           destination: { account: ACCOUNT },
         },
         { onSubmitted },
@@ -306,7 +312,7 @@ describe("SolanaVaultDepositor", () => {
       depositor.submitDeposit(
         {
           asset: SOLANA_NATIVE_ASSET,
-          amount: 1n,
+          amount: "1",
           destination: { account: ACCOUNT },
         },
         { onSubmitted },
@@ -325,7 +331,7 @@ describe("SolanaVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: SOLANA_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({
@@ -347,7 +353,7 @@ describe("SolanaVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: SOLANA_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({
@@ -366,7 +372,7 @@ describe("SolanaVaultDepositor", () => {
     const promise = depositor.submitDeposit(
       {
         asset: SOLANA_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       },
       { receiptTimeoutMs: 1_000 },
@@ -390,7 +396,7 @@ describe("SolanaVaultDepositor", () => {
     const promise = depositor.submitDeposit(
       {
         asset: SOLANA_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       },
       {
@@ -419,7 +425,7 @@ describe("SolanaVaultDepositor", () => {
       depositor.submitDeposit(
         {
           asset: SOLANA_NATIVE_ASSET,
-          amount: 1n,
+          amount: "1",
           destination: { account: ACCOUNT },
         },
         { receiptTimeoutMs: 0 },
@@ -429,7 +435,7 @@ describe("SolanaVaultDepositor", () => {
       depositor.submitDeposit(
         {
           asset: SOLANA_NATIVE_ASSET,
-          amount: 1n,
+          amount: "1",
           destination: { account: ACCOUNT },
         },
         { signal: controller.signal },
@@ -448,7 +454,7 @@ describe("SolanaVaultDepositor", () => {
     const promise = depositor.submitDeposit(
       {
         asset: SOLANA_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       },
       { receiptTimeoutMs: 1_000 },
@@ -607,6 +613,12 @@ function u64(value: bigint): Uint8Array {
   const bytes = new Uint8Array(8);
   new DataView(bytes.buffer).setBigUint64(0, value, true);
   return bytes;
+}
+
+function splMintData(decimals: number): Uint8Array {
+  const data = new Uint8Array(82);
+  data[44] = decimals;
+  return data;
 }
 
 function txRefForSignature(signature: string): TxRef {

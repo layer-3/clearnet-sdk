@@ -115,12 +115,13 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	ensureFixedSigners(ctx, t, rpcURL, programID, authority, rotCfg, signerPubs, rotatedSigners)
 
 	// ── Deposit flow ──────────────────────────────────────────────────────────
-	dep, err := NewDepositor(rpcURL, programID, depositor, rpc.CommitmentConfirmed)
+	assets := NewAssetResolver(rpcURL, rpc.CommitmentConfirmed)
+	dep, err := NewDepositor(rpcURL, programID, depositor, rpc.CommitmentConfirmed, assets)
 	if err != nil {
 		t.Fatalf("NewDepositor: %v", err)
 	}
 	const account = "00000000000000000000000000000000000000a1" // 20-byte clearnet addr
-	depRef, err := dep.SubmitDeposit(ctx, "SOL", big.NewInt(100_000_000), core.DepositDestination{Account: account})
+	depRef, err := dep.SubmitDeposit(ctx, "", decimal.NewFromBigInt(big.NewInt(100_000_000), -9), core.DepositDestination{Account: account})
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	// ── Withdrawal flow (quorum in-process) ───────────────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, solSignerCount)
 	for i, s := range signers {
-		f, e := NewWithdrawalFinalizer(rpcURL, programID, s, authority, Config{ChainID: solChainID, Commitment: rpc.CommitmentConfirmed})
+		f, e := NewWithdrawalFinalizer(rpcURL, programID, s, authority, Config{ChainID: solChainID, Commitment: rpc.CommitmentConfirmed}, assets)
 		if e != nil {
 			t.Fatalf("NewWithdrawalFinalizer %d: %v", i, e)
 		}
@@ -145,7 +146,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	}
 	recipient := fixedEd25519(t, "clearnet-sdk/sol-itest/recipient/"+hex.EncodeToString(wid[:4]))
 	recipientPub, _ := solanaPub(recipient)
-	op := &core.WithdrawalOp{Recipient: recipientPub.String(), AssetURI: "yellow://ynet/asset/custody/sol/0/SOL", Amount: decimal.NewFromInt(40_000_000)}
+	op := &core.WithdrawalOp{Recipient: recipientPub.String(), AssetURI: "yellow://ynet/asset/custody/sol/0/0", Amount: decimal.NewFromBigInt(big.NewInt(40_000_000), -9)}
 
 	// Far-future deadline: the happy path must not expire mid-test.
 	deadline := time.Now().Add(24 * time.Hour).Unix()
@@ -190,7 +191,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	splCfg := Config{ChainID: solChainID, Commitment: rpc.CommitmentConfirmed, AddressLookupTable: alt}
 	splFinalizers := make([]*WithdrawalFinalizer, solSignerCount)
 	for i, s := range signers {
-		f, e := NewWithdrawalFinalizer(rpcURL, programID, s, authority, splCfg)
+		f, e := NewWithdrawalFinalizer(rpcURL, programID, s, authority, splCfg, assets)
 		if e != nil {
 			t.Fatalf("NewWithdrawalFinalizer (spl) %d: %v", i, e)
 		}

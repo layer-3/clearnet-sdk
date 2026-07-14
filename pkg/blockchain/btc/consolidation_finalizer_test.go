@@ -92,7 +92,7 @@ func consolidationFixture(t *testing.T, n int) (*ConsolidationFinalizer, []UTXO,
 	rpc := &stubRotationRPC{unspent: unspent, vaultScript: vaultScriptHex, confs: 100}
 	store := &stubVaultStore{pubkeys: pubs, threshold: 2}
 
-	cf, err := NewConsolidationFinalizer(net, rpc, keys[0], store, cfg)
+	cf, err := NewConsolidationFinalizer(net, rpc, keys[0], store, cfg, NewAssetResolver())
 	if err != nil {
 		t.Fatalf("NewConsolidationFinalizer: %v", err)
 	}

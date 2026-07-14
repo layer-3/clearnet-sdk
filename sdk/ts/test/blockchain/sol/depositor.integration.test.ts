@@ -53,7 +53,7 @@ describe("SolanaVaultDepositor validator integration", () => {
 
     const ref = await depositor.submitDeposit({
       asset: SOLANA_NATIVE_ASSET,
-      amount,
+      amount: "0.1",
       destination: { account: ACCOUNT, ref: REFERENCE },
     });
 
@@ -100,7 +100,7 @@ describe("SolanaVaultDepositor validator integration", () => {
 
     const ref = await depositor.submitDeposit({
       asset: mint.toBase58(),
-      amount,
+      amount: "25",
       destination: { account: ACCOUNT, ref: REFERENCE },
     });
 

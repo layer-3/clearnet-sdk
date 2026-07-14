@@ -195,15 +195,16 @@ func fetchConfig(ctx context.Context, client *rpc.Client, programID solana.Publi
 	return custody.ParseAccount_Config(info.Value.Data.GetBinary())
 }
 
-// resolveMint maps an asset string to its mint; the zero pubkey is native SOL.
+// resolveMint maps a validated protocol asset address to its mint; "0" is
+// native SOL.
 func resolveMint(l1Asset string) (solana.PublicKey, error) {
 	switch l1Asset {
-	case "", "native", "SOL", "sol":
+	case nativeAssetAddress:
 		return solana.PublicKey{}, nil
 	default:
 		mint, err := solana.PublicKeyFromBase58(l1Asset)
 		if err != nil {
-			return solana.PublicKey{}, fmt.Errorf("sol: l1_asset %q is not a base58 mint: %w", l1Asset, err)
+			return solana.PublicKey{}, fmt.Errorf("sol: asset address %q is not a base58 mint: %w", l1Asset, err)
 		}
 		return mint, nil
 	}

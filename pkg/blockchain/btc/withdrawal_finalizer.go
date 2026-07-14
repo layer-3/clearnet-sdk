@@ -54,6 +54,7 @@ type WithdrawalFinalizer struct {
 	pubkeys   [][]byte
 	threshold int
 	cfg       Config
+	assets    blockchain.AssetResolver
 
 	vaultAddr   btcutil.Address
 	vaultScript []byte
@@ -69,7 +70,10 @@ var _ core.VaultWithdrawalFinalizer = (*WithdrawalFinalizer)(nil)
 // NewWithdrawalFinalizer builds the vault finalizer. pubkeys are the providers'
 // 33-byte compressed keys; signer is this node's identity and its public key
 // must be one of pubkeys.
-func NewWithdrawalFinalizer(net *chaincfg.Params, rpc RPC, signer sign.Signer, pubkeys [][]byte, threshold int, cfg Config) (*WithdrawalFinalizer, error) {
+func NewWithdrawalFinalizer(net *chaincfg.Params, rpc RPC, signer sign.Signer, pubkeys [][]byte, threshold int, cfg Config, assets blockchain.AssetResolver) (*WithdrawalFinalizer, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("btc: asset resolver is required")
+	}
 	if signer.Algorithm() != sign.AlgSecp256k1 {
 		return nil, fmt.Errorf("btc: signer must be secp256k1, got %s", signer.Algorithm())
 	}
@@ -98,6 +102,7 @@ func NewWithdrawalFinalizer(net *chaincfg.Params, rpc RPC, signer sign.Signer, p
 		pubkeys:      pubkeys,
 		threshold:    threshold,
 		cfg:          cfg,
+		assets:       assets,
 		vaultAddr:    vaultAddr,
 		vaultScript:  vaultScript,
 		pubkeyPos:    pos,
@@ -160,7 +165,7 @@ func (f *WithdrawalFinalizer) resolveScript(pkScriptHex string) ([]byte, bool) {
 // existed — see the adapter's AuthorizationDead.
 func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
 	_ = deadline // no consensus expiry on BTC; see doc comment.
-	recipient, amount, err := f.parseOp(op)
+	recipient, amount, err := f.parseOp(ctx, op)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +198,7 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 // input is a confirmed vault UTXO, and the implied fee is within the ceiling.
 func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
 	_ = deadline // no consensus expiry on BTC; see Pack's doc comment.
-	recipient, amount, err := f.parseOp(op)
+	recipient, amount, err := f.parseOp(ctx, op)
 	if err != nil {
 		return err
 	}
@@ -401,13 +406,19 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 
 // --- helpers ---
 
-func (f *WithdrawalFinalizer) parseOp(op *core.WithdrawalOp) (btcutil.Address, int64, error) {
-	assetAddress, err := blockchain.AssetAddressForFamily(op.AssetURI, blockchain.ChainFamilyBTC)
+func (f *WithdrawalFinalizer) parseOp(ctx context.Context, op *core.WithdrawalOp) (btcutil.Address, int64, error) {
+	id, err := blockchain.AssetIDFromURI(op.AssetURI)
 	if err != nil {
 		return nil, 0, fmt.Errorf("btc: asset URI: %w", err)
 	}
-	if a := strings.ToUpper(strings.TrimSpace(assetAddress)); a != "" && a != "BTC" && a != "0" {
-		return nil, 0, fmt.Errorf("btc: only native BTC withdrawals supported, got asset %q", assetAddress)
+	if id.Family != blockchain.ChainFamilyBTC {
+		return nil, 0, fmt.Errorf("btc: asset family %q does not match %q", id.Family, blockchain.ChainFamilyBTC)
+	}
+	if id.ChainID != 0 {
+		return nil, 0, fmt.Errorf("btc: asset chain id must be 0, got %d", id.ChainID)
+	}
+	if err := f.assets.ValidateAssetAddress(ctx, id.AssetAddress); err != nil {
+		return nil, 0, err
 	}
 	addr, err := btcutil.DecodeAddress(op.Recipient, f.net)
 	if err != nil {
@@ -416,7 +427,14 @@ func (f *WithdrawalFinalizer) parseOp(op *core.WithdrawalOp) (btcutil.Address, i
 	if !addr.IsForNet(f.net) {
 		return nil, 0, fmt.Errorf("btc: recipient %q not valid for %s", op.Recipient, f.net.Name)
 	}
-	amt := op.Amount.BigInt()
+	decimals, err := f.assets.AssetDecimals(ctx, id.AssetAddress)
+	if err != nil {
+		return nil, 0, err
+	}
+	amt, err := blockchain.DecimalToBaseUnits(op.Amount, decimals)
+	if err != nil {
+		return nil, 0, fmt.Errorf("btc: amount: %w", err)
+	}
 	if !amt.IsInt64() || amt.Int64() <= 0 {
 		return nil, 0, fmt.Errorf("btc: amount %s not a positive int64 satoshi value", op.Amount.String())
 	}

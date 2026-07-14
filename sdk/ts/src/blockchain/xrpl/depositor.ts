@@ -16,6 +16,7 @@ import type {
 } from "./types.js";
 import {
   normalizeFeeDrops,
+  normalizeIssuedAssetDecimals,
   normalizeMinConfirmations,
   normalizeTxHash,
   requireClassicAddress,
@@ -34,6 +35,7 @@ export class XrplVaultDepositor
   private readonly signer: XrplSigner;
   private readonly vaultAddress: string;
   private readonly maxFeeDrops: bigint | undefined;
+  private readonly issuedAssetDecimals: ReadonlyMap<string, number>;
   private readonly client: Client;
   private connecting: Promise<void> | undefined;
 
@@ -44,6 +46,9 @@ export class XrplVaultDepositor
       config.maxFeeDrops === undefined
         ? undefined
         : normalizeFeeDrops(config.maxFeeDrops);
+    this.issuedAssetDecimals = normalizeIssuedAssetDecimals(
+      config.issuedAssetDecimals,
+    );
     this.client = new Client(requireRpcUrl(config.rpcUrl));
   }
 
@@ -59,7 +64,11 @@ export class XrplVaultDepositor
     const destination = requireDepositDestination(fields.destination);
     const account = requireClearnetAccount(destination.account);
     const reference = requireReference(destination.ref);
-    const amount = resolveAmount(fields.asset, fields.amount);
+    const amount = resolveAmount(
+      fields.asset,
+      fields.amount,
+      this.issuedAssetDecimals,
+    );
     const payment: Payment = {
       TransactionType: "Payment",
       Account: this.signer.classicAddress,

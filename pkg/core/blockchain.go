@@ -5,6 +5,8 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 )
 
 // TxRef identifies a submitted L1 transaction across chains: Hash is the
@@ -85,9 +87,11 @@ type DepositDestination struct {
 // depositor's signing identity (a sign.Signer supplied at construction) and
 // executes the deposit on its chain: a contract call (EVM), a funding tx to a
 // derived address (BTC), or a memo-tagged Payment (XRPL). It expects a
-// chain-local asset address/key, base-unit amount, and crediting destination.
+// chain-local asset address/key, protocol-unit amount, and crediting
+// destination. An empty assetAddress denotes the native asset at this API
+// boundary; chain implementations normalize it to their protocol native marker.
 type VaultDepositor interface {
-	SubmitDeposit(ctx context.Context, assetAddress string, amount *big.Int, dest DepositDestination) (TxRef, error)
+	SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest DepositDestination) (TxRef, error)
 	// VerifyDeposit reports whether the deposit identified by ref (a TxRef
 	// returned by SubmitDeposit) is present and final on chain — a pure read for
 	// replay/audit. minConf is the confirmation depth required for

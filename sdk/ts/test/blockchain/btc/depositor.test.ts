@@ -49,9 +49,9 @@ describe("BitcoinVaultDepositor", () => {
     expectTypeOf<BitcoinVaultDepositor>().toMatchTypeOf<
       VaultDepositor<BitcoinSubmitDepositInput>
     >();
-    expectTypeOf<BitcoinSubmitDepositInput["amount"]>().toEqualTypeOf<bigint>();
+    expectTypeOf<BitcoinSubmitDepositInput["amount"]>().toEqualTypeOf<string>();
     expectTypeOf<TxRef>().toEqualTypeOf<{ hash: Bytes32Hex; raw: string }>();
-    expect(BITCOIN_NATIVE_ASSET).toBe("BTC");
+    expect(BITCOIN_NATIVE_ASSET).toBe("");
   });
 
   it("derives stable regtest addresses and tx refs from account and txid bytes", async () => {
@@ -93,21 +93,21 @@ describe("BitcoinVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: BITCOIN_NATIVE_ASSET,
-        amount: 0n,
+        amount: "0",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     await expect(
       depositor.submitDeposit({
         asset: "DOGE",
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_INPUT" });
     await expect(
       depositor.submitDeposit({
         asset: BITCOIN_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT, ref: NON_ZERO_REF },
       }),
     ).rejects.toMatchObject({ code: "INVALID_REFERENCE" });
@@ -115,7 +115,7 @@ describe("BitcoinVaultDepositor", () => {
       depositor.submitDeposit(
         {
           asset: BITCOIN_NATIVE_ASSET,
-          amount: 1n,
+          amount: "1",
           destination: { account: ACCOUNT, ref: ZERO_REF },
         },
         null as never,
@@ -138,8 +138,8 @@ describe("BitcoinVaultDepositor", () => {
 
     await expect(
       depositor.submitDeposit({
-        asset: " btc ",
-        amount: 120_000n,
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0012",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INSUFFICIENT_FUNDS" });
@@ -161,8 +161,8 @@ describe("BitcoinVaultDepositor", () => {
 
     const ref = await depositor.submitDeposit(
       {
-        asset: " btc ",
-        amount: 50_000n,
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
         destination: { account: ACCOUNT, ref: ZERO_REF },
       },
       { onSubmitted },
@@ -196,7 +196,7 @@ describe("BitcoinVaultDepositor", () => {
     const prepared = await depositor.prepareDepositPsbt(
       {
         asset: BITCOIN_NATIVE_ASSET,
-        amount: 99_500n,
+        amount: "0.000995",
         destination: { account: ACCOUNT },
       },
       wallet,
@@ -223,7 +223,7 @@ describe("BitcoinVaultDepositor", () => {
     const prepared = await depositor.prepareDepositPsbt(
       {
         asset: BITCOIN_NATIVE_ASSET,
-        amount: 50_000n,
+        amount: "0.0005",
         destination: { account: ACCOUNT },
       },
       { publicKey: SIGNER_PUBKEY },
@@ -262,7 +262,7 @@ describe("BitcoinVaultDepositor", () => {
     const prepared = await depositor.prepareDepositPsbt(
       {
         asset: BITCOIN_NATIVE_ASSET,
-        amount: 50_000n,
+        amount: "0.0005",
         destination: { account: ACCOUNT },
       },
       {
@@ -303,7 +303,7 @@ describe("BitcoinVaultDepositor", () => {
       depositor.prepareDepositPsbt(
         {
           asset: BITCOIN_NATIVE_ASSET,
-          amount: 1n,
+          amount: "1",
           destination: { account: ACCOUNT },
         },
         {
@@ -324,7 +324,7 @@ describe("BitcoinVaultDepositor", () => {
     });
     const alreadyKnownRef = await createDepositor({ rpc: alreadyKnownRpc }).submitDeposit({
       asset: BITCOIN_NATIVE_ASSET,
-      amount: 50_000n,
+      amount: "0.0005",
       destination: { account: ACCOUNT },
     });
     expect(alreadyKnownRef.raw).toMatch(/^[a-f0-9]{64}$/);
@@ -337,7 +337,7 @@ describe("BitcoinVaultDepositor", () => {
     await expect(
       createDepositor({ rpc: missingRpc }).submitDeposit({
         asset: BITCOIN_NATIVE_ASSET,
-        amount: 50_000n,
+        amount: "0.0005",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "RPC_ERROR", txRef: expect.any(Object) });
@@ -352,7 +352,7 @@ describe("BitcoinVaultDepositor", () => {
     await expect(
       createDepositor({ rpc: lookupFailsRpc }).submitDeposit({
         asset: BITCOIN_NATIVE_ASSET,
-        amount: 50_000n,
+        amount: "0.0005",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({
@@ -419,7 +419,7 @@ describe("BitcoinVaultDepositor", () => {
       await expect(
         depositor.submitDeposit({
           asset: BITCOIN_NATIVE_ASSET,
-          amount: 50_000n,
+          amount: "0.0005",
           destination: { account: ACCOUNT },
         }),
       ).rejects.toMatchObject({
@@ -628,7 +628,7 @@ async function signedPreparedTransaction(
   const prepared = await depositor.prepareDepositPsbt(
     {
       asset: BITCOIN_NATIVE_ASSET,
-      amount: 50_000n,
+      amount: "0.0005",
       destination: { account: ACCOUNT },
     },
     wallet,

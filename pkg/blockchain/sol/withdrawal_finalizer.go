@@ -70,6 +70,7 @@ type WithdrawalFinalizer struct {
 	nodePub     solana.PublicKey
 	feePayer    sign.Signer
 	feePayerPub solana.PublicKey
+	assets      blockchain.AssetResolver
 }
 
 var _ core.VaultWithdrawalFinalizer = (*WithdrawalFinalizer)(nil)
@@ -77,7 +78,10 @@ var _ core.VaultWithdrawalFinalizer = (*WithdrawalFinalizer)(nil)
 // NewWithdrawalFinalizer builds the finalizer. signer is this node's ed25519
 // custody key (contributes a quorum share); feePayer is a distinct ed25519 key
 // that pays for and submits the execute transaction.
-func NewWithdrawalFinalizer(rpcURL string, programID solana.PublicKey, signer, feePayer sign.Signer, cfg Config) (*WithdrawalFinalizer, error) {
+func NewWithdrawalFinalizer(rpcURL string, programID solana.PublicKey, signer, feePayer sign.Signer, cfg Config, assets blockchain.AssetResolver) (*WithdrawalFinalizer, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("sol: asset resolver is required")
+	}
 	nodePub, err := solanaPub(signer)
 	if err != nil {
 		return nil, err
@@ -109,6 +113,7 @@ func NewWithdrawalFinalizer(rpcURL string, programID solana.PublicKey, signer, f
 		nodePub:     nodePub,
 		feePayer:    feePayer,
 		feePayerPub: payerPub,
+		assets:      assets,
 	}, nil
 }
 
@@ -120,9 +125,9 @@ type solPacked struct {
 	Deadline     int64  `json:"deadline"`     // unix seconds; authorization void past this
 }
 
-// Pack resolves the withdrawal target and returns the canonical JSON. Pure.
-func (f *WithdrawalFinalizer) Pack(_ context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
-	p, err := f.packedFromOp(op, withdrawalID, deadline)
+// Pack resolves the withdrawal target and returns the canonical JSON.
+func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
+	p, err := f.packedFromOp(ctx, op, withdrawalID, deadline)
 	if err != nil {
 		return nil, err
 	}
@@ -132,12 +137,12 @@ func (f *WithdrawalFinalizer) Pack(_ context.Context, op *core.WithdrawalOp, wit
 // Validate re-derives the canonical payload from the op and the caller-supplied
 // deadline and asserts a match — a peer packing a different deadline than the
 // quorum agreed is rejected here, before Sign.
-func (f *WithdrawalFinalizer) Validate(_ context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
+func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
 	var got solPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("sol: decode packed: %w", err)
 	}
-	want, err := f.packedFromOp(op, withdrawalID, deadline)
+	want, err := f.packedFromOp(ctx, op, withdrawalID, deadline)
 	if err != nil {
 		return err
 	}
@@ -308,22 +313,38 @@ func (f *WithdrawalFinalizer) waitExecuted(ctx context.Context, withdrawalID [32
 
 // --- helpers ---
 
-func (f *WithdrawalFinalizer) packedFromOp(op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) (solPacked, error) {
+func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) (solPacked, error) {
 	to, err := solana.PublicKeyFromBase58(op.Recipient)
 	if err != nil {
 		return solPacked{}, fmt.Errorf("sol: recipient %q not base58: %w", op.Recipient, err)
 	}
-	assetAddress, err := blockchain.AssetAddressForFamily(op.AssetURI, blockchain.ChainFamilySOL)
+	id, err := blockchain.AssetIDFromURI(op.AssetURI)
 	if err != nil {
 		return solPacked{}, fmt.Errorf("sol: asset URI: %w", err)
 	}
-	mint, err := resolveMint(assetAddress)
+	if id.Family != blockchain.ChainFamilySOL {
+		return solPacked{}, fmt.Errorf("sol: asset family %q does not match %q", id.Family, blockchain.ChainFamilySOL)
+	}
+	if id.ChainID != 0 {
+		return solPacked{}, fmt.Errorf("sol: asset chain id must be 0, got %d", id.ChainID)
+	}
+	if err := f.assets.ValidateAssetAddress(ctx, id.AssetAddress); err != nil {
+		return solPacked{}, err
+	}
+	decimals, err := f.assets.AssetDecimals(ctx, id.AssetAddress)
 	if err != nil {
 		return solPacked{}, err
 	}
-	amt := op.Amount.BigInt()
+	amt, err := blockchain.DecimalToBaseUnits(op.Amount, decimals)
+	if err != nil {
+		return solPacked{}, fmt.Errorf("sol: amount: %w", err)
+	}
 	if !amt.IsUint64() || amt.Sign() <= 0 {
-		return solPacked{}, fmt.Errorf("sol: amount %s not a positive uint64", op.Amount.String())
+		return solPacked{}, fmt.Errorf("sol: amount %s not a positive uint64 base-unit value", op.Amount.String())
+	}
+	mint, err := resolveMint(id.AssetAddress)
+	if err != nil {
+		return solPacked{}, err
 	}
 	return solPacked{
 		To:           to.String(),

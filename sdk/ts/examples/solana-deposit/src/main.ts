@@ -104,7 +104,7 @@ async function submitDeposit(): Promise<void> {
           ...(ref === undefined ? {} : { ref: ref as `0x${string}` }),
         },
         asset: readInput("asset"),
-        amount: BigInt(readInput("amount")),
+        amount: readInput("amount"),
       },
       {
         onSubmitted(ref) {

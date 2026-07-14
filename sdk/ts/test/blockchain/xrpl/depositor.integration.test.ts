@@ -66,7 +66,7 @@ describe("XrplVaultDepositor integration", () => {
     try {
       const ref = await sdk.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 10_000_000n,
+        amount: "10",
         destination: { account: ACCOUNT, ref: REFERENCE },
       });
       await admin.ledgerAccept();
@@ -101,11 +101,12 @@ describe("XrplVaultDepositor integration", () => {
       rpcUrl: XRPL_WS_URL,
       vaultAddress: vault.classicAddress,
       signer: signerFromWallet(depositorWallet),
+      issuedAssetDecimals: { [`USD.${issuer.classicAddress}`]: 0 },
     });
     try {
       const ref = await sdk.submitDeposit({
         asset: `USD.${issuer.classicAddress}`,
-        amount: 25n,
+        amount: "25",
         destination: { account: ACCOUNT },
       });
       await admin.ledgerAccept();

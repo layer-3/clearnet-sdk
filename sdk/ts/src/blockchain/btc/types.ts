@@ -12,7 +12,7 @@ export interface BitcoinDepositDestination extends DepositDestination {
   account: string;
 }
 
-export interface BitcoinSubmitDepositInput extends SubmitDepositInput<bigint> {
+export interface BitcoinSubmitDepositInput extends SubmitDepositInput<string> {
   asset: BitcoinAsset;
   destination: BitcoinDepositDestination;
 }

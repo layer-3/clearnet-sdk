@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
@@ -36,6 +37,7 @@ type ConsolidationFinalizer struct {
 	signer   sign.Signer
 	store    VaultStore
 	cfg      Config
+	assets   blockchain.AssetResolver
 	accounts []string // per-account deposit URIs whose UTXOs are also foldable
 }
 
@@ -43,7 +45,10 @@ type ConsolidationFinalizer struct {
 // this node's vault key; store supplies the current vault (consolidation never
 // pivots, so Pivot is unused). accountURIs are the per-account deposit accounts
 // whose tagged-address UTXOs are eligible to fold alongside the base vault.
-func NewConsolidationFinalizer(net *chaincfg.Params, rpc RPC, signer sign.Signer, store VaultStore, cfg Config, accountURIs ...string) (*ConsolidationFinalizer, error) {
+func NewConsolidationFinalizer(net *chaincfg.Params, rpc RPC, signer sign.Signer, store VaultStore, cfg Config, assets blockchain.AssetResolver, accountURIs ...string) (*ConsolidationFinalizer, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("btc: asset resolver is required")
+	}
 	if signer.Algorithm() != sign.AlgSecp256k1 {
 		return nil, fmt.Errorf("btc: consolidation signer must be secp256k1, got %s", signer.Algorithm())
 	}
@@ -53,6 +58,7 @@ func NewConsolidationFinalizer(net *chaincfg.Params, rpc RPC, signer sign.Signer
 		signer:   signer,
 		store:    store,
 		cfg:      cfg,
+		assets:   assets,
 		accounts: accountURIs,
 	}, nil
 }
@@ -66,7 +72,7 @@ func (f *ConsolidationFinalizer) currentVault(ctx context.Context) (*WithdrawalF
 	if err != nil {
 		return nil, fmt.Errorf("btc: read current vault: %w", err)
 	}
-	cur, err := NewWithdrawalFinalizer(f.net, f.rpc, f.signer, pubkeys, threshold, f.cfg)
+	cur, err := NewWithdrawalFinalizer(f.net, f.rpc, f.signer, pubkeys, threshold, f.cfg, f.assets)
 	if err != nil {
 		return nil, fmt.Errorf("btc: build current vault: %w", err)
 	}

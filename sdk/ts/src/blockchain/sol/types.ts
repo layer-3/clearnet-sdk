@@ -15,9 +15,9 @@ export interface SolanaDepositDestination extends DepositDestination {
   ref?: Bytes32Hex;
 }
 
-export interface SolanaSubmitDepositInput extends SubmitDepositInput {
+export interface SolanaSubmitDepositInput extends SubmitDepositInput<string> {
   asset: SolanaAsset;
-  amount: bigint;
+  amount: string;
   destination: SolanaDepositDestination;
 }
 

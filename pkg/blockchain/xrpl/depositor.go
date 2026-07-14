@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"math/big"
 	"strings"
 
 	"github.com/Peersyst/xrpl-go/xrpl/queries/transactions"
@@ -12,6 +11,7 @@ import (
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
@@ -27,12 +27,16 @@ type Depositor struct {
 	vaultAddress string
 	signer       sign.Signer
 	id           Identity
+	assets       blockchain.AssetResolver
 }
 
 var _ core.VaultDepositor = (*Depositor)(nil)
 
 // NewDepositor builds the XRPL depositor against the rippled JSON-RPC at rpcURL.
-func NewDepositor(rpcURL, vaultAddress string, signer sign.Signer) (*Depositor, error) {
+func NewDepositor(rpcURL, vaultAddress string, signer sign.Signer, assets blockchain.AssetResolver) (*Depositor, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("xrpl: asset resolver is required")
+	}
 	client, err := newRPCClient(rpcURL)
 	if err != nil {
 		return nil, err
@@ -41,26 +45,44 @@ func NewDepositor(rpcURL, vaultAddress string, signer sign.Signer) (*Depositor, 
 	if err != nil {
 		return nil, err
 	}
-	return &Depositor{client: client, vaultAddress: vaultAddress, signer: signer, id: id}, nil
+	return &Depositor{client: client, vaultAddress: vaultAddress, signer: signer, id: id, assets: assets}, nil
 }
 
 // DepositorAddress returns the depositor's classic r-address.
 func (d *Depositor) DepositorAddress() string { return d.id.ClassicAddress }
 
-// SubmitDeposit sends amount base units of assetAddress to the vault, crediting
+func normalizeDepositAssetAddress(assetAddress string) string {
+	if strings.TrimSpace(assetAddress) == "" {
+		return nativeAssetAddress
+	}
+	return assetAddress
+}
+
+// SubmitDeposit sends amount of assetAddress to the vault, crediting
 // dest.Account via a `ynet-account` memo carrying the 20-byte account and the
-// 32-byte ADR-015 dest.Ref. assetAddress is "" / "XRP" for native or
-// "CUR.rIssuer" for an issued currency; issued-currency generic deposits are
-// integer-valued by this interface.
-func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount *big.Int, dest core.DepositDestination) (core.TxRef, error) {
+// 32-byte ADR-015 dest.Ref. assetAddress is "" for native or "CUR.rIssuer" for
+// an issued currency.
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
 	memo, err := accountMemo(dest)
 	if err != nil {
 		return core.TxRef{}, err
 	}
-	if amount == nil || amount.Sign() <= 0 {
+	assetAddress = normalizeDepositAssetAddress(assetAddress)
+	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
+		return core.TxRef{}, err
+	}
+	if amount.Sign() <= 0 {
 		return core.TxRef{}, fmt.Errorf("xrpl: amount must be positive")
 	}
-	xrplAmount, err := currencyAmount(assetAddress, decimal.NewFromBigInt(amount, 0))
+	decimals, err := d.assets.AssetDecimals(ctx, assetAddress)
+	if err != nil {
+		return core.TxRef{}, err
+	}
+	baseUnits, err := blockchain.DecimalToBaseUnits(amount, decimals)
+	if err != nil {
+		return core.TxRef{}, fmt.Errorf("xrpl: amount: %w", err)
+	}
+	xrplAmount, err := currencyAmountFromBaseUnits(assetAddress, baseUnits, decimals)
 	if err != nil {
 		return core.TxRef{}, err
 	}

@@ -83,8 +83,8 @@ describe("XrplVaultDepositor", () => {
     expectTypeOf<XrplSubmitDepositInput>().toEqualTypeOf<
       XrplNativeDepositInput | XrplIssuedDepositInput
     >();
-    expectTypeOf<XrplNativeDepositInput["amount"]>().toEqualTypeOf<bigint>();
-    expectTypeOf<XrplIssuedDepositInput["amount"]>().toEqualTypeOf<bigint>();
+    expectTypeOf<XrplNativeDepositInput["amount"]>().toEqualTypeOf<string>();
+    expectTypeOf<XrplIssuedDepositInput["amount"]>().toEqualTypeOf<string>();
     expectTypeOf<{
       asset: "XRP";
       amount: string;
@@ -92,14 +92,14 @@ describe("XrplVaultDepositor", () => {
     }>().not.toMatchTypeOf<XrplSubmitDepositInput>();
     expectTypeOf<{
       asset: `USD.${string}`;
-      amount: bigint;
+      amount: string;
       destination: XrplDepositDestination;
     }>().toMatchTypeOf<XrplSubmitDepositInput>();
     expectTypeOf<TxRef>().toEqualTypeOf<{ hash: Bytes32Hex; raw: string }>();
     expectTypeOf<DepositStatus>().toEqualTypeOf<
       "absent" | "pending" | "confirmed"
     >();
-    expect(XRPL_NATIVE_ASSET).toBe("XRP");
+    expect(XRPL_NATIVE_ASSET).toBe("");
   });
 
   it("submits native XRP drops with the ynet-account memo and Go-compatible tx ref", async () => {
@@ -110,7 +110,7 @@ describe("XrplVaultDepositor", () => {
     const ref = await depositor.submitDeposit(
       {
         asset: XRPL_NATIVE_ASSET,
-        amount: 10n,
+        amount: "10",
         destination: { account: ` ${ACCOUNT} `, ref: REFERENCE },
       },
       { onSubmitted },
@@ -122,7 +122,7 @@ describe("XrplVaultDepositor", () => {
       TransactionType: "Payment",
       Account: DEPOSITOR_ADDRESS,
       Destination: VAULT_ADDRESS,
-      Amount: "10",
+      Amount: "10000000",
       Memos: [
         {
           Memo: {
@@ -142,18 +142,13 @@ describe("XrplVaultDepositor", () => {
     expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(ref);
   });
 
-  it("submits issued-currency deposits using both supported asset delimiters", async () => {
+  it("submits issued-currency deposits", async () => {
     const signer = createSigner();
     const depositor = createDepositor(signer);
 
     await depositor.submitDeposit({
       asset: `USD.${ISSUER_ADDRESS}`,
-      amount: 12n,
-      destination: { account: ACCOUNT },
-    });
-    await depositor.submitDeposit({
-      asset: `EUR:${ISSUER_ADDRESS}`,
-      amount: 1n,
+      amount: "12",
       destination: { account: ACCOUNT },
     });
 
@@ -167,16 +162,6 @@ describe("XrplVaultDepositor", () => {
         },
       }),
     );
-    expect(client.autofill).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        Amount: {
-          currency: "EUR",
-          issuer: ISSUER_ADDRESS,
-          value: "1",
-        },
-      }),
-    );
   });
 
   it("accepts terQUEUED submit results and returns without waiting for validation", async () => {
@@ -187,7 +172,7 @@ describe("XrplVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       }),
     ).resolves.toEqual(HASH_REF);
@@ -209,7 +194,7 @@ describe("XrplVaultDepositor", () => {
       depositor.submitDeposit(
         {
           asset: XRPL_NATIVE_ASSET,
-          amount: 1n,
+          amount: "1",
           destination: { account: ACCOUNT },
         },
         null as never,
@@ -222,7 +207,7 @@ describe("XrplVaultDepositor", () => {
       depositor.submitDeposit(
         {
           asset: XRPL_NATIVE_ASSET,
-          amount: 1n,
+          amount: "1",
           destination: { account: ACCOUNT },
         },
         { onSubmitted: "bad" } as unknown as SubmitDepositOptions,
@@ -234,7 +219,7 @@ describe("XrplVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: null as unknown as XrplDepositDestination,
       }),
     ).rejects.toMatchObject({
@@ -244,7 +229,7 @@ describe("XrplVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: "bad" as unknown as XrplDepositDestination,
       }),
     ).rejects.toMatchObject({
@@ -254,63 +239,63 @@ describe("XrplVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 0n,
+        amount: "0",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 1.5 as unknown as bigint,
+        amount: 1.5 as unknown as string,
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     await expect(
       depositor.submitDeposit({
         asset: `USD.${ISSUER_ADDRESS}`,
-        amount: "1" as unknown as bigint,
+        amount: 1n as unknown as string,
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     await expect(
       depositor.submitDeposit({
         asset: `USD.${ISSUER_ADDRESS}`,
-        amount: 0n,
+        amount: "0",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     await expect(
       depositor.submitDeposit({
         asset: "USD" as XrplIssuedDepositInput["asset"],
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
         asset: "USD.rBad",
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: "0x1234" },
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: `yellow://local/user/${ACCOUNT}` },
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT, ref: "memo-1" as Bytes32Hex },
       }),
     ).rejects.toMatchObject({ code: "INVALID_REFERENCE" });
@@ -367,7 +352,7 @@ describe("XrplVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
@@ -384,7 +369,7 @@ describe("XrplVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "TX_REVERTED", txRef: HASH_REF });
@@ -393,7 +378,7 @@ describe("XrplVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
-        amount: 1n,
+        amount: "1",
         destination: { account: ACCOUNT },
       }),
     ).rejects.toMatchObject({ code: "INVALID_TX_REF" });
@@ -511,6 +496,10 @@ function createDepositor(
     rpcUrl: RPC_URL,
     vaultAddress: VAULT_ADDRESS,
     signer,
+    issuedAssetDecimals: {
+      [`USD.${ISSUER_ADDRESS}`]: 0,
+      [`EUR.${ISSUER_ADDRESS}`]: 0,
+    },
     ...overrides,
   });
 }

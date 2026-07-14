@@ -90,7 +90,7 @@ the deterministic regtest fallback.
 | Xverse Network | `Regtest` |
 | Fund Sats | `100000000` |
 | Fallback Fee Sat/VB | `5` |
-| Amount Sats | `20000000` |
+| Amount BTC | `0.2` |
 
 Override the backend target with `BTC_RPC_URL`, `BTC_RPC_USER`, or
 `BTC_RPC_PASS` when starting Vite.

@@ -26,12 +26,13 @@ npm ci
 
 ## Bitcoin Quick Start
 
-Bitcoin deposits use `BitcoinVaultDepositor`. Native BTC amounts are `bigint`
-satoshis. The depositor spends from a P2WPKH address derived from the signer
-public key and pays the per-account P2WSH deposit address derived from the
-configured vault keys. The SDK signs digest bytes through a caller-provided
-`BitcoinSigner` so local keys, HSMs, or wallet adapters can live outside the
-core depositor.
+Bitcoin deposits use `BitcoinVaultDepositor`. Native BTC uses
+`BITCOIN_NATIVE_ASSET`, which is an empty string, and deposit amounts are
+positive decimal BTC strings. The depositor spends from a P2WPKH address derived
+from the signer public key and pays the per-account P2WSH deposit address
+derived from the configured vault keys. The SDK signs digest bytes through a
+caller-provided `BitcoinSigner` so local keys, HSMs, or wallet adapters can live
+outside the core depositor.
 
 ```ts
 import {
@@ -86,7 +87,7 @@ console.log(depositor.depositAddress("yellow://ynet/user/btc-a1"));
 const ref = await depositor.submitDeposit({
   destination: { account: "yellow://ynet/user/btc-a1" },
   asset: BITCOIN_NATIVE_ASSET,
-  amount: 20_000n,
+  amount: "0.0002",
 });
 
 console.log(ref.raw); // display txid
@@ -100,8 +101,10 @@ the client config, and inject Bitcoin Core credentials server-side.
 
 ## EVM Quick Start
 
-Native ETH deposits use `EVM_NATIVE_ASSET`, which is the EVM zero address. Amounts
-must be `bigint` values in base units.
+Native ETH deposits use `EVM_NATIVE_ASSET`, which is an empty string. Amounts
+are positive decimal strings. Native ETH uses 18 decimals by default, or the
+`nativeDecimals` override in depositor config; ERC-20 decimals are read from the
+token contract and cached.
 
 ```ts
 import {
@@ -114,7 +117,6 @@ import {
   createWalletClient,
   custom,
   http,
-  parseEther,
 } from "viem";
 import type { Address, EIP1193Provider } from "viem";
 
@@ -158,7 +160,7 @@ try {
     {
       destination: { account: walletAccount },
       asset: EVM_NATIVE_ASSET,
-      amount: parseEther("0.01"),
+      amount: "0.01",
     },
     {
       onSubmitted(submittedRef) {
@@ -183,23 +185,23 @@ or submitting a deposit. If either chain does not match `chainId`, it throws
 
 ## ERC-20 Deposits
 
-For ERC-20 deposits, pass the token contract address as `asset`.
+For ERC-20 deposits, pass the token contract address as `asset` and the token
+amount as a decimal string.
 
 ```ts
-import { parseUnits } from "viem";
-
 const ref = await depositor.submitDeposit({
   destination: { account: walletAccount },
   asset: "0x0000000000000000000000000000000000003000",
-  amount: parseUnits("25", 18),
+  amount: "25",
 });
 ```
 
-The SDK submits an exact-amount `approve(custodyAddress, amount)` transaction
-before submitting the custody `deposit(...)` transaction. A successful
-`submitDeposit` call returns the deposit transaction hash, not the approval hash.
-If an ERC-20 approval fails before the deposit is submitted, `error.txRef` may
-refer to the approval transaction.
+The SDK reads and caches the token's `decimals()`, converts the decimal amount
+to base units, submits an exact-amount `approve(custodyAddress, amount)`
+transaction, then submits the custody `deposit(...)` transaction. A successful
+`submitDeposit` call returns the deposit transaction hash, not the approval
+hash. If an ERC-20 approval fails before the deposit is submitted, `error.txRef`
+may refer to the approval transaction.
 
 ## Solana Deposits
 
@@ -253,7 +255,7 @@ const ref = await depositor.submitDeposit({
     ref: "0x3333333333333333333333333333333333333333333333333333333333333333",
   },
   asset: SOLANA_NATIVE_ASSET,
-  amount: 100_000_000n,
+  amount: "0.1",
 });
 
 console.log(ref.raw); // Solana base58 signature
@@ -261,16 +263,17 @@ console.log(ref.hash); // 0x + sha256(signature bytes)
 console.log(await depositor.verifyDeposit(ref, 0));
 ```
 
-Native asset aliases are `SOL`, `sol`, `native`, and an empty string. For SPL
-deposits, pass the mint public key as `asset` and the amount in token base units.
-The SDK does not mint tokens or create token accounts. SPL callers must ensure
-the depositor ATA and vault ATA exist before submitting the deposit.
+Native SOL uses `SOLANA_NATIVE_ASSET`, which is an empty string. For SPL
+deposits, pass the mint public key as `asset` and the token amount as a decimal
+string. The SDK reads and caches SPL mint decimals. It does not mint tokens or
+create token accounts. SPL callers must ensure the depositor ATA and vault ATA
+exist before submitting the deposit.
 
 ## XRPL Deposits
 
-XRPL deposits use `XrplVaultDepositor`. Native XRP amounts are `bigint` drops.
-Issued-currency amounts are positive bigint values and assets use
-`CUR.rIssuer` or `CUR:rIssuer`.
+XRPL deposits use `XrplVaultDepositor`. Amounts are positive decimal strings.
+Native XRP uses an empty asset string. Issued-currency assets use `CUR.rIssuer`
+and require decimals in depositor config.
 
 ```ts
 import {
@@ -305,7 +308,7 @@ try {
       ref: "0x3333333333333333333333333333333333333333333333333333333333333333",
     },
     asset: XRPL_NATIVE_ASSET,
-    amount: 1_000_000n,
+    amount: "1",
   });
 
   console.log(ref.raw); // uppercase XRPL transaction hash
@@ -316,13 +319,21 @@ try {
 }
 ```
 
-For issued currencies, pass the asset key and integer amount:
+For issued currencies, pass the asset key, decimal amount, and configured
+decimals:
 
 ```ts
+const usdAsset = "USD.rN7n7otQDd6FczFgLdSqtcsAUxDkw6fzRH";
+const depositor = new XrplVaultDepositor({
+  rpcUrl: "ws://127.0.0.1:6006",
+  vaultAddress: "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+  signer,
+  issuedAssetDecimals: { [usdAsset]: 2 },
+});
 const ref = await depositor.submitDeposit({
   destination: { account: "00000000000000000000000000000000000000a1" },
-  asset: "USD.rN7n7otQDd6FczFgLdSqtcsAUxDkw6fzRH",
-  amount: 25n,
+  asset: usdAsset,
+  amount: "25.50",
 });
 ```
 
@@ -346,7 +357,7 @@ const ref = await depositor.submitDeposit({
     ref: "0x3333333333333333333333333333333333333333333333333333333333333333",
   },
   asset: EVM_NATIVE_ASSET,
-  amount: parseEther("0.01"),
+  amount: "0.01",
 });
 ```
 
@@ -398,6 +409,7 @@ Config fields:
 | `custodyAddress` | `Address` | The deployed custody contract address. |
 | `chainId` | `number` | Positive safe integer; must match the public RPC and wallet chain. |
 | `receiptTimeoutMs` | `number` | Optional default timeout for receipt waits. |
+| `nativeDecimals` | `number` | Optional native ETH decimals override; defaults to `18`. |
 
 ### `submitDeposit(input, options?)`
 
@@ -407,8 +419,8 @@ Input fields:
 |---|---|---|
 | `destination.account` | `Address` | Clearnet account credited by the custody deposit. |
 | `destination.ref` | `Hash \| undefined` | Optional 32-byte opaque reference. Omitted values are sent as `bytes32(0)`. |
-| `asset` | `Address` | Use `EVM_NATIVE_ASSET` for native ETH, or an ERC-20 token address. |
-| `amount` | `bigint` | Positive base-unit amount that fits in `uint256`. |
+| `asset` | `Address \| ""` | Use `EVM_NATIVE_ASSET` for native ETH, or an ERC-20 token address. |
+| `amount` | `string` | Positive decimal amount. Native uses `nativeDecimals`; ERC-20 tokens use on-chain `decimals()`. |
 
 Options:
 
@@ -454,8 +466,8 @@ Bitcoin input fields:
 |---|---|---|
 | `destination.account` | `string` | Opaque Clearnet account. The SDK hashes it to derive the per-account P2WSH address. |
 | `destination.ref` | `undefined \| 0x00...00` | Non-zero references are rejected. |
-| `asset` | `string` | Use `BITCOIN_NATIVE_ASSET` / `BTC`. |
-| `amount` | `bigint` | Positive satoshi amount that fits in signed 64-bit. |
+| `asset` | `string` | Use `BITCOIN_NATIVE_ASSET`, the empty string. Other asset values are rejected. |
+| `amount` | `string` | Positive decimal BTC amount that fits in signed 64-bit satoshis. |
 
 For Bitcoin, `TxRef.raw` is the display txid and `TxRef.hash` is `0x` plus the
 byte-reversed txid. `submitDeposit` returns after Bitcoin Core accepts the raw
@@ -503,8 +515,8 @@ Solana input fields:
 |---|---|---|
 | `destination.account` | `string` | 20-byte Clearnet account as hex, optional `0x`, or URI-like value whose final path segment is that hex. |
 | `destination.ref` | `` `0x${string}` \| undefined `` | Optional 32-byte opaque reference. |
-| `asset` | `string` | Native alias (`SOL`, `sol`, `native`, or empty string) or SPL mint public key. |
-| `amount` | `bigint` | Positive base-unit amount that fits in `uint64`. |
+| `asset` | `string` | Use `SOLANA_NATIVE_ASSET`, the empty string, or an SPL mint public key. |
+| `amount` | `string` | Positive decimal amount. Native SOL uses 9 decimals; SPL tokens use mint decimals. |
 
 For Solana, `TxRef.raw` is the base58 signature and `TxRef.hash` is `0x` plus
 the SHA-256 digest of the signature bytes.
@@ -523,6 +535,7 @@ Config fields:
 | `vaultAddress` | `string` | XRPL classic address that receives deposits. |
 | `signer` | `XrplSigner` | Provides `classicAddress` and `sign(payment)`. |
 | `maxFeeDrops` | `bigint \| number` | Optional positive fee ceiling checked after autofill and before signing. |
+| `issuedAssetDecimals` | `Record<string, number>` | Required per issued-currency asset used for deposits. Native XRP uses 6 decimals. |
 
 XRPL input fields:
 
@@ -530,8 +543,8 @@ XRPL input fields:
 |---|---|---|
 | `destination.account` | `string` | 20-byte Clearnet account as hex, with optional `0x`. |
 | `destination.ref` | `` `0x${string}` \| undefined `` | Optional 32-byte opaque reference. |
-| `asset` | `string` | `XRP`/empty for native, or issued-currency `CUR.rIssuer` / `CUR:rIssuer`. |
-| `amount` | `bigint` | Native XRP uses drops; issued currencies use integer generic SDK amounts. |
+| `asset` | `string` | Empty string for native, or issued-currency `CUR.rIssuer`. |
+| `amount` | `string` | Positive decimal amount; native XRP uses 6 decimals, issued currencies use configured decimals. |
 
 For XRPL, `TxRef.raw` is the uppercase 64-hex transaction hash and `TxRef.hash`
 is the same bytes as `0x` hex.
@@ -694,7 +707,7 @@ Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 |---|---|
 | `INVALID_INPUT` | Submit options are missing or have the wrong shape, an asset is unsupported, or Bitcoin transaction/PSBT finalization input is invalid. |
 | `INVALID_ADDRESS` | EVM address, Solana public key, Solana mint, program ID, XRPL classic address, XRPL issued-currency key, or Clearnet account is invalid. |
-| `INVALID_AMOUNT` | `amount` is not positive, has the wrong type, or exceeds the chain limit (`uint256` for EVM, `uint64` for Solana/XRPL native drops, signed 64-bit satoshis for Bitcoin). |
+| `INVALID_AMOUNT` | `amount` is not positive, has the wrong type/precision, or exceeds the chain limit (`uint256` for EVM, `uint64` for Solana/XRPL native drops, signed 64-bit satoshis for Bitcoin). |
 | `INVALID_CONFIRMATIONS` | `minConfirmations` is negative, fractional, or an unsafe number. |
 | `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value, or Bitcoin received a non-zero reference. |
 | `INVALID_TX_REF` | `ref.hash` is not bytes32, Solana `ref.raw` is not a 64-byte signature, XRPL `ref.raw` is not a 64-hex hash, or Bitcoin `ref.raw` is not a 64-hex txid matching the byte-reversed `hash`. |

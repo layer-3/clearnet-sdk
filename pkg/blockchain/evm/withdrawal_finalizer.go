@@ -49,13 +49,17 @@ type WithdrawalFinalizer struct {
 	signer     sign.Signer
 	signerAddr common.Address
 	fees       FeeConfig
+	assets     blockchain.AssetResolver
 }
 
 var _ core.VaultWithdrawalFinalizer = (*WithdrawalFinalizer)(nil)
 
 // NewWithdrawalFinalizer binds the Custody vault at vaultAddr and reads the
 // chain id from client. signer is this node's secp256k1 identity.
-func NewWithdrawalFinalizer(ctx context.Context, client *ethclient.Client, vaultAddr common.Address, signer sign.Signer, fees FeeConfig) (*WithdrawalFinalizer, error) {
+func NewWithdrawalFinalizer(ctx context.Context, client *ethclient.Client, vaultAddr common.Address, signer sign.Signer, fees FeeConfig, assets blockchain.AssetResolver) (*WithdrawalFinalizer, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("evm: asset resolver is required")
+	}
 	custody, err := NewCustody(vaultAddr, client)
 	if err != nil {
 		return nil, fmt.Errorf("load custody: %w", err)
@@ -76,6 +80,7 @@ func NewWithdrawalFinalizer(ctx context.Context, client *ethclient.Client, vault
 		signer:     signer,
 		signerAddr: addr,
 		fees:       fees,
+		assets:     assets,
 	}, nil
 }
 
@@ -90,8 +95,8 @@ type evmPacked struct {
 }
 
 // Pack returns the canonical JSON for the withdrawal. Pure — no chain access.
-func (f *WithdrawalFinalizer) Pack(_ context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
-	p, err := packedFromOp(op, withdrawalID, deadline)
+func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
+	p, err := f.packedFromOp(ctx, op, withdrawalID, deadline)
 	if err != nil {
 		return nil, err
 	}
@@ -102,12 +107,12 @@ func (f *WithdrawalFinalizer) Pack(_ context.Context, op *core.WithdrawalOp, wit
 // deadline and asserts the packed bytes match it exactly — the defense against
 // a Byzantine packer (a peer packing a longer-lived deadline than the quorum
 // agreed is rejected here, before Sign).
-func (f *WithdrawalFinalizer) Validate(_ context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
+func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
 	var got evmPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("decode packed: %w", err)
 	}
-	want, err := packedFromOp(op, withdrawalID, deadline)
+	want, err := f.packedFromOp(ctx, op, withdrawalID, deadline)
 	if err != nil {
 		return err
 	}
@@ -232,24 +237,38 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 
 // --- helpers ---
 
-func packedFromOp(op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) (evmPacked, error) {
+func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) (evmPacked, error) {
 	// common.HexToAddress silently zero-fills/truncates a malformed input, which
 	// would sign a withdrawal to the wrong (often zero) recipient. Reject
 	// anything that is not a well-formed hex address up front.
 	if !common.IsHexAddress(op.Recipient) {
 		return evmPacked{}, fmt.Errorf("evm: recipient %q is not a valid hex address", op.Recipient)
 	}
-	assetAddress, err := blockchain.AssetAddressForFamily(op.AssetURI, blockchain.ChainFamilyEVM)
+	id, err := blockchain.AssetIDFromURI(op.AssetURI)
 	if err != nil {
 		return evmPacked{}, fmt.Errorf("evm: asset URI: %w", err)
 	}
-	if !common.IsHexAddress(assetAddress) {
-		return evmPacked{}, fmt.Errorf("evm: asset address %q is not a valid hex address", assetAddress)
+	if id.Family != blockchain.ChainFamilyEVM {
+		return evmPacked{}, fmt.Errorf("evm: asset family %q does not match %q", id.Family, blockchain.ChainFamilyEVM)
+	}
+	if id.ChainID != f.chainID {
+		return evmPacked{}, fmt.Errorf("evm: asset chain id %d does not match %d", id.ChainID, f.chainID)
+	}
+	if err := f.assets.ValidateAssetAddress(ctx, id.AssetAddress); err != nil {
+		return evmPacked{}, err
+	}
+	decimals, err := f.assets.AssetDecimals(ctx, id.AssetAddress)
+	if err != nil {
+		return evmPacked{}, err
+	}
+	amt, err := blockchain.DecimalToBaseUnits(op.Amount, decimals)
+	if err != nil {
+		return evmPacked{}, fmt.Errorf("evm: amount: %w", err)
 	}
 	return evmPacked{
 		To:           common.HexToAddress(op.Recipient).Hex(),
-		Asset:        common.HexToAddress(assetAddress).Hex(),
-		Amount:       op.Amount.BigInt().String(),
+		Asset:        depositAssetAddress(id.AssetAddress).Hex(),
+		Amount:       amt.String(),
 		WithdrawalID: hex.EncodeToString(withdrawalID[:]),
 		Deadline:     deadline,
 	}, nil
