@@ -125,7 +125,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
-	t.Logf("deposit tx %s (from %s)", depRef.Raw, dep.DepositorAddress())
+	t.Logf("deposit tx %s (from %s)", depRef, dep.DepositorAddress())
 	// The depositor fire-and-forwards; wait until the vault PDA actually holds
 	// the funds before withdrawing.
 	waitBalance(ctx, t, client, VaultPDA(programID), 100_000_000)
@@ -169,7 +169,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	t.Logf("withdrawal tx %s", ref.Raw)
+	t.Logf("withdrawal tx %s", ref)
 
 	if _, executed, err := finalizers[0].VerifyExecution(ctx, wid); err != nil {
 		t.Fatalf("VerifyExecution: %v", err)

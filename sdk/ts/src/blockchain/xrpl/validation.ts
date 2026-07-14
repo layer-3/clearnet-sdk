@@ -3,7 +3,6 @@ import { Buffer } from "buffer";
 import { isValidClassicAddress } from "xrpl";
 
 import { ClearnetSdkError } from "../../core/errors.js";
-import type { Bytes32Hex, TxRef } from "../../core/types.js";
 import {
   BYTES32_HEX_PATTERN,
   normalizeMinConfirmations,
@@ -158,45 +157,21 @@ export function normalizeFeeDrops(value: bigint | number): bigint {
   return BigInt(value);
 }
 
-export function normalizeTxHash(hash: string): TxRef {
+export function normalizeTxHash(hash: string): string {
   if (!HASH_PATTERN.test(hash)) {
     throw new ClearnetSdkError(
-      "INVALID_TX_REF",
+      "INVALID_TX_ID",
       "XRPL transaction hash must be 64 hex characters",
     );
   }
-  const raw = hash.toUpperCase();
-  return { hash: `0x${raw.toLowerCase()}` as Bytes32Hex, raw };
+  return hash.toUpperCase();
 }
 
-export function requireTxRef(ref: unknown): TxRef {
-  if (!ref || typeof ref !== "object") {
-    throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.raw must be an XRPL transaction hash",
-    );
+export function requireTxID(txID: unknown): string {
+  if (typeof txID !== "string") {
+    throw new ClearnetSdkError("INVALID_TX_ID", "txID must be an XRPL transaction hash");
   }
-  const fields = ref as Partial<TxRef>;
-  if (typeof fields.raw !== "string" || !HASH_PATTERN.test(fields.raw)) {
-    throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.raw must be an XRPL transaction hash",
-    );
-  }
-  if (typeof fields.hash !== "string" || !BYTES32_HEX_PATTERN.test(fields.hash)) {
-    throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.hash must be a 32-byte hex value",
-    );
-  }
-  const normalized = normalizeTxHash(fields.raw);
-  if (normalized.hash.toLowerCase() !== fields.hash.toLowerCase()) {
-    throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.hash must match ref.raw",
-    );
-  }
-  return normalized;
+  return normalizeTxHash(txID);
 }
 
 export { normalizeMinConfirmations };

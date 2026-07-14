@@ -12,7 +12,6 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 
 	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
-	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
@@ -269,26 +268,26 @@ func (f *ConsolidationFinalizer) Sign(ctx context.Context, packed []byte) ([]byt
 // Submit assembles the witnesses from the collected shares and broadcasts the
 // fold, returning its hash. Idempotent on an already-known/spent reply (the
 // UTXO-model analogue of a re-submit guard).
-func (f *ConsolidationFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (core.TxRef, error) {
+func (f *ConsolidationFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
 	cur, err := f.currentVault(ctx)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	merged, err := cur.merge(ctx, packed, shares)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	tx, err := deserializeTx(merged)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("btc consolidate submit: %w", err)
+		return "", fmt.Errorf("btc consolidate submit: %w", err)
 	}
 	hash := [32]byte(tx.TxHash())
 	txid := hashToTxid(hash)
 	if _, err := f.rpc.SendRawTransaction(ctx, hex.EncodeToString(merged)); err != nil {
 		if isAlreadyKnown(err) {
-			return core.TxRef{Hash: hash, Raw: txid}, nil
+			return txid, nil
 		}
-		return core.TxRef{}, fmt.Errorf("btc consolidate submit: sendrawtransaction: %w", err)
+		return "", fmt.Errorf("btc consolidate submit: sendrawtransaction: %w", err)
 	}
-	return core.TxRef{Hash: hash, Raw: txid}, nil
+	return txid, nil
 }

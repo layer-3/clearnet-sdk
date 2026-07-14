@@ -93,7 +93,7 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 		t.Fatalf("Deposit: %v", err)
 	}
 	h.ledgerAccept(ctx, t)
-	t.Logf("deposit tx %s (from %s)", depRef.Raw, dep.DepositorAddress())
+	t.Logf("deposit tx %s (from %s)", depRef, dep.DepositorAddress())
 
 	// ── Withdrawal flow (quorum in-process) ───────────────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, len(signers))
@@ -136,7 +136,7 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 	h.ledgerAccept(ctx, t)
-	t.Logf("withdrawal tx %s", ref.Raw)
+	t.Logf("withdrawal tx %s", ref)
 
 	if _, executed, err := finalizers[0].VerifyExecution(ctx, wid); err != nil {
 		t.Fatalf("VerifyExecution: %v", err)
@@ -183,7 +183,7 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 		t.Fatalf("rotation Submit: %v", err)
 	}
 	h.ledgerAccept(ctx, t)
-	t.Logf("rotation tx %s", rRef.Raw)
+	t.Logf("rotation tx %s", rRef)
 
 	if _, done, err := rotators[0].VerifyRotation(ctx, newAddrs, xrplQuorum); err != nil {
 		t.Fatalf("VerifyRotation: %v", err)

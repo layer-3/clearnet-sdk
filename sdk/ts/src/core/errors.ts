@@ -1,12 +1,10 @@
-import type { TxRef } from "./types.js";
-
 export type ClearnetSdkErrorCode =
   | "INVALID_INPUT"
   | "INVALID_ADDRESS"
   | "INVALID_AMOUNT"
   | "INVALID_CONFIRMATIONS"
   | "INVALID_REFERENCE"
-  | "INVALID_TX_REF"
+  | "INVALID_TX_ID"
   | "MISSING_WALLET_ACCOUNT"
   | "INSUFFICIENT_FUNDS"
   | "CHAIN_MISMATCH"
@@ -15,13 +13,13 @@ export type ClearnetSdkErrorCode =
   | "RPC_ERROR";
 
 interface ClearnetSdkErrorOptions {
-  txRef?: TxRef;
+  txID?: string;
   cause?: unknown;
 }
 
 export class ClearnetSdkError extends Error {
   readonly code: ClearnetSdkErrorCode;
-  readonly txRef?: TxRef;
+  readonly txID?: string;
   override cause?: unknown;
 
   constructor(
@@ -32,8 +30,8 @@ export class ClearnetSdkError extends Error {
     super(message, causeOptions(options.cause));
     this.name = "ClearnetSdkError";
     this.code = code;
-    if (options.txRef !== undefined) {
-      this.txRef = options.txRef;
+    if (options.txID !== undefined) {
+      this.txID = options.txID;
     }
     if (options.cause !== undefined) {
       this.cause = options.cause;

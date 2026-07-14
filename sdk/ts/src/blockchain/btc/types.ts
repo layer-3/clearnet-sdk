@@ -1,7 +1,6 @@
 import type {
   DepositDestination,
   SubmitDepositInput,
-  TxRef,
 } from "../../core/types.js";
 
 export type BitcoinNetwork = "mainnet" | "testnet" | "signet" | "regtest";
@@ -91,11 +90,11 @@ export interface BitcoinPreparedDepositPsbt {
   psbtHex: string;
   inputIndexesToSign: readonly number[];
   /**
-   * TxRef for the unsigned PSBT transaction shape. Wallet finalization can
-   * change the final txid, especially for nested-SegWit inputs, so callers must
-   * use the TxRef returned by submitSignedDepositPsbt for verification.
+   * Transaction ID for the unsigned PSBT transaction shape. Wallet finalization
+   * can change the final txid, especially for nested-SegWit inputs, so callers
+   * must use the txID returned by submitSignedDepositPsbt for verification.
    */
-  unsignedRef: TxRef;
+  unsignedTxID: string;
   fundingAddress: string;
   depositAddress: string;
   feeSats: bigint;

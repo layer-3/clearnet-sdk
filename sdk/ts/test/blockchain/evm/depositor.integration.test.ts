@@ -75,11 +75,12 @@ describe("EvmVaultDepositor Anvil integration", () => {
       asset: "",
       amount: "0.01",
     });
+    const txHash = txHashFromTxID(ref);
     const afterBalance = await publicClient.getBalance({
       address: custodyAddress,
     });
     const receipt = await publicClient.getTransactionReceipt({
-      hash: ref.hash,
+      hash: txHash,
     });
 
     expect(afterBalance - beforeBalance).toBe(amount);
@@ -136,6 +137,7 @@ describe("EvmVaultDepositor Anvil integration", () => {
       functionName: "allowance",
       args: [deployer.address, custodyAddress],
     });
+    const txHash = txHashFromTxID(ref);
     const afterBalance = await publicClient.readContract({
       address: tokenAddress,
       abi: erc20Abi,
@@ -143,7 +145,7 @@ describe("EvmVaultDepositor Anvil integration", () => {
       args: [custodyAddress],
     });
     const receipt = await publicClient.getTransactionReceipt({
-      hash: ref.hash,
+      hash: txHash,
     });
     const approvalLogs = await publicClient.getLogs({
       address: tokenAddress,
@@ -155,7 +157,7 @@ describe("EvmVaultDepositor Anvil integration", () => {
       toBlock: receipt.blockNumber,
     });
     const approvalLog = approvalLogs.find(
-      (log) => log.args.value === amount && log.transactionHash !== ref.hash,
+      (log) => log.args.value === amount && log.transactionHash !== txHash,
     );
     if (approvalLog === undefined) {
       throw new Error("expected exact approval log before deposit");
@@ -249,4 +251,8 @@ function hasDepositedLog(
       log.args.asset.toLowerCase() === asset.toLowerCase() &&
       log.args.amount === amount,
   );
+}
+
+function txHashFromTxID(txID: string): Hash {
+  return txID.split("/", 1)[0] as Hash;
 }

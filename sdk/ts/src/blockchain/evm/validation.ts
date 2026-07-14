@@ -2,7 +2,6 @@ import { isAddress, zeroAddress, zeroHash } from "viem";
 import type { Account, Address, Hash } from "viem";
 
 import { ClearnetSdkError } from "../../core/errors.js";
-import type { TxRef } from "../../core/types.js";
 import {
   BYTES32_HEX_PATTERN,
   normalizeMinConfirmations,
@@ -137,25 +136,36 @@ export function requireReference(reference: unknown): Hash {
   return reference as Hash;
 }
 
-export function requireTxRef(ref: unknown): Hash {
-  if (!ref || typeof ref !== "object" || !("hash" in ref)) {
-    throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.hash must be a 32-byte EVM transaction hash",
-    );
-  }
-  const hash = (ref as Record<"hash", unknown>).hash;
-  if (typeof hash !== "string" || !HASH_PATTERN.test(hash)) {
-    throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.hash must be a 32-byte EVM transaction hash",
-    );
-  }
-  return hash as Hash;
+export interface EvmTxID {
+  hash: Hash;
+  logIndex?: number;
 }
 
-export function txRef(hash: Hash): TxRef {
-  return { hash, raw: hash };
+export function requireTxID(txID: unknown): EvmTxID {
+  if (typeof txID !== "string") {
+    throw new ClearnetSdkError(
+      "INVALID_TX_ID",
+      "txID must be an EVM transaction hash or txHash/logIndex",
+    );
+  }
+  const [hash, logIndex, extra] = txID.split("/");
+  if (hash === undefined || extra !== undefined || !HASH_PATTERN.test(hash)) {
+    throw new ClearnetSdkError(
+      "INVALID_TX_ID",
+      "txID must be an EVM transaction hash or txHash/logIndex",
+    );
+  }
+  if (logIndex === undefined) {
+    return { hash: hash as Hash };
+  }
+  if (!/^(0|[1-9]\d*)$/.test(logIndex)) {
+    throw new ClearnetSdkError("INVALID_TX_ID", "txID log index must be a non-negative integer");
+  }
+  const parsed = Number(logIndex);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new ClearnetSdkError("INVALID_TX_ID", "txID log index is too large");
+  }
+  return { hash: hash as Hash, logIndex: parsed };
 }
 
 export { normalizeMinConfirmations };

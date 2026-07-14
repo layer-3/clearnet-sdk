@@ -221,31 +221,31 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 }
 
 // Submit combines the collected multi-sign blobs (trimmed to the quorum) and
-// broadcasts the result, returning the tx reference.
-func (f *WithdrawalFinalizer) Submit(_ context.Context, _ []byte, signatures [][]byte) (core.TxRef, error) {
+// broadcasts the result, returning the txID.
+func (f *WithdrawalFinalizer) Submit(_ context.Context, _ []byte, signatures [][]byte) (string, error) {
 	merged, err := combineLive(f.client, f.vaultAddress, signatures)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	result, err := f.client.SubmitMultisigned(merged, false)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("xrpl: submit_multisigned: %w", err)
+		return "", fmt.Errorf("xrpl: submit_multisigned: %w", err)
 	}
 	switch result.EngineResult {
 	case "tesSUCCESS", "terQUEUED":
 		hash, err := computeTxHash(result.TxBlob)
 		if err != nil {
-			return core.TxRef{}, err
+			return "", err
 		}
-		return core.TxRef{Hash: hash, Raw: hashHex(hash)}, nil
+		return hashHex(hash), nil
 	default:
-		return core.TxRef{}, fmt.Errorf("xrpl: submit rejected: %s - %s", result.EngineResult, result.EngineResultMessage)
+		return "", fmt.Errorf("xrpl: submit rejected: %s - %s", result.EngineResult, result.EngineResultMessage)
 	}
 }
 
 // VerifyExecution scans the vault's recent account_tx for a Payment whose
-// InvoiceID equals the withdrawalID, returning its tx hash + true.
-func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID [32]byte) ([32]byte, bool, error) {
+// InvoiceID equals the withdrawalID, returning its txID + true.
+func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID [32]byte) (string, bool, error) {
 	want := strings.ToUpper(hex.EncodeToString(withdrawalID[:]))
 	var marker any
 	for page := 0; page < executionScanPages; page++ {
@@ -255,17 +255,15 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 			Marker:  marker,
 		})
 		if err != nil {
-			return [32]byte{}, false, fmt.Errorf("xrpl verify: account_tx: %w", err)
+			return "", false, fmt.Errorf("xrpl verify: account_tx: %w", err)
 		}
 		for _, tx := range resp.Transactions {
 			if strings.EqualFold(asString(tx.Tx["InvoiceID"]), want) {
-				h, err := hex.DecodeString(string(tx.Hash))
-				if err != nil || len(h) != 32 {
-					return [32]byte{}, true, nil // executed; hash unparseable
+				txID := strings.ToUpper(string(tx.Hash))
+				if _, err := hex.DecodeString(txID); err != nil || len(txID) != 64 {
+					return "", true, nil // executed; txID unparseable
 				}
-				var out [32]byte
-				copy(out[:], h)
-				return out, true, nil
+				return txID, true, nil
 			}
 		}
 		if resp.Marker == nil {
@@ -273,5 +271,5 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 		}
 		marker = resp.Marker
 	}
-	return [32]byte{}, false, nil
+	return "", false, nil
 }

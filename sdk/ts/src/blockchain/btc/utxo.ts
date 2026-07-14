@@ -80,7 +80,7 @@ function compareInternalTxidBytes(a: string, b: string): number {
 
 function internalTxidBytes(txid: string): Uint8Array {
   if (!/^[a-fA-F0-9]{64}$/.test(txid)) {
-    throw new ClearnetSdkError("INVALID_TX_REF", "Bitcoin txid must be 64 hex characters");
+    throw new ClearnetSdkError("INVALID_TX_ID", "Bitcoin txid must be 64 hex characters");
   }
   return reverseBytes(hexToBytes(txid, "txid"));
 }

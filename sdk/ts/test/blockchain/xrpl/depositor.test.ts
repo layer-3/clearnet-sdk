@@ -22,7 +22,6 @@ import type {
   Bytes32Hex,
   DepositStatus,
   SubmitDepositOptions,
-  TxRef,
   VaultDepositor,
   XrplDepositDestination,
   XrplIssuedDepositInput,
@@ -41,10 +40,7 @@ const REFERENCE =
   "0x2222222222222222222222222222222222222222222222222222222222222222" as Bytes32Hex;
 const HASH_RAW =
   "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
-const HASH_REF = {
-  hash: `0x${HASH_RAW.toLowerCase()}`,
-  raw: HASH_RAW,
-} satisfies TxRef;
+const HASH_REF = HASH_RAW;
 const TX_BLOB = "1200002280000000240000000161400000000000000A68400000000000000C";
 const MEMO_TYPE = "796e65742d6163636f756e74";
 
@@ -95,7 +91,7 @@ describe("XrplVaultDepositor", () => {
       amount: string;
       destination: XrplDepositDestination;
     }>().toMatchTypeOf<XrplSubmitDepositInput>();
-    expectTypeOf<TxRef>().toEqualTypeOf<{ hash: Bytes32Hex; raw: string }>();
+    expectTypeOf<string>().toEqualTypeOf<string>();
     expectTypeOf<DepositStatus>().toEqualTypeOf<
       "absent" | "pending" | "confirmed"
     >();
@@ -372,7 +368,7 @@ describe("XrplVaultDepositor", () => {
         amount: "1",
         destination: { account: ACCOUNT },
       }),
-    ).rejects.toMatchObject({ code: "TX_REVERTED", txRef: HASH_REF });
+    ).rejects.toMatchObject({ code: "TX_REVERTED", txID: HASH_REF });
 
     signer.sign.mockResolvedValueOnce({ txBlob: TX_BLOB, hash: "not-a-hash" });
     await expect(
@@ -381,7 +377,7 @@ describe("XrplVaultDepositor", () => {
         amount: "1",
         destination: { account: ACCOUNT },
       }),
-    ).rejects.toMatchObject({ code: "INVALID_TX_REF" });
+    ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
   });
 
   it("maps XRPL tx lookup status to the shared deposit status", async () => {
@@ -418,11 +414,11 @@ describe("XrplVaultDepositor", () => {
     const depositor = createDepositor(createSigner());
 
     await expect(
-      depositor.verifyDeposit({ hash: "0x1234" as Bytes32Hex, raw: HASH_RAW }, 0),
-    ).rejects.toMatchObject({ code: "INVALID_TX_REF" });
+      depositor.verifyDeposit("0x1234", 0),
+    ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(
-      depositor.verifyDeposit({ hash: HASH_REF.hash, raw: "not-a-hash" }, 0),
-    ).rejects.toMatchObject({ code: "INVALID_TX_REF" });
+      depositor.verifyDeposit("not-a-hash", 0),
+    ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(depositor.verifyDeposit(HASH_REF, -1)).rejects.toMatchObject({
       code: "INVALID_CONFIRMATIONS",
     });

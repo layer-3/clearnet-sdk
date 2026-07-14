@@ -9,14 +9,6 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 )
 
-// TxRef identifies a submitted L1 transaction across chains: Hash is the
-// canonical 32-byte tx hash / id; Raw is an optional chain-native reference
-// (e.g. a hex txid) for chains where the string form is primary.
-type TxRef struct {
-	Hash [32]byte
-	Raw  string
-}
-
 // Chain-agnostic adapter interfaces for L1 interactions, split by concern: the
 // custody vault (deposit/withdraw), the node registry, token balances, the
 // fraud adjudicator, and the testnet faucet. Each per-chain implementation
@@ -91,13 +83,12 @@ type DepositDestination struct {
 // destination. An empty assetAddress denotes the native asset at this API
 // boundary; chain implementations normalize it to their protocol native marker.
 type VaultDepositor interface {
-	SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest DepositDestination) (TxRef, error)
-	// VerifyDeposit reports whether the deposit identified by ref (a TxRef
-	// returned by SubmitDeposit) is present and final on chain — a pure read for
-	// replay/audit. minConf is the confirmation depth required for
-	// DepositConfirmed; chains with no numeric depth (Solana) map it onto a
-	// commitment level instead.
-	VerifyDeposit(ctx context.Context, ref TxRef, minConf uint64) (DepositStatus, error)
+	SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest DepositDestination) (string, error)
+	// VerifyDeposit reports whether the deposit identified by txID (returned by
+	// SubmitDeposit) is present and final on chain — a pure read for replay/audit.
+	// minConf is the confirmation depth required for DepositConfirmed; chains
+	// with no numeric depth (Solana) map it onto a commitment level instead.
+	VerifyDeposit(ctx context.Context, txID string, minConf uint64) (DepositStatus, error)
 }
 
 // VaultWithdrawalFinalizer turns an authorized withdrawal into an on-chain
@@ -125,8 +116,8 @@ type VaultWithdrawalFinalizer interface {
 	Pack(ctx context.Context, op *WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error)
 	Validate(ctx context.Context, packed []byte, op *WithdrawalOp, withdrawalID [32]byte, deadline int64) error
 	Sign(ctx context.Context, packed []byte) ([]byte, error)
-	Submit(ctx context.Context, packed []byte, signatures [][]byte) (TxRef, error)
-	VerifyExecution(ctx context.Context, withdrawalID [32]byte) (txHash [32]byte, executed bool, err error)
+	Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error)
+	VerifyExecution(ctx context.Context, withdrawalID [32]byte) (txID string, executed bool, err error)
 }
 
 // SignerRotationFinalizer rotates the vault's authorized signer set. It is the
@@ -171,8 +162,8 @@ type SignerRotationFinalizer interface {
 	Pack(ctx context.Context, opID [32]byte, newSigners []string, newThreshold int) ([]byte, error)
 	Validate(ctx context.Context, opID [32]byte, packed []byte, newSigners []string, newThreshold int) error
 	Sign(ctx context.Context, packed []byte) ([]byte, error)
-	Submit(ctx context.Context, packed []byte, signatures [][]byte) (TxRef, error)
-	VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) (txHash [32]byte, done bool, err error)
+	Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error)
+	VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) (txID string, done bool, err error)
 }
 
 // RegistryReader provides read access to the L1 node registry.

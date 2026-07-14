@@ -9,7 +9,6 @@ import { ClearnetSdkError } from "../../core/errors.js";
 import type {
   DepositStatus,
   SubmitDepositOptions,
-  TxRef,
   VaultDepositor,
 } from "../../core/types.js";
 import { normalizeMinConfirmations as normalizeSharedMinConfirmations } from "../../core/validation.js";
@@ -33,7 +32,7 @@ import type {
   BitcoinWalletAddressType,
   NormalizedBitcoinConfig,
 } from "./types.js";
-import { txRefFromTxid, requireBitcoinTxRef } from "./txref.js";
+import { txIDFromTxid, requireBitcoinTxID } from "./txid.js";
 import { compareUtxoForInputOrder, selectDepositUtxos } from "./utxo.js";
 import {
   normalizeConfig,
@@ -58,7 +57,7 @@ export class BitcoinVaultDepositor
   async submitDeposit(
     input: BitcoinSubmitDepositInput,
     options: SubmitDepositOptions = {},
-  ): Promise<TxRef> {
+  ): Promise<string> {
     const submitOptions = requireSubmitDepositOptions(options);
     const fields = this.requireDepositFields(input);
     const signer = requireConfiguredSigner(this.config.signer);
@@ -95,7 +94,7 @@ export class BitcoinVaultDepositor
     return {
       psbtHex: bytesToHex(prepared.tx.toPSBT()),
       inputIndexesToSign: prepared.orderedUtxos.map((_, index) => index),
-      unsignedRef: txRefFromTxid(prepared.tx.id),
+      unsignedTxID: txIDFromTxid(prepared.tx.id),
       fundingAddress: prepared.fundingAddress,
       depositAddress: prepared.depositAddress,
       feeSats: prepared.feeSats,
@@ -106,21 +105,21 @@ export class BitcoinVaultDepositor
   async submitSignedDepositPsbt(
     psbtHex: string,
     options: SubmitDepositOptions = {},
-  ): Promise<TxRef> {
+  ): Promise<string> {
     const submitOptions = requireSubmitDepositOptions(options);
     const tx = finalizableTransactionFromPsbt(psbtHex);
     return this.broadcastTransaction(tx, submitOptions);
   }
 
   async verifyDeposit(
-    ref: TxRef,
+    txID: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
-    const normalized = requireBitcoinTxRef(ref);
+    const normalized = requireBitcoinTxID(txID);
     const minConf = normalizeMinConfirmations(minConfirmations);
     let raw;
     try {
-      raw = await this.config.rpc.getRawTransaction(normalized.raw);
+      raw = await this.config.rpc.getRawTransaction(normalized);
     } catch (error) {
       if (error instanceof BitcoinRpcError && error.code === -5) {
         return "absent";
@@ -153,8 +152,8 @@ export class BitcoinVaultDepositor
     );
   }
 
-  txRefFromTxid(txid: string): TxRef {
-    return txRefFromTxid(txid);
+  txIDFromTxid(txid: string): string {
+    return txIDFromTxid(txid);
   }
 
   private requireDepositFields(input: BitcoinSubmitDepositInput): {
@@ -292,34 +291,34 @@ export class BitcoinVaultDepositor
   private async broadcastTransaction(
     tx: Transaction,
     submitOptions: SubmitDepositOptions,
-  ): Promise<TxRef> {
-    const ref = txRefFromTxid(tx.id);
+  ): Promise<string> {
+    const txID = txIDFromTxid(tx.id);
     try {
       await this.config.rpc.sendRawTransaction(tx.hex);
-      submitOptions.onSubmitted?.(ref);
-      return ref;
+      submitOptions.onSubmitted?.(txID);
+      return txID;
     } catch (error) {
       if (isAlreadyKnown(error)) {
-        submitOptions.onSubmitted?.(ref);
-        return ref;
+        submitOptions.onSubmitted?.(txID);
+        return txID;
       }
       if (isMissingOrSpent(error)) {
         let raw;
         try {
-          raw = await this.config.rpc.getRawTransaction(ref.raw);
+          raw = await this.config.rpc.getRawTransaction(txID);
         } catch {
           raw = null;
         }
-        if (raw?.txid.toLowerCase() === ref.raw) {
-          submitOptions.onSubmitted?.(ref);
-          return ref;
+        if (raw?.txid.toLowerCase() === txID) {
+          submitOptions.onSubmitted?.(txID);
+          return txID;
         }
       }
       if (error instanceof ClearnetSdkError) {
         throw error;
       }
       throw new ClearnetSdkError("RPC_ERROR", "btc: sendrawtransaction", {
-        txRef: ref,
+        txID,
         cause: error,
       });
     }

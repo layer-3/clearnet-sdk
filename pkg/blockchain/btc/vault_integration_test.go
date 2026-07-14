@@ -100,7 +100,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 		t.Fatalf("Deposit: %v", err)
 	}
 	node.generateToAddress(ctx, t, 1, miner) // confirm the deposit UTXO
-	t.Logf("deposit tx %s -> %s", depRef.Raw, depositAddr.EncodeAddress())
+	t.Logf("deposit tx %s -> %s", depRef, depositAddr.EncodeAddress())
 
 	// ── Withdrawal flow (quorum in-process) ───────────────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, btcSignerCount)
@@ -142,7 +142,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 	node.generateToAddress(ctx, t, 1, miner) // confirm the withdrawal
-	t.Logf("withdrawal tx %s", ref.Raw)
+	t.Logf("withdrawal tx %s", ref)
 
 	if _, executed, err := finalizers[0].VerifyExecution(ctx, wid); err != nil {
 		t.Fatalf("VerifyExecution: %v", err)
@@ -202,7 +202,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 		t.Fatalf("rotation Submit: %v", err)
 	}
 	node.generateToAddress(ctx, t, 1, miner) // confirm the sweep
-	t.Logf("rotation sweep tx %s", rRef.Raw)
+	t.Logf("rotation sweep tx %s", rRef)
 
 	if _, done, err := rotators[0].VerifyRotation(ctx, newPubHex, btcThreshold); err != nil {
 		t.Fatalf("VerifyRotation: %v", err)

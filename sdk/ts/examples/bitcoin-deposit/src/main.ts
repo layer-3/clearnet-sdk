@@ -7,7 +7,6 @@ import type {
   BitcoinDepositorConfig,
   BitcoinNetwork,
   BitcoinSigner,
-  TxRef,
 } from "@yellow-org/clearnet-sdk";
 
 import {
@@ -36,7 +35,7 @@ const logOutput = mustElement<HTMLOutputElement>("log");
 let signer: BitcoinSigner | undefined;
 let depositor: BitcoinVaultDepositor | undefined;
 let xverseWallet: XverseWallet | undefined;
-let lastRef: TxRef | undefined;
+let lastRef: string | undefined;
 
 generateButton.addEventListener("click", () => {
   generateKeys();
@@ -151,23 +150,23 @@ async function submitLocalDeposit(): Promise<void> {
         onSubmitted(ref) {
           lastRef = ref;
           verifyButton.disabled = false;
-          writeLog(`Submitted ${ref.raw}\nhash: ${ref.hash}`);
+          writeLog(`Submitted ${ref}\nhash: ${ref}`);
         },
       },
     );
     verifyButton.disabled = false;
     writeLog(
-      `Submitted local signer tx ${lastRef.raw}\n` +
-        `hash: ${lastRef.hash}\n` +
+      `Submitted local signer tx ${lastRef}\n` +
+        `hash: ${lastRef}\n` +
         "Verify before mining for pending status.",
     );
   } catch (error) {
-    const txRef = errorTxRef(error);
-    if (txRef !== undefined) {
-      lastRef = txRef;
+    const txID = errorTxID(error);
+    if (txID !== undefined) {
+      lastRef = txID;
       verifyButton.disabled = false;
     }
-    writeError(error, txRef === undefined ? undefined : `Submitted ${txRef.raw}`);
+    writeError(error, txID === undefined ? undefined : `Submitted ${txID}`);
   } finally {
     setBusy(submitButton, false);
   }
@@ -271,7 +270,7 @@ async function submitXverseDeposit(): Promise<void> {
       },
     );
     writeLog(
-      `Prepared PSBT unsigned txid ${prepared.unsignedRef.raw}\n` +
+      `Prepared PSBT unsigned txid ${prepared.unsignedTxID}\n` +
         `inputs: ${prepared.inputIndexesToSign.join(", ")}\n` +
         "Waiting for Xverse signature...",
     );
@@ -284,23 +283,23 @@ async function submitXverseDeposit(): Promise<void> {
       onSubmitted(ref) {
         lastRef = ref;
         verifyButton.disabled = false;
-        writeLog(`Submitted Xverse tx ${ref.raw}\nhash: ${ref.hash}`);
+        writeLog(`Submitted Xverse tx ${ref}\nhash: ${ref}`);
       },
     });
     depositor = activeDepositor;
     verifyButton.disabled = false;
     writeLog(
-      `Submitted Xverse tx ${lastRef.raw}\n` +
-        `hash: ${lastRef.hash}\n` +
+      `Submitted Xverse tx ${lastRef}\n` +
+        `hash: ${lastRef}\n` +
         "Verify before mining for pending status.",
     );
   } catch (error) {
-    const txRef = errorTxRef(error);
-    if (txRef !== undefined) {
-      lastRef = txRef;
+    const txID = errorTxID(error);
+    if (txID !== undefined) {
+      lastRef = txID;
       verifyButton.disabled = false;
     }
-    writeError(error, txRef === undefined ? undefined : `Submitted ${txRef.raw}`);
+    writeError(error, txID === undefined ? undefined : `Submitted ${txID}`);
   } finally {
     setBusy(submitXverseButton, false);
   }
@@ -330,7 +329,7 @@ async function verifyLastTx(): Promise<void> {
       lastRef,
       readBigInt("min-confirmations"),
     );
-    writeLog(`Verify ${lastRef.raw}\nstatus: ${status}`);
+    writeLog(`Verify ${lastRef}\nstatus: ${status}`);
   } catch (error) {
     writeError(error);
   } finally {
@@ -568,9 +567,9 @@ function writeError(error: unknown, prefix?: string): void {
   writeLog(prefix === undefined ? message : `${prefix}\n${message}`);
 }
 
-function errorTxRef(error: unknown): TxRef | undefined {
-  if (error && typeof error === "object" && "txRef" in error) {
-    return (error as { txRef?: TxRef }).txRef;
+function errorTxID(error: unknown): string | undefined {
+  if (error && typeof error === "object" && "txID" in error) {
+    return (error as { txID?: string }).txID;
   }
   return undefined;
 }

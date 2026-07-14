@@ -184,39 +184,39 @@ func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, er
 }
 
 // Submit combines the collected multi-sign blobs (trimmed to the current quorum)
-// and broadcasts the SignerListSet, returning the tx reference.
-func (f *RotationFinalizer) Submit(_ context.Context, _ []byte, signatures [][]byte) (core.TxRef, error) {
+// and broadcasts the SignerListSet, returning the txID.
+func (f *RotationFinalizer) Submit(_ context.Context, _ []byte, signatures [][]byte) (string, error) {
 	merged, err := combineLive(f.client, f.vaultAddress, signatures)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	result, err := f.client.SubmitMultisigned(merged, false)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("xrpl: submit_multisigned: %w", err)
+		return "", fmt.Errorf("xrpl: submit_multisigned: %w", err)
 	}
 	switch result.EngineResult {
 	case "tesSUCCESS", "terQUEUED":
 		hash, err := computeTxHash(result.TxBlob)
 		if err != nil {
-			return core.TxRef{}, err
+			return "", err
 		}
-		return core.TxRef{Hash: hash, Raw: hashHex(hash)}, nil
+		return hashHex(hash), nil
 	default:
-		return core.TxRef{}, fmt.Errorf("xrpl: rotation rejected: %s - %s", result.EngineResult, result.EngineResultMessage)
+		return "", fmt.Errorf("xrpl: rotation rejected: %s - %s", result.EngineResult, result.EngineResultMessage)
 	}
 }
 
 // VerifyRotation reads the vault's on-chain SignerList and reports whether it now
-// holds exactly newSigners with SignerQuorum == newThreshold. Binary; the tx
-// hash is not recoverable from the SignerList object, so a zero hash is returned
-// with done=true.
-func (f *RotationFinalizer) VerifyRotation(_ context.Context, newSigners []string, newThreshold int) ([32]byte, bool, error) {
+// holds exactly newSigners with SignerQuorum == newThreshold. Binary: no txID is
+// recoverable from the SignerList object, so an empty txID is returned with
+// done=true.
+func (f *RotationFinalizer) VerifyRotation(_ context.Context, newSigners []string, newThreshold int) (string, bool, error) {
 	resp, err := f.client.GetAccountObjects(&account.ObjectsRequest{
 		Account: types.Address(f.vaultAddress),
 		Type:    account.SignerListObject,
 	})
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("xrpl rotation verify: account_objects: %w", err)
+		return "", false, fmt.Errorf("xrpl rotation verify: account_objects: %w", err)
 	}
 	want := make(map[string]struct{}, len(newSigners))
 	for _, s := range newSigners {
@@ -228,20 +228,20 @@ func (f *RotationFinalizer) VerifyRotation(_ context.Context, newSigners []strin
 		}
 		quorum, ok := uint32Field(obj["SignerQuorum"])
 		if !ok || int(quorum) != newThreshold {
-			return [32]byte{}, false, nil
+			return "", false, nil
 		}
 		got, err := signerEntryAccounts(obj["SignerEntries"])
 		if err != nil || len(got) != len(want) {
-			return [32]byte{}, false, nil
+			return "", false, nil
 		}
 		for a := range got {
 			if _, ok := want[a]; !ok {
-				return [32]byte{}, false, nil
+				return "", false, nil
 			}
 		}
-		return [32]byte{}, true, nil
+		return "", true, nil
 	}
-	return [32]byte{}, false, nil
+	return "", false, nil
 }
 
 // signerEntries builds the SignerListSet SignerEntries (each member weight 1),

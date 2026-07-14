@@ -1,4 +1,4 @@
-import { zeroAddress } from "viem";
+import { parseEventLogs, zeroAddress } from "viem";
 import type { Address, Hash, TransactionReceipt } from "viem";
 
 import { ClearnetSdkError } from "../../core/errors.js";
@@ -7,7 +7,6 @@ import type {
   EvmDepositorConfig,
   EvmSubmitDepositInput,
   SubmitDepositOptions,
-  TxRef,
   VaultDepositor,
 } from "../../core/types.js";
 import { decimalToBaseUnits } from "../amounts.js";
@@ -21,9 +20,8 @@ import {
   requireAddress,
   requireAsset,
   requireChainId,
-  requireTxRef,
+  requireTxID,
   requireWalletAccount,
-  txRef,
   walletAccountAddress,
   type ValidatedDepositDestination,
 } from "./validation.js";
@@ -68,7 +66,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
   async submitDeposit(
     input: EvmSubmitDepositInput,
     options: SubmitDepositOptions = {},
-  ): Promise<TxRef> {
+  ): Promise<string> {
     const destination = requireDepositDestination(input.destination);
     const asset = requireAsset(input.asset);
     await this.ensureWriteChain();
@@ -85,26 +83,34 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
   }
 
   async verifyDeposit(
-    ref: TxRef,
+    txID: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
-    const hash = requireTxRef(ref);
+    const parsedTxID = requireTxID(txID);
     const minConf = normalizeMinConfirmations(minConfirmations);
     await this.ensurePublicChain();
 
     let receipt: TransactionReceipt;
     try {
-      receipt = await this.config.publicClient.getTransactionReceipt({ hash });
+      receipt = await this.config.publicClient.getTransactionReceipt({
+        hash: parsedTxID.hash,
+      });
     } catch (error) {
       if (!isTransactionNotFound(error)) {
         throw new ClearnetSdkError("RPC_ERROR", "evm: tx receipt", {
           cause: error,
         });
       }
-      return this.pendingOrAbsent(hash);
+      return this.pendingOrAbsent(parsedTxID.hash);
     }
 
     if (receipt.status !== "success") {
+      return "absent";
+    }
+    if (
+      parsedTxID.logIndex !== undefined &&
+      !hasDepositedLog(receipt, this.config.custodyAddress, parsedTxID.logIndex)
+    ) {
       return "absent";
     }
 
@@ -130,7 +136,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
     destination: ValidatedDepositDestination,
     amount: bigint,
     options: SubmitDepositOptions,
-  ): Promise<TxRef> {
+  ): Promise<string> {
     const hash = await this.writeContractRpc(() =>
       this.config.walletClient.writeContract({
         address: this.config.custodyAddress,
@@ -142,10 +148,17 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
         chain: this.config.walletClient.chain ?? null,
       }),
     );
-    const ref = txRef(hash);
-    options.onSubmitted?.(ref);
-    await this.waitForSuccessfulReceipt(hash, ref, options);
-    return ref;
+    const receipt = await this.waitForSuccessfulReceipt(hash, hash, options);
+    const txID = depositTxID(
+      receipt,
+      this.config.custodyAddress,
+      destination.account,
+      zeroAddress,
+      amount,
+      destination.ref,
+    );
+    options.onSubmitted?.(txID);
+    return txID;
   }
 
   private async submitErc20Deposit(
@@ -153,7 +166,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
     asset: Address,
     amount: bigint,
     options: SubmitDepositOptions,
-  ): Promise<TxRef> {
+  ): Promise<string> {
     const approvalHash = await this.writeContractRpc(() =>
       this.config.walletClient.writeContract({
         address: asset,
@@ -164,7 +177,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
         chain: this.config.walletClient.chain ?? null,
       }),
     );
-    await this.waitForSuccessfulReceipt(approvalHash, txRef(approvalHash), options);
+    await this.waitForSuccessfulReceipt(approvalHash, approvalHash, options);
 
     const depositHash = await this.writeContractRpc(() =>
       this.config.walletClient.writeContract({
@@ -176,10 +189,17 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
         chain: this.config.walletClient.chain ?? null,
       }),
     );
-    const ref = txRef(depositHash);
-    options.onSubmitted?.(ref);
-    await this.waitForSuccessfulReceipt(depositHash, ref, options);
-    return ref;
+    const receipt = await this.waitForSuccessfulReceipt(depositHash, depositHash, options);
+    const txID = depositTxID(
+      receipt,
+      this.config.custodyAddress,
+      destination.account,
+      asset,
+      amount,
+      destination.ref,
+    );
+    options.onSubmitted?.(txID);
+    return txID;
   }
 
   private async assetDecimals(asset: Address): Promise<number> {
@@ -288,9 +308,9 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
 
   private async waitForSuccessfulReceipt(
     hash: Hash,
-    ref: TxRef | undefined,
+    txID: string | undefined,
     options: SubmitDepositOptions,
-  ): Promise<void> {
+  ): Promise<TransactionReceipt> {
     const timeoutMs = requireReceiptTimeout(
       options.receiptTimeoutMs ?? this.config.receiptTimeoutMs ?? DEFAULT_RECEIPT_TIMEOUT_MS,
     );
@@ -300,7 +320,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
         () => this.config.publicClient.waitForTransactionReceipt({ hash }),
         timeoutMs,
         options.signal,
-        ref,
+        txID,
       );
     } catch (error) {
       if (error instanceof ClearnetSdkError) {
@@ -308,7 +328,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
       }
       throw new ClearnetSdkError("RPC_ERROR", "evm: wait receipt", {
         cause: error,
-        ...(ref !== undefined ? { txRef: ref } : {}),
+        ...(txID !== undefined ? { txID } : {}),
       });
     }
 
@@ -316,10 +336,55 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
       throw new ClearnetSdkError(
         "TX_REVERTED",
         `transaction reverted (tx=${hash})`,
-        ref !== undefined ? { txRef: ref } : {},
+        txID !== undefined ? { txID } : {},
       );
     }
+    return receipt;
   }
+}
+
+function depositTxID(
+  receipt: TransactionReceipt,
+  custodyAddress: Address,
+  account: Address,
+  asset: Address,
+  amount: bigint,
+  reference: Hash,
+): string {
+  const log = parseEventLogs({
+    abi: custodyAbi,
+    eventName: "Deposited",
+    logs: [...receipt.logs],
+  }).find(
+    (candidate) =>
+      candidate.address.toLowerCase() === custodyAddress.toLowerCase() &&
+      candidate.args.account.toLowerCase() === account.toLowerCase() &&
+      candidate.args.depositReference.toLowerCase() === reference.toLowerCase() &&
+      candidate.args.asset.toLowerCase() === asset.toLowerCase() &&
+      candidate.args.amount === amount,
+  );
+  if (log === undefined) {
+    throw new ClearnetSdkError("RPC_ERROR", "evm: deposited event not found", {
+      txID: receipt.transactionHash,
+    });
+  }
+  return `${log.transactionHash}/${log.logIndex}`;
+}
+
+function hasDepositedLog(
+  receipt: TransactionReceipt,
+  custodyAddress: Address,
+  logIndex: number,
+): boolean {
+  return parseEventLogs({
+    abi: custodyAbi,
+    eventName: "Deposited",
+    logs: [...receipt.logs],
+  }).some(
+    (log) =>
+      log.address.toLowerCase() === custodyAddress.toLowerCase() &&
+      log.logIndex === logIndex,
+  );
 }
 
 function captureValidation(validation: Promise<void>): AsyncValidation {
@@ -345,13 +410,13 @@ async function waitWithControls(
   wait: () => Promise<TransactionReceipt>,
   timeoutMs: number,
   signal: AbortSignal | undefined,
-  ref: TxRef | undefined,
+  ref: string | undefined,
 ): Promise<TransactionReceipt> {
   if (signal?.aborted) {
     throw new ClearnetSdkError(
       "RECEIPT_TIMEOUT",
       "receipt wait aborted",
-      ref !== undefined ? { txRef: ref } : {},
+      ref !== undefined ? { txID: ref } : {},
     );
   }
 
@@ -364,7 +429,7 @@ async function waitWithControls(
         new ClearnetSdkError(
           "RECEIPT_TIMEOUT",
           `receipt wait timed out after ${timeoutMs}ms`,
-          ref !== undefined ? { txRef: ref } : {},
+          ref !== undefined ? { txID: ref } : {},
         ),
       );
     }, timeoutMs);
@@ -379,7 +444,7 @@ async function waitWithControls(
               new ClearnetSdkError(
                 "RECEIPT_TIMEOUT",
                 "receipt wait aborted",
-                ref !== undefined ? { txRef: ref } : {},
+                ref !== undefined ? { txID: ref } : {},
               ),
             );
           };

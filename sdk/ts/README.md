@@ -90,8 +90,7 @@ const ref = await depositor.submitDeposit({
   amount: "0.0002",
 });
 
-console.log(ref.raw); // display txid
-console.log(ref.hash); // 0x + byte-reversed txid
+console.log(ref); // display txid
 console.log(await depositor.verifyDeposit(ref, 1));
 ```
 
@@ -164,16 +163,16 @@ try {
     },
     {
       onSubmitted(submittedRef) {
-        console.log("deposit submitted", submittedRef.hash);
+        console.log("deposit submitted", submittedRef);
       },
     },
   );
 
-  console.log("deposit mined", ref.hash);
+  console.log("deposit mined", ref);
   console.log("status", await depositor.verifyDeposit(ref, 1));
 } catch (error) {
   if (error instanceof ClearnetSdkError) {
-    console.error(error.code, error.txRef?.hash);
+    console.error(error.code, error.txID);
   }
   throw error;
 }
@@ -200,7 +199,7 @@ The SDK reads and caches the token's `decimals()`, converts the decimal amount
 to base units, submits an exact-amount `approve(custodyAddress, amount)`
 transaction, then submits the custody `deposit(...)` transaction. A successful
 `submitDeposit` call returns the deposit transaction hash, not the approval
-hash. If an ERC-20 approval fails before the deposit is submitted, `error.txRef`
+hash. If an ERC-20 approval fails before the deposit is submitted, `error.txID`
 may refer to the approval transaction.
 
 ## Solana Deposits
@@ -258,8 +257,8 @@ const ref = await depositor.submitDeposit({
   amount: "0.1",
 });
 
-console.log(ref.raw); // Solana base58 signature
-console.log(ref.hash); // 0x + sha256(signature bytes)
+console.log(ref); // Solana base58 signature
+console.log(ref); // 0x + sha256(signature bytes)
 console.log(await depositor.verifyDeposit(ref, 0));
 ```
 
@@ -311,8 +310,8 @@ try {
     amount: "1",
   });
 
-  console.log(ref.raw); // uppercase XRPL transaction hash
-  console.log(ref.hash); // same bytes as 0x-prefixed hex
+  console.log(ref); // uppercase XRPL transaction hash
+  console.log(ref); // same bytes as 0x-prefixed hex
   console.log(await depositor.verifyDeposit(ref, 0));
 } finally {
   await depositor.disconnect();
@@ -428,18 +427,17 @@ Options:
 |---|---|
 | `signal` | Aborts the receipt wait. |
 | `receiptTimeoutMs` | Overrides the receipt wait timeout for this call. |
-| `onSubmitted` | Called with the deposit `TxRef` after the deposit transaction is submitted. |
+| `onSubmitted` | Called with the deposit `txID` string. |
 
 Returns:
 
 ```ts
-type TxRef = {
-  hash: `0x${string}`;
-  raw: string;
-};
+type TxID = string;
 ```
 
-For EVM, `hash` and `raw` are both the transaction hash.
+For EVM deposits, `txID` is `txHash/logIndex`, identifying the exact
+`Deposited` log. Verification also accepts a raw transaction hash for
+transaction-level status checks.
 
 ### `BitcoinVaultDepositor`
 
@@ -469,13 +467,12 @@ Bitcoin input fields:
 | `asset` | `string` | Use `BITCOIN_NATIVE_ASSET`, the empty string. Other asset values are rejected. |
 | `amount` | `string` | Positive decimal BTC amount that fits in signed 64-bit satoshis. |
 
-For Bitcoin, `TxRef.raw` is the display txid and `TxRef.hash` is `0x` plus the
-byte-reversed txid. `submitDeposit` returns after Bitcoin Core accepts the raw
-transaction; use `verifyDeposit` to observe mempool, shallow, and confirmed
-states.
+For Bitcoin, `txID` is the display txid. `submitDeposit` returns after Bitcoin
+Core accepts the raw transaction; use `verifyDeposit` to observe mempool,
+shallow, and confirmed states.
 
-For PSBT wallet signing, `prepareDepositPsbt` returns an `unsignedRef` for the
-unsigned transaction shape. Use the `TxRef` returned by
+For PSBT wallet signing, `prepareDepositPsbt` returns an `unsignedTxID` for the
+unsigned transaction shape. Use the `txID` returned by
 `submitSignedDepositPsbt` for verification because wallet finalization can
 change the final txid for nested-SegWit inputs.
 
@@ -518,8 +515,7 @@ Solana input fields:
 | `asset` | `string` | Use `SOLANA_NATIVE_ASSET`, the empty string, or an SPL mint public key. |
 | `amount` | `string` | Positive decimal amount. Native SOL uses 9 decimals; SPL tokens use mint decimals. |
 
-For Solana, `TxRef.raw` is the base58 signature and `TxRef.hash` is `0x` plus
-the SHA-256 digest of the signature bytes.
+For Solana, `txID` is the base58 signature.
 
 ### `XrplVaultDepositor`
 
@@ -546,8 +542,7 @@ XRPL input fields:
 | `asset` | `string` | Empty string for native, or issued-currency `CUR.rIssuer`. |
 | `amount` | `string` | Positive decimal amount; native XRP uses 6 decimals, issued currencies use configured decimals. |
 
-For XRPL, `TxRef.raw` is the uppercase 64-hex transaction hash and `TxRef.hash`
-is the same bytes as `0x` hex.
+For XRPL, `txID` is the uppercase 64-hex transaction hash.
 
 `XrplVaultDepositor` owns an XRPL WebSocket client. Call
 `await depositor.disconnect()` when the depositor is no longer needed, such as
@@ -710,7 +705,7 @@ Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 | `INVALID_AMOUNT` | `amount` is not positive, has the wrong type/precision, or exceeds the chain limit (`uint256` for EVM, `uint64` for Solana/XRPL native drops, signed 64-bit satoshis for Bitcoin). |
 | `INVALID_CONFIRMATIONS` | `minConfirmations` is negative, fractional, or an unsafe number. |
 | `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value, or Bitcoin received a non-zero reference. |
-| `INVALID_TX_REF` | `ref.hash` is not bytes32, Solana `ref.raw` is not a 64-byte signature, XRPL `ref.raw` is not a 64-hex hash, or Bitcoin `ref.raw` is not a 64-hex txid matching the byte-reversed `hash`. |
+| `INVALID_TX_ID` | `txID` is not valid for the chain: EVM transaction hash or `txHash/logIndex`, Solana 64-byte signature, XRPL 64-hex hash, or Bitcoin 64-hex txid. |
 | `MISSING_WALLET_ACCOUNT` | The EVM wallet account is missing/mismatched, or the Solana/XRPL signer is missing. |
 | `CHAIN_MISMATCH` | The configured chain or network does not match the RPC or wallet network, such as an EVM chain ID mismatch or unsupported Bitcoin network. |
 | `INSUFFICIENT_FUNDS` | Bitcoin only: confirmed depositor UTXOs cannot cover the deposit amount plus fee. |
@@ -719,5 +714,5 @@ Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 | `RPC_ERROR` | The public RPC or wallet provider returned an unexpected error. |
 
 When a transaction may already have been submitted, `ClearnetSdkError` can include
-`txRef`. Use that hash to let a user inspect or retry verification of the
+`txID`. Use that hash to let a user inspect or retry verification of the
 submitted transaction.

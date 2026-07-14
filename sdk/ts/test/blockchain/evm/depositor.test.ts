@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
-import { zeroAddress, zeroHash } from "viem";
+import { encodeAbiParameters, encodeEventTopics, zeroAddress, zeroHash } from "viem";
 import type {
   Address,
   Hash,
@@ -16,9 +16,9 @@ import {
 import type {
   DepositStatus,
   EvmSubmitDepositInput,
-  TxRef,
   VaultDepositor,
 } from "../../../src/index.js";
+import { custodyAbi } from "../../../src/blockchain/evm/abi.js";
 
 const CHAIN_ID = 31_337;
 const CUSTODY_ADDRESS =
@@ -31,6 +31,7 @@ const APPROVAL_HASH =
   "0x2222222222222222222222222222222222222222222222222222222222222222" as Hash;
 const DEPOSIT_REFERENCE =
   "0x3333333333333333333333333333333333333333333333333333333333333333" as Hash;
+const DEPOSIT_TX_ID = `${DEPOSIT_HASH}/0`;
 
 interface ClientMocks {
   publicClient: PublicClient;
@@ -54,7 +55,7 @@ describe("EvmVaultDepositor", () => {
     expectTypeOf<EvmVaultDepositor>().toMatchTypeOf<
       VaultDepositor<EvmSubmitDepositInput>
     >();
-    expectTypeOf<TxRef>().toEqualTypeOf<{ hash: Hash; raw: string }>();
+    expectTypeOf<string>().toEqualTypeOf<string>();
     expectTypeOf<DepositStatus>().toEqualTypeOf<
       "absent" | "pending" | "confirmed"
     >();
@@ -79,7 +80,7 @@ describe("EvmVaultDepositor", () => {
       { onSubmitted },
     );
 
-    expect(ref).toEqual({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH });
+    expect(ref).toBe(DEPOSIT_TX_ID);
     expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(ref);
     expect(clients.walletMock.writeContract).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
@@ -98,6 +99,11 @@ describe("EvmVaultDepositor", () => {
 
   it("approves an exact ERC-20 amount before depositing and returns the deposit hash", async () => {
     const clients = createClients();
+    clients.publicMock.waitForTransactionReceipt
+      .mockResolvedValueOnce(receipt())
+      .mockResolvedValueOnce(
+        receipt({ asset: TOKEN, amount: 25n, reference: zeroHash }),
+      );
     clients.walletMock.writeContract
       .mockResolvedValueOnce(APPROVAL_HASH)
       .mockResolvedValueOnce(DEPOSIT_HASH);
@@ -109,7 +115,7 @@ describe("EvmVaultDepositor", () => {
       { onSubmitted },
     );
 
-    expect(ref).toEqual({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH });
+    expect(ref).toBe(DEPOSIT_TX_ID);
     expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(ref);
     expect(clients.walletMock.writeContract).toHaveBeenNthCalledWith(
       1,
@@ -141,7 +147,7 @@ describe("EvmVaultDepositor", () => {
     );
   });
 
-  it("throws TX_REVERTED with txRef when the deposit receipt fails", async () => {
+  it("throws TX_REVERTED with txID when the deposit receipt fails", async () => {
     const clients = createClients({
       waitReceipt: receipt({ status: "reverted" }),
     });
@@ -156,7 +162,7 @@ describe("EvmVaultDepositor", () => {
       }),
     ).rejects.toMatchObject({
       code: "TX_REVERTED",
-      txRef: { hash: DEPOSIT_HASH, raw: DEPOSIT_HASH },
+      txID: DEPOSIT_HASH,
     });
   });
 
@@ -175,12 +181,12 @@ describe("EvmVaultDepositor", () => {
       }),
     ).rejects.toMatchObject({
       code: "TX_REVERTED",
-      txRef: { hash: APPROVAL_HASH, raw: APPROVAL_HASH },
+      txID: APPROVAL_HASH,
     });
     expect(clients.walletMock.writeContract).toHaveBeenCalledTimes(1);
   });
 
-  it("throws RECEIPT_TIMEOUT with txRef after a submitted deposit times out", async () => {
+  it("throws RECEIPT_TIMEOUT with txID after a submitted deposit times out", async () => {
     const clients = createClients({
       waitReceiptPromise: new Promise<TransactionReceipt>(() => undefined),
     });
@@ -194,7 +200,7 @@ describe("EvmVaultDepositor", () => {
       ),
     ).rejects.toMatchObject({
       code: "RECEIPT_TIMEOUT",
-      txRef: { hash: DEPOSIT_HASH, raw: DEPOSIT_HASH },
+      txID: DEPOSIT_HASH,
     });
   });
 
@@ -306,14 +312,14 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
 
     await expect(
-      depositor.verifyDeposit({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH }, 1),
+      depositor.verifyDeposit(DEPOSIT_TX_ID, 1),
     ).resolves.toBe("confirmed");
     await expect(
-      depositor.verifyDeposit({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH }, 2),
+      depositor.verifyDeposit(DEPOSIT_TX_ID, 2),
     ).resolves.toBe("pending");
     await expect(
       depositor.verifyDeposit(
-        { hash: DEPOSIT_HASH, raw: DEPOSIT_HASH },
+        DEPOSIT_TX_ID,
         1n << 80n,
       ),
     ).resolves.toBe("pending");
@@ -329,7 +335,7 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
 
     await expect(
-      depositor.verifyDeposit({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH }, 1n),
+      depositor.verifyDeposit(DEPOSIT_TX_ID, 1n),
     ).resolves.toBe("absent");
   });
 
@@ -341,7 +347,7 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
 
     await expect(
-      depositor.verifyDeposit({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH }, 1),
+      depositor.verifyDeposit(DEPOSIT_HASH, 1),
     ).resolves.toBe("pending");
   });
 
@@ -353,7 +359,7 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
 
     await expect(
-      depositor.verifyDeposit({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH }, 1),
+      depositor.verifyDeposit(DEPOSIT_HASH, 1),
     ).resolves.toBe("absent");
   });
 
@@ -363,7 +369,7 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
 
     await expect(
-      depositor.verifyDeposit({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH }, 1),
+      depositor.verifyDeposit(DEPOSIT_HASH, 1),
     ).rejects.toMatchObject({ code: "RPC_ERROR", cause: rpcError });
   });
 
@@ -371,13 +377,13 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(createClients());
 
     await expect(
-      depositor.verifyDeposit({ hash: "0x1234" as Hash, raw: "0x1234" }, 1),
-    ).rejects.toMatchObject({ code: "INVALID_TX_REF" });
+      depositor.verifyDeposit("0x1234", 1),
+    ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(
-      depositor.verifyDeposit({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH }, -1),
+      depositor.verifyDeposit(DEPOSIT_HASH, -1),
     ).rejects.toMatchObject({ code: "INVALID_CONFIRMATIONS" });
     await expect(
-      depositor.verifyDeposit({ hash: DEPOSIT_HASH, raw: DEPOSIT_HASH }, 1.5),
+      depositor.verifyDeposit(DEPOSIT_HASH, 1.5),
     ).rejects.toMatchObject({ code: "INVALID_CONFIRMATIONS" });
   });
 });
@@ -447,10 +453,39 @@ function createClients(options: {
 function receipt(options: {
   status?: TransactionReceipt["status"];
   blockNumber?: bigint;
+  asset?: Address;
+  amount?: bigint;
+  reference?: Hash;
 } = {}): TransactionReceipt {
+  const topics = encodeEventTopics({
+    abi: custodyAbi,
+    eventName: "Deposited",
+    args: {
+      account: ACCOUNT,
+      depositReference: options.reference ?? DEPOSIT_REFERENCE,
+    },
+  });
+  const data = encodeAbiParameters(
+    [
+      { name: "depositor", type: "address" },
+      { name: "asset", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    [ACCOUNT, options.asset ?? zeroAddress, options.amount ?? 10n],
+  );
   return {
     status: options.status ?? "success",
     blockNumber: options.blockNumber ?? 1n,
+    transactionHash: DEPOSIT_HASH,
+    logs: [
+      {
+        address: CUSTODY_ADDRESS,
+        data,
+        topics,
+        transactionHash: DEPOSIT_HASH,
+        logIndex: 0,
+      },
+    ],
   } as TransactionReceipt;
 }
 

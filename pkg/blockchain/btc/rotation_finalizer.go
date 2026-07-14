@@ -239,51 +239,51 @@ func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, er
 // Submit assembles the witnesses from the collected shares and broadcasts the
 // sweep. Idempotent by the UTXO model: if the sweep already landed, its inputs
 // are spent and the rebroadcast is rejected as already-known/missing-inputs, in
-// which case the original tx hash is returned.
-func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (core.TxRef, error) {
+// which case the original txID is returned.
+func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
 	cur, err := f.currentVault(ctx)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	merged, err := cur.merge(ctx, packed, shares)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	tx, err := deserializeTx(merged)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("btc rotation submit: %w", err)
+		return "", fmt.Errorf("btc rotation submit: %w", err)
 	}
 	hash := [32]byte(tx.TxHash())
 	txid := hashToTxid(hash)
 	if _, err := f.rpc.SendRawTransaction(ctx, hex.EncodeToString(merged)); err != nil {
 		if isAlreadyKnown(err) {
-			return core.TxRef{Hash: hash, Raw: txid}, nil
+			return txid, nil
 		}
-		return core.TxRef{}, fmt.Errorf("btc rotation submit: sendrawtransaction: %w", err)
+		return "", fmt.Errorf("btc rotation submit: sendrawtransaction: %w", err)
 	}
-	return core.TxRef{Hash: hash, Raw: txid}, nil
+	return txid, nil
 }
 
 // VerifyRotation reports whether the sweep landed — the new vault holds at least
 // one confirmed UTXO — and, when so, pivots the store to the new vault. Binary;
-// the sweep tx hash is not recovered here, so a zero hash is returned with
+// the sweep txID is not recovered here, so an empty txID is returned with
 // done=true. Note: a vault with nothing to sweep cannot be observed as rotated.
-func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) ([32]byte, bool, error) {
+func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) (string, bool, error) {
 	newVault, _, newPubkeys, err := f.newVaultAddress(newSigners, newThreshold)
 	if err != nil {
-		return [32]byte{}, false, err
+		return "", false, err
 	}
 	unspent, err := f.rpc.ListUnspent(ctx, int(f.cfg.ConfirmationDepth), []string{newVault.EncodeAddress()})
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("btc rotation verify: list new vault utxos: %w", err)
+		return "", false, fmt.Errorf("btc rotation verify: list new vault utxos: %w", err)
 	}
 	if len(unspent) == 0 {
-		return [32]byte{}, false, nil
+		return "", false, nil
 	}
 	if err := f.store.Pivot(ctx, newPubkeys, newThreshold); err != nil {
-		return [32]byte{}, false, fmt.Errorf("btc rotation verify: pivot: %w", err)
+		return "", false, fmt.Errorf("btc rotation verify: pivot: %w", err)
 	}
-	return [32]byte{}, true, nil
+	return "", true, nil
 }
 
 // buildSweepTx builds the unsigned sweep: every UTXO as an input, output 0

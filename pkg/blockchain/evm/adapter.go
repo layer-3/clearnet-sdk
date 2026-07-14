@@ -76,16 +76,22 @@ func txOpts(auth *bind.TransactOpts, ctx context.Context) *bind.TransactOpts {
 	return &o
 }
 
-// waitMined blocks until tx is mined and reverts on a failed receipt.
-func waitMined(ctx context.Context, client *ethclient.Client, tx *gethtypes.Transaction) error {
+// waitMinedReceipt blocks until tx is mined and reverts on a failed receipt.
+func waitMinedReceipt(ctx context.Context, client *ethclient.Client, tx *gethtypes.Transaction) (*gethtypes.Receipt, error) {
 	receipt, err := bind.WaitMined(ctx, client, tx)
 	if err != nil {
-		return fmt.Errorf("wait mined: %w", err)
+		return nil, fmt.Errorf("wait mined: %w", err)
 	}
 	if receipt.Status == 0 {
-		return fmt.Errorf("transaction reverted (tx=%s)", tx.Hash().Hex())
+		return nil, fmt.Errorf("transaction reverted (tx=%s)", tx.Hash().Hex())
 	}
-	return nil
+	return receipt, nil
+}
+
+// waitMined blocks until tx is mined and reverts on a failed receipt.
+func waitMined(ctx context.Context, client *ethclient.Client, tx *gethtypes.Transaction) error {
+	_, err := waitMinedReceipt(ctx, client, tx)
+	return err
 }
 
 // depositAssetAddress converts a validated protocol asset address to the

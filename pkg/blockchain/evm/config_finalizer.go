@@ -12,13 +12,12 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 
-	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/log"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
 // defaultConfigLookupWindow is the default eth_getLogs lookback (in blocks) when
-// resolving the tx hash of an already-applied config commit / operator rotation.
+// resolving the txID of an already-applied config commit / operator rotation.
 // It is ~3.5h on Arbitrum; chains with shorter block times can widen it per
 // instance via SetLookupWindow.
 const defaultConfigLookupWindow = uint64(50_000)
@@ -49,11 +48,11 @@ func fetchLiveOperatorQuorum(ctx context.Context, gov *ConfigGovernor) ([]common
 // HRW-elected submitter calls Submit. It owns the node's operator signer and
 // the governor address + chain id supplied at construction.
 type ConfigCommitFinalizer struct {
-	client     *ethclient.Client
-	governor   *ConfigGovernor
-	registry   *Config
-	govAddr    common.Address
-	chainID    uint64
+	client       *ethclient.Client
+	governor     *ConfigGovernor
+	registry     *Config
+	govAddr      common.Address
+	chainID      uint64
 	signer       sign.Signer
 	signerAddr   common.Address
 	fees         FeeConfig
@@ -86,11 +85,11 @@ func NewConfigCommitFinalizer(ctx context.Context, client *ethclient.Client, gov
 		return nil, err
 	}
 	return &ConfigCommitFinalizer{
-		client:     client,
-		governor:   gov,
-		registry:   registry,
-		govAddr:    govAddr,
-		chainID:    chainID.Uint64(),
+		client:       client,
+		governor:     gov,
+		registry:     registry,
+		govAddr:      govAddr,
+		chainID:      chainID.Uint64(),
 		signer:       signer,
 		signerAddr:   addr,
 		fees:         fees,
@@ -100,7 +99,7 @@ func NewConfigCommitFinalizer(ctx context.Context, client *ethclient.Client, gov
 }
 
 // SetLogger sets the finalizer's logger (defaults to a no-op). Used to surface
-// best-effort tx-hash lookups that resolve to the zero hash.
+// best-effort txID lookups that resolve to an empty txID.
 func (f *ConfigCommitFinalizer) SetLogger(l log.Logger) {
 	if l == nil {
 		l = log.NewNoopLogger()
@@ -109,7 +108,7 @@ func (f *ConfigCommitFinalizer) SetLogger(l log.Logger) {
 }
 
 // SetLookupWindow overrides the eth_getLogs lookback (in blocks) used to resolve
-// the tx hash of an already-applied commit. A zero value keeps the default
+// the txID of an already-applied commit. A zero value keeps the default
 // (defaultConfigLookupWindow). Widen it on chains with short block times so a
 // slow ceremony doesn't push the event out of range.
 func (f *ConfigCommitFinalizer) SetLookupWindow(blocks uint64) {
@@ -179,77 +178,77 @@ func (f *ConfigCommitFinalizer) Sign(ctx context.Context, packed []byte) ([]byte
 
 // Submit merges the collected operator signatures against the live operator set
 // and broadcasts setConfig. Idempotent: if this exact commit already landed it
-// returns the prior tx hash without re-submitting.
-func (f *ConfigCommitFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (core.TxRef, error) {
+// returns the prior txID without re-submitting.
+func (f *ConfigCommitFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error) {
 	var p evmCommitPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
-		return core.TxRef{}, fmt.Errorf("decode packed: %w", err)
+		return "", fmt.Errorf("decode packed: %w", err)
 	}
 	key, err := parseBytes32(p.Key)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	checksum, err := parseBytes32(p.Checksum)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 
-	if txHash, done, err := f.VerifyCommit(ctx, key, checksum, p.ExpectedEpoch); err != nil {
-		return core.TxRef{}, err
+	if txID, done, err := f.VerifyCommit(ctx, key, checksum, p.ExpectedEpoch); err != nil {
+		return "", err
 	} else if done {
-		return core.TxRef{Hash: txHash, Raw: common.Hash(txHash).Hex()}, nil
+		return txID, nil
 	}
 
 	digest := ComputeConfigCommitDigest(f.chainID, f.govAddr, key, checksum, p.ExpectedEpoch)
 	liveOps, liveThreshold, err := fetchLiveOperatorQuorum(ctx, f.governor)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	sigs, err := mergeQuorumSigs(common.Hash(digest), signatures, liveOps, liveThreshold)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 
 	opts, _, err := signerTransactOpts(ctx, f.client, f.signer)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if err := f.estimateGas(ctx, opts, key, checksum, p.ExpectedEpoch, sigs); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	tx, err := f.governor.SetConfig(opts, key, checksum, p.ExpectedEpoch, sigs)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("setConfig: %w", err)
+		return "", fmt.Errorf("setConfig: %w", err)
 	}
 	if err := waitMined(ctx, f.client, tx); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
-	return core.TxRef{Hash: tx.Hash(), Raw: tx.Hash().Hex()}, nil
+	return tx.Hash().Hex(), nil
 }
 
 // VerifyCommit reports whether checksum was committed at expectedEpoch (i.e. the
 // registry has advanced past expectedEpoch and the slot our commit would have
-// pushed holds checksum). When set, it resolves the ConfigCommitted tx hash.
-func (f *ConfigCommitFinalizer) VerifyCommit(ctx context.Context, key [32]byte, checksum [32]byte, expectedEpoch uint64) ([32]byte, bool, error) {
+// pushed holds checksum). When set, it resolves the ConfigCommitted txID.
+func (f *ConfigCommitFinalizer) VerifyCommit(ctx context.Context, key [32]byte, checksum [32]byte, expectedEpoch uint64) (string, bool, error) {
 	epoch, err := f.registry.ConfigEpoch(&bind.CallOpts{Context: ctx}, key)
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("read config epoch: %w", err)
+		return "", false, fmt.Errorf("read config epoch: %w", err)
 	}
 	if epoch <= expectedEpoch {
-		return [32]byte{}, false, nil
+		return "", false, nil
 	}
 	// setConfig pushes at index == old length == expectedEpoch.
 	at, err := f.registry.ConfigChecksumAt(&bind.CallOpts{Context: ctx}, key, new(big.Int).SetUint64(expectedEpoch))
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("read checksum at epoch: %w", err)
+		return "", false, fmt.Errorf("read checksum at epoch: %w", err)
 	}
 	if at != checksum {
-		return [32]byte{}, false, nil
+		return "", false, nil
 	}
-	return f.lookupCommitTxHash(ctx, key, checksum), true, nil
+	return f.lookupCommitTxID(ctx, key, checksum), true, nil
 }
 
 func (f *ConfigCommitFinalizer) digestFromPacked(packed []byte) ([32]byte, error) {
@@ -292,19 +291,19 @@ func (f *ConfigCommitFinalizer) estimateGas(ctx context.Context, opts *bind.Tran
 	return nil
 }
 
-// lookupCommitTxHash is a best-effort resolver for the ConfigCommitted tx hash
-// of an already-applied commit. It returns the zero hash on any failure (block
+// lookupCommitTxID is a best-effort resolver for the ConfigCommitted txID
+// of an already-applied commit. It returns an empty txID on any failure (block
 // number error, filter error, or the event falling outside the
 // configLookupWindow lookback — ~3.5h on Arbitrum), so callers may surface
-// 0x000…000 in TxRef.Raw when the commit is confirmed but its hash is
-// unavailable. Each zero-hash path is logged at Warn so it is distinguishable
+// an empty txID when the commit is confirmed but its txID is unavailable. Each
+// empty-txID path is logged at Warn so it is distinguishable
 // from a real value (see SetLogger).
-func (f *ConfigCommitFinalizer) lookupCommitTxHash(ctx context.Context, key [32]byte, checksum [32]byte) [32]byte {
+func (f *ConfigCommitFinalizer) lookupCommitTxID(ctx context.Context, key [32]byte, checksum [32]byte) string {
 	head, err := f.client.BlockNumber(ctx)
 	if err != nil {
-		f.logger.Warn("config commit tx-hash lookup: block number failed, returning zero hash",
+		f.logger.Warn("config commit txID lookup: block number failed, returning empty txID",
 			"key", hexBytes32(key), "error", err)
-		return [32]byte{}
+		return ""
 	}
 	var from uint64
 	if head > f.lookupWindow {
@@ -312,19 +311,19 @@ func (f *ConfigCommitFinalizer) lookupCommitTxHash(ctx context.Context, key [32]
 	}
 	it, err := f.governor.FilterConfigCommitted(&bind.FilterOpts{Context: ctx, Start: from, End: &head}, [][32]byte{key})
 	if err != nil {
-		f.logger.Warn("config commit tx-hash lookup: filter failed, returning zero hash",
+		f.logger.Warn("config commit txID lookup: filter failed, returning empty txID",
 			"key", hexBytes32(key), "error", err)
-		return [32]byte{}
+		return ""
 	}
 	defer it.Close()
-	var last [32]byte
+	var last string
 	for it.Next() {
 		if it.Event.Checksum == checksum {
-			last = it.Event.Raw.TxHash // keep the most recent match
+			last = it.Event.Raw.TxHash.Hex() // keep the most recent match
 		}
 	}
-	if last == ([32]byte{}) {
-		f.logger.Warn("config commit tx-hash lookup: no matching ConfigCommitted in window, returning zero hash",
+	if last == "" {
+		f.logger.Warn("config commit txID lookup: no matching ConfigCommitted in window, returning empty txID",
 			"key", hexBytes32(key), "checksum", hexBytes32(checksum), "window", f.lookupWindow)
 	}
 	return last
@@ -335,10 +334,10 @@ func (f *ConfigCommitFinalizer) lookupCommitTxHash(ctx context.Context, key [32]
 // analogue of RotationFinalizer (which rotates the vault signer set) and is the
 // anchor-chain step of an operator handoff (ADR-017 rotation step 3).
 type OperatorRotationFinalizer struct {
-	client     *ethclient.Client
-	governor   *ConfigGovernor
-	govAddr    common.Address
-	chainID    uint64
+	client       *ethclient.Client
+	governor     *ConfigGovernor
+	govAddr      common.Address
+	chainID      uint64
 	signer       sign.Signer
 	signerAddr   common.Address
 	fees         FeeConfig
@@ -362,10 +361,10 @@ func NewOperatorRotationFinalizer(ctx context.Context, client *ethclient.Client,
 		return nil, err
 	}
 	return &OperatorRotationFinalizer{
-		client:     client,
-		governor:   gov,
-		govAddr:    govAddr,
-		chainID:    chainID.Uint64(),
+		client:       client,
+		governor:     gov,
+		govAddr:      govAddr,
+		chainID:      chainID.Uint64(),
 		signer:       signer,
 		signerAddr:   addr,
 		fees:         fees,
@@ -375,7 +374,7 @@ func NewOperatorRotationFinalizer(ctx context.Context, client *ethclient.Client,
 }
 
 // SetLogger sets the finalizer's logger (defaults to a no-op). Used to surface
-// best-effort tx-hash lookups that resolve to the zero hash.
+// best-effort txID lookups that resolve to an empty txID.
 func (f *OperatorRotationFinalizer) SetLogger(l log.Logger) {
 	if l == nil {
 		l = log.NewNoopLogger()
@@ -384,7 +383,7 @@ func (f *OperatorRotationFinalizer) SetLogger(l log.Logger) {
 }
 
 // SetLookupWindow overrides the eth_getLogs lookback (in blocks) used to resolve
-// the tx hash of an already-applied rotation. A zero value keeps the default
+// the txID of an already-applied rotation. A zero value keeps the default
 // (defaultConfigLookupWindow). Widen it on chains with short block times so a
 // slow ceremony doesn't push the event out of range.
 func (f *OperatorRotationFinalizer) SetLookupWindow(blocks uint64) {
@@ -397,9 +396,9 @@ func (f *OperatorRotationFinalizer) SetLookupWindow(blocks uint64) {
 // evmOpRotPacked is the canonical operator-rotation payload: the new operator
 // set (ascending) + threshold, and the operatorNonce the digest is bound to.
 type evmOpRotPacked struct {
-	NewOperators []string `json:"newOperators"` // ascending hex addresses
-	NewThreshold int      `json:"newThreshold"`
-	OperatorNonce string  `json:"operatorNonce"` // decimal
+	NewOperators  []string `json:"newOperators"` // ascending hex addresses
+	NewThreshold  int      `json:"newThreshold"`
+	OperatorNonce string   `json:"operatorNonce"` // decimal
 }
 
 // Pack reads the live operatorNonce and returns the canonical JSON for rotating
@@ -457,25 +456,25 @@ func (f *OperatorRotationFinalizer) Sign(ctx context.Context, packed []byte) ([]
 
 // Submit merges the collected signatures against the current operator set and
 // broadcasts updateOperators. Idempotent: if the operator set already equals the
-// target it returns the prior tx hash.
-func (f *OperatorRotationFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (core.TxRef, error) {
+// target it returns the prior txID.
+func (f *OperatorRotationFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error) {
 	var p evmOpRotPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
-		return core.TxRef{}, fmt.Errorf("decode packed: %w", err)
+		return "", fmt.Errorf("decode packed: %w", err)
 	}
 	addrs, err := parseSignerAddresses(p.NewOperators)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
-	if txHash, done, err := f.VerifyRotation(ctx, p.NewOperators, p.NewThreshold); err != nil {
-		return core.TxRef{}, err
+	if txID, done, err := f.VerifyRotation(ctx, p.NewOperators, p.NewThreshold); err != nil {
+		return "", err
 	} else if done {
-		return core.TxRef{Hash: txHash, Raw: common.Hash(txHash).Hex()}, nil
+		return txID, nil
 	}
 
 	nonce, ok := new(big.Int).SetString(p.OperatorNonce, 10)
 	if !ok {
-		return core.TxRef{}, fmt.Errorf("bad operator nonce %q", p.OperatorNonce)
+		return "", fmt.Errorf("bad operator nonce %q", p.OperatorNonce)
 	}
 	newThreshold := big.NewInt(int64(p.NewThreshold))
 	// Derive the digest from the already-parsed operators/threshold/nonce rather
@@ -483,53 +482,53 @@ func (f *OperatorRotationFinalizer) Submit(ctx context.Context, packed []byte, s
 	digest := ComputeOperatorRotationDigest(f.chainID, f.govAddr, addrs, newThreshold, nonce)
 	liveOps, liveThreshold, err := fetchLiveOperatorQuorum(ctx, f.governor)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	sigs, err := mergeQuorumSigs(common.Hash(digest), signatures, liveOps, liveThreshold)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 
 	opts, _, err := signerTransactOpts(ctx, f.client, f.signer)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if err := f.estimateGas(ctx, opts, addrs, newThreshold, nonce, sigs); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	tx, err := f.governor.UpdateOperators(opts, addrs, newThreshold, nonce, sigs)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("updateOperators: %w", err)
+		return "", fmt.Errorf("updateOperators: %w", err)
 	}
 	if err := waitMined(ctx, f.client, tx); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
-	return core.TxRef{Hash: tx.Hash(), Raw: tx.Hash().Hex()}, nil
+	return tx.Hash().Hex(), nil
 }
 
 // VerifyRotation reports whether the on-chain operator set now equals
 // newOperators with the given threshold. When set, it resolves the
-// OperatorsUpdated event's tx hash within the lookback window.
-func (f *OperatorRotationFinalizer) VerifyRotation(ctx context.Context, newOperators []string, newThreshold int) ([32]byte, bool, error) {
+// OperatorsUpdated event's txID within the lookback window.
+func (f *OperatorRotationFinalizer) VerifyRotation(ctx context.Context, newOperators []string, newThreshold int) (string, bool, error) {
 	addrs, err := parseSignerAddresses(newOperators)
 	if err != nil {
-		return [32]byte{}, false, err
+		return "", false, err
 	}
 	live, err := f.governor.Operators(&bind.CallOpts{Context: ctx})
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("read operators: %w", err)
+		return "", false, fmt.Errorf("read operators: %w", err)
 	}
 	thr, err := f.governor.Threshold(&bind.CallOpts{Context: ctx})
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("read threshold: %w", err)
+		return "", false, fmt.Errorf("read threshold: %w", err)
 	}
 	if !thr.IsInt64() || int(thr.Int64()) != newThreshold || !addrSetEqual(live, addrs) {
-		return [32]byte{}, false, nil
+		return "", false, nil
 	}
-	return f.lookupRotationTxHash(ctx, addrs), true, nil
+	return f.lookupRotationTxID(ctx, addrs), true, nil
 }
 
 func (f *OperatorRotationFinalizer) digestFromPacked(packed []byte) ([32]byte, error) {
@@ -572,15 +571,15 @@ func (f *OperatorRotationFinalizer) estimateGas(ctx context.Context, opts *bind.
 	return nil
 }
 
-// lookupRotationTxHash is the best-effort OperatorsUpdated tx-hash resolver; it
-// returns (and logs at Warn) the zero hash on the same failure paths as
-// lookupCommitTxHash.
-func (f *OperatorRotationFinalizer) lookupRotationTxHash(ctx context.Context, addrs []common.Address) [32]byte {
+// lookupRotationTxID is the best-effort OperatorsUpdated txID resolver; it
+// returns (and logs at Warn) an empty txID on the same failure paths as
+// lookupCommitTxID.
+func (f *OperatorRotationFinalizer) lookupRotationTxID(ctx context.Context, addrs []common.Address) string {
 	head, err := f.client.BlockNumber(ctx)
 	if err != nil {
-		f.logger.Warn("operator rotation tx-hash lookup: block number failed, returning zero hash",
+		f.logger.Warn("operator rotation txID lookup: block number failed, returning empty txID",
 			"operators", len(addrs), "error", err)
-		return [32]byte{}
+		return ""
 	}
 	var from uint64
 	if head > f.lookupWindow {
@@ -588,19 +587,19 @@ func (f *OperatorRotationFinalizer) lookupRotationTxHash(ctx context.Context, ad
 	}
 	it, err := f.governor.FilterOperatorsUpdated(&bind.FilterOpts{Context: ctx, Start: from, End: &head})
 	if err != nil {
-		f.logger.Warn("operator rotation tx-hash lookup: filter failed, returning zero hash",
+		f.logger.Warn("operator rotation txID lookup: filter failed, returning empty txID",
 			"operators", len(addrs), "error", err)
-		return [32]byte{}
+		return ""
 	}
 	defer it.Close()
-	var last [32]byte
+	var last string
 	for it.Next() {
 		if addrSetEqual(it.Event.NewOperators, addrs) {
-			last = it.Event.Raw.TxHash
+			last = it.Event.Raw.TxHash.Hex()
 		}
 	}
-	if last == ([32]byte{}) {
-		f.logger.Warn("operator rotation tx-hash lookup: no matching OperatorsUpdated in window, returning zero hash",
+	if last == "" {
+		f.logger.Warn("operator rotation txID lookup: no matching OperatorsUpdated in window, returning empty txID",
 			"operators", len(addrs), "window", f.lookupWindow)
 	}
 	return last

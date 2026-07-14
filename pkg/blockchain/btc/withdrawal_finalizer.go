@@ -346,48 +346,48 @@ func (f *WithdrawalFinalizer) merge(ctx context.Context, packed []byte, shares [
 
 // Submit assembles the witnesses from the collected shares and broadcasts the
 // signed tx, returning its hash. Idempotent on an already-known/spent reply.
-func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (core.TxRef, error) {
+func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
 	merged, err := f.merge(ctx, packed, shares)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	tx, err := deserializeTx(merged)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("btc submit: %w", err)
+		return "", fmt.Errorf("btc submit: %w", err)
 	}
 	hash := [32]byte(tx.TxHash())
 	txid := hashToTxid(hash)
 	if _, err := f.rpc.SendRawTransaction(ctx, hex.EncodeToString(merged)); err != nil {
 		if isAlreadyKnown(err) {
-			return core.TxRef{Hash: hash, Raw: txid}, nil
+			return txid, nil
 		}
-		return core.TxRef{}, fmt.Errorf("btc submit: sendrawtransaction: %w", err)
+		return "", fmt.Errorf("btc submit: sendrawtransaction: %w", err)
 	}
-	return core.TxRef{Hash: hash, Raw: txid}, nil
+	return txid, nil
 }
 
 // VerifyExecution scans the most recent blocks for a tx carrying
-// OP_RETURN <withdrawalID>. Returns the tx hash + true on a hit. Bounded by
+// OP_RETURN <withdrawalID>. Returns the txID + true on a hit. Bounded by
 // executionScanBlocks; a withdrawal older than that window reads as not-found.
-func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID [32]byte) ([32]byte, bool, error) {
+func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID [32]byte) (string, bool, error) {
 	marker, err := txscript.NullDataScript(withdrawalID[:])
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("btc verify: opreturn script: %w", err)
+		return "", false, fmt.Errorf("btc verify: opreturn script: %w", err)
 	}
 	markerHex := hex.EncodeToString(marker)
 
 	head, err := f.rpc.GetBlockCount(ctx)
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("btc verify: block count: %w", err)
+		return "", false, fmt.Errorf("btc verify: block count: %w", err)
 	}
 	for h := head; h >= 0 && h > head-executionScanBlocks; h-- {
 		blockHash, err := f.rpc.GetBlockHash(ctx, h)
 		if err != nil {
-			return [32]byte{}, false, fmt.Errorf("btc verify: block hash %d: %w", h, err)
+			return "", false, fmt.Errorf("btc verify: block hash %d: %w", h, err)
 		}
 		txids, err := f.rpc.GetBlockTxids(ctx, blockHash)
 		if err != nil {
-			return [32]byte{}, false, fmt.Errorf("btc verify: block txids: %w", err)
+			return "", false, fmt.Errorf("btc verify: block txids: %w", err)
 		}
 		for _, txid := range txids {
 			raw, err := f.rpc.GetRawTransaction(ctx, txid)
@@ -396,12 +396,12 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 			}
 			for _, vo := range raw.Vouts {
 				if strings.EqualFold(vo.ScriptPubKeyHex, markerHex) {
-					return txidToHash(txid), true, nil
+					return txid, true, nil
 				}
 			}
 		}
 	}
-	return [32]byte{}, false, nil
+	return "", false, nil
 }
 
 // --- helpers ---

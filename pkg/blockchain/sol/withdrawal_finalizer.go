@@ -185,25 +185,25 @@ func (f *WithdrawalFinalizer) merge(ctx context.Context, shares [][]byte) (pubke
 // Submit filters + orders the collected shares against the live signer set,
 // assembles the Ed25519-precompile + execute transaction, and broadcasts it
 // (fee-payer signed), then waits for the Withdrawal PDA to appear.
-func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (core.TxRef, error) {
+func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
 	var p solPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
-		return core.TxRef{}, fmt.Errorf("sol: decode packed: %w", err)
+		return "", fmt.Errorf("sol: decode packed: %w", err)
 	}
 	to, mint, amount, wid, deadline, err := decodePacked(p)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 
 	pubkeys, sigs, err := f.merge(ctx, shares)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 
 	digest := WithdrawDigest(f.chainID, f.programID, f.vaultPDA, to, mint, amount, wid, deadline)
 	ed25519Ix, err := BuildEd25519Instruction(pubkeys, sigs, digest[:])
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	// Leading instructions before the Ed25519 companion: the two compute-budget
 	// instructions, plus (SPL only) an idempotent recipient-ATA creation paid by
@@ -221,22 +221,22 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares 
 	sigIxIndex := uint8(len(leading))
 	execIx, err := f.buildExecuteIx(to, mint, amount, wid, sigIxIndex, deadline)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	instructions := append(leading, ed25519Ix, execIx)
 
 	sig, err := signAndSend(ctx, f.client, instructions, f.feePayerPub, f.feePayer, f.commitment, f.alt)
 	if err != nil {
 		// A peer may have already landed it.
-		if h, executed, verr := f.VerifyExecution(ctx, wid); verr == nil && executed {
-			return core.TxRef{Hash: h}, nil
+		if txID, executed, verr := f.VerifyExecution(ctx, wid); verr == nil && executed {
+			return txID, nil
 		}
-		return core.TxRef{}, err
+		return "", err
 	}
 	if err := f.waitExecuted(ctx, wid); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
-	return txRef(sig), nil
+	return txID(sig), nil
 }
 
 // buildExecuteIx builds the execute instruction. The native account list comes
@@ -277,21 +277,21 @@ func (f *WithdrawalFinalizer) buildExecuteIx(to, mint solana.PublicKey, amount u
 }
 
 // VerifyExecution reports whether the Withdrawal PDA exists (the on-chain
-// executed flag). The tx hash is not recoverable from the PDA alone, so a zero
-// hash is returned with executed=true.
-func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID [32]byte) ([32]byte, bool, error) {
+// executed flag). The txID is not recoverable from the PDA alone, so an empty
+// txID is returned with executed=true.
+func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID [32]byte) (string, bool, error) {
 	info, err := f.client.GetAccountInfoWithOpts(ctx, WithdrawalPDA(f.programID, withdrawalID), &rpc.GetAccountInfoOpts{Commitment: f.commitment})
 	if err != nil {
 		// solana-go returns an error for a missing account; treat as not-found.
 		if err == rpc.ErrNotFound {
-			return [32]byte{}, false, nil
+			return "", false, nil
 		}
-		return [32]byte{}, false, nil
+		return "", false, nil
 	}
 	if info == nil || info.Value == nil {
-		return [32]byte{}, false, nil
+		return "", false, nil
 	}
-	return [32]byte{}, true, nil
+	return "", true, nil
 }
 
 func (f *WithdrawalFinalizer) waitExecuted(ctx context.Context, withdrawalID [32]byte) error {

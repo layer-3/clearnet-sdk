@@ -82,85 +82,85 @@ func normalizeDepositAssetAddress(assetAddress string) string {
 // non-zero dest.Ref is rejected: the account is encoded in the deposit address
 // and a plain BTC send has no side-data channel for a sub-account (ADR-015 has
 // no BTC reference).
-func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (string, error) {
 	assetAddress = normalizeDepositAssetAddress(assetAddress)
 	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if dest.Ref != ([32]byte{}) {
-		return core.TxRef{}, fmt.Errorf("btc: deposit reference not supported")
+		return "", fmt.Errorf("btc: deposit reference not supported")
 	}
 	if amount.Sign() <= 0 {
-		return core.TxRef{}, fmt.Errorf("btc: amount %s not positive", amount.String())
+		return "", fmt.Errorf("btc: amount %s not positive", amount.String())
 	}
 	decimals, err := d.assets.AssetDecimals(ctx, assetAddress)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	baseUnits, err := blockchain.DecimalToBaseUnits(amount, decimals)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("btc: amount: %w", err)
+		return "", fmt.Errorf("btc: amount: %w", err)
 	}
 	if !baseUnits.IsInt64() || baseUnits.Int64() <= 0 {
-		return core.TxRef{}, fmt.Errorf("btc: amount %s not a positive int64 satoshi value", amount.String())
+		return "", fmt.Errorf("btc: amount %s not a positive int64 satoshi value", amount.String())
 	}
 	sats := baseUnits.Int64()
 
 	depositAddr, _, err := DepositAddress(dest.Account, d.threshold, d.vaultPubkeys, d.net)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("btc: derive deposit address: %w", err)
+		return "", fmt.Errorf("btc: derive deposit address: %w", err)
 	}
 
 	myAddr := d.depositAddr.EncodeAddress()
 	unspent, err := d.rpc.ListUnspent(ctx, int(d.cfg.ConfirmationDepth), []string{myAddr})
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("btc: list depositor utxos: %w", err)
+		return "", fmt.Errorf("btc: list depositor utxos: %w", err)
 	}
 	utxos, scripts, err := depositorUTXOs(unspent, myAddr, d.net)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	feeRate, err := d.rpc.EstimateSmartFeeSatPerVByte(ctx, d.cfg.FeeConfTarget, d.cfg.FallbackFeeRate)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("btc: estimate fee: %w", err)
+		return "", fmt.Errorf("btc: estimate fee: %w", err)
 	}
 	// numFixedOutputs = recipient (deposit address); change is sized in.
 	selected, feeSats, err := SelectUTXOs(utxos, sats, feeRate, 1, 0)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 
 	tx, err := buildDepositTx(selected, depositAddr, sats, d.depositAddr, feeSats)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if err := d.signP2WPKH(ctx, tx, selected, scripts); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 
 	raw, err := serializeTx(tx)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	hash := [32]byte(tx.TxHash())
 	txid := hashToTxid(hash)
 	if _, err := d.rpc.SendRawTransaction(ctx, hex.EncodeToString(raw)); err != nil {
 		if isAlreadyKnown(err) {
-			return core.TxRef{Hash: hash, Raw: txid}, nil
+			return txid, nil
 		}
-		return core.TxRef{}, fmt.Errorf("btc: sendrawtransaction: %w", err)
+		return "", fmt.Errorf("btc: sendrawtransaction: %w", err)
 	}
-	return core.TxRef{Hash: hash, Raw: txid}, nil
+	return txid, nil
 }
 
-// VerifyDeposit reports the on-chain status of the deposit tx in ref (matched
-// by txid, ref.Raw). Requires the node to resolve the tx (txindex=1, or the tx
+// VerifyDeposit reports the on-chain status of the deposit txID. Requires the
+// node to resolve the tx (txindex=1, or the tx
 // unspent / in the mempool). A tx the node has never seen — or one reorged out
 // and dropped — reads as DepositAbsent; a mempool tx (0 confs) is DepositPending
 // until it is mined with at least max(1, minConf) confirmations (a deposit is
 // only Confirmed once on chain, consistent with the other chains).
-func (d *Depositor) VerifyDeposit(ctx context.Context, ref core.TxRef, minConf uint64) (core.DepositStatus, error) {
-	raw, err := d.rpc.GetRawTransaction(ctx, ref.Raw)
+func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint64) (core.DepositStatus, error) {
+	raw, err := d.rpc.GetRawTransaction(ctx, txID)
 	if err != nil {
 		var rpcErr *RPCError
 		if errors.As(err, &rpcErr) && rpcErr.Code == -5 { // RPC_INVALID_ADDRESS_OR_KEY: unknown tx

@@ -17,7 +17,7 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
-// rotationLookupWindow bounds the eth_getLogs range when resolving the tx hash
+// rotationLookupWindow bounds the eth_getLogs range when resolving the txID
 // of an already-applied rotation.
 const rotationLookupWindow = uint64(50_000)
 
@@ -130,75 +130,75 @@ func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, er
 
 // Submit merges the collected signatures against the live (outgoing) signer set
 // and broadcasts updateSigners. Idempotent: if the rotation already applied it
-// returns the prior tx hash without re-submitting.
-func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (core.TxRef, error) {
+// returns the prior txID without re-submitting.
+func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error) {
 	var p evmRotPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
-		return core.TxRef{}, fmt.Errorf("decode packed: %w", err)
+		return "", fmt.Errorf("decode packed: %w", err)
 	}
 	addrs, err := parseSignerAddresses(p.NewSigners)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
-	if txHash, done, err := f.VerifyRotation(ctx, p.NewSigners, p.NewThreshold); err != nil {
-		return core.TxRef{}, err
+	if txID, done, err := f.VerifyRotation(ctx, p.NewSigners, p.NewThreshold); err != nil {
+		return "", err
 	} else if done {
-		return core.TxRef{Hash: txHash, Raw: common.Hash(txHash).Hex()}, nil
+		return txID, nil
 	}
 
 	digest, err := f.digestFromPacked(packed)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	liveSigners, liveThreshold, err := fetchLiveQuorum(ctx, f.custody)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	sigs, err := mergeQuorumSigs(common.Hash(digest), signatures, liveSigners, liveThreshold)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 
 	opts, _, err := signerTransactOpts(ctx, f.client, f.signer)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if err := f.estimateGas(ctx, opts, addrs, big.NewInt(int64(p.NewThreshold)), sigs); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	tx, err := f.custody.UpdateSigners(opts, addrs, big.NewInt(int64(p.NewThreshold)), sigs)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("updateSigners: %w", err)
+		return "", fmt.Errorf("updateSigners: %w", err)
 	}
 	if err := waitMined(ctx, f.client, tx); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
-	return core.TxRef{Hash: tx.Hash(), Raw: tx.Hash().Hex()}, nil
+	return tx.Hash().Hex(), nil
 }
 
 // VerifyRotation reports whether the on-chain signer set now equals newSigners
 // with the given threshold. When set, it resolves the SignersUpdated event's tx
-// hash within the lookback window.
-func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) ([32]byte, bool, error) {
+// ID within the lookback window.
+func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) (string, bool, error) {
 	addrs, err := parseSignerAddresses(newSigners)
 	if err != nil {
-		return [32]byte{}, false, err
+		return "", false, err
 	}
 	live, err := f.custody.Signers(&bind.CallOpts{Context: ctx})
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("read signers: %w", err)
+		return "", false, fmt.Errorf("read signers: %w", err)
 	}
 	thr, err := f.custody.Threshold(&bind.CallOpts{Context: ctx})
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("read threshold: %w", err)
+		return "", false, fmt.Errorf("read threshold: %w", err)
 	}
 	if !thr.IsInt64() || int(thr.Int64()) != newThreshold || !addrSetEqual(live, addrs) {
-		return [32]byte{}, false, nil
+		return "", false, nil
 	}
-	return f.lookupRotationTxHash(ctx, addrs), true, nil
+	return f.lookupRotationTxID(ctx, addrs), true, nil
 }
 
 // --- helpers ---
@@ -250,12 +250,12 @@ func (f *RotationFinalizer) digestFromPacked(packed []byte) ([32]byte, error) {
 	return ComputeRotationDigest(f.chainID, f.vaultAddr, addrs, big.NewInt(int64(p.NewThreshold)), nonce), nil
 }
 
-// lookupRotationTxHash finds the SignersUpdated event matching addrs within the
-// lookback window; a zero hash (with done already established) is acceptable.
-func (f *RotationFinalizer) lookupRotationTxHash(ctx context.Context, addrs []common.Address) [32]byte {
+// lookupRotationTxID finds the SignersUpdated event matching addrs within the
+// lookback window; an empty txID (with done already established) is acceptable.
+func (f *RotationFinalizer) lookupRotationTxID(ctx context.Context, addrs []common.Address) string {
 	head, err := f.client.BlockNumber(ctx)
 	if err != nil {
-		return [32]byte{}
+		return ""
 	}
 	var from uint64
 	if head > rotationLookupWindow {
@@ -263,13 +263,13 @@ func (f *RotationFinalizer) lookupRotationTxHash(ctx context.Context, addrs []co
 	}
 	it, err := f.custody.FilterSignersUpdated(&bind.FilterOpts{Context: ctx, Start: from, End: &head})
 	if err != nil {
-		return [32]byte{}
+		return ""
 	}
 	defer it.Close()
-	var last [32]byte
+	var last string
 	for it.Next() {
 		if addrSetEqual(it.Event.NewSigners, addrs) {
-			last = it.Event.Raw.TxHash // keep the most recent match
+			last = it.Event.Raw.TxHash.Hex() // keep the most recent match
 		}
 	}
 	return last

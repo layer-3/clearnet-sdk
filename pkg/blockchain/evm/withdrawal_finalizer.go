@@ -18,7 +18,7 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
-// executedLookupWindow bounds the eth_getLogs range when resolving the tx hash
+// executedLookupWindow bounds the eth_getLogs range when resolving the txID
 // of an already-executed withdrawal.
 const executedLookupWindow = uint64(50_000)
 
@@ -153,72 +153,72 @@ func (f *WithdrawalFinalizer) merge(ctx context.Context, p evmPacked, signatures
 }
 
 // Submit merges the collected signatures into a contract-ready quorum and
-// broadcasts it via Custody.execute, returning the tx reference. Idempotent: if
-// the withdrawal is already executed it returns the prior tx hash without
+// broadcasts it via Custody.execute, returning the txID. Idempotent: if
+// the withdrawal is already executed it returns the prior txID without
 // re-submitting.
-func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (core.TxRef, error) {
+func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error) {
 	var p evmPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
-		return core.TxRef{}, fmt.Errorf("decode packed: %w", err)
+		return "", fmt.Errorf("decode packed: %w", err)
 	}
 	wid, err := decodeHex32(p.WithdrawalID)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
-	if txHash, executed, err := f.VerifyExecution(ctx, wid); err != nil {
-		return core.TxRef{}, err
+	if txID, executed, err := f.VerifyExecution(ctx, wid); err != nil {
+		return "", err
 	} else if executed {
-		return core.TxRef{Hash: txHash, Raw: common.Hash(txHash).Hex()}, nil
+		return txID, nil
 	}
 
 	sigs, err := f.merge(ctx, p, signatures)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 
 	to := common.HexToAddress(p.To)
 	asset := common.HexToAddress(p.Asset)
 	amount, ok := new(big.Int).SetString(p.Amount, 10)
 	if !ok {
-		return core.TxRef{}, fmt.Errorf("bad amount %q", p.Amount)
+		return "", fmt.Errorf("bad amount %q", p.Amount)
 	}
 
 	opts, _, err := signerTransactOpts(ctx, f.client, f.signer)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	deadline := new(big.Int).SetInt64(p.Deadline)
 	if err := f.estimateGas(ctx, opts, to, asset, amount, wid, deadline, sigs); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	tx, err := f.custody.Execute(opts, to, asset, amount, wid, deadline, sigs)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("execute: %w", err)
+		return "", fmt.Errorf("execute: %w", err)
 	}
-	// Block until mined so the returned ref corresponds to an executed
+	// Block until mined so the returned txID corresponds to an executed
 	// withdrawal (and a subsequent VerifyExecution observes it).
 	if err := waitMined(ctx, f.client, tx); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
-	return core.TxRef{Hash: tx.Hash(), Raw: tx.Hash().Hex()}, nil
+	return tx.Hash().Hex(), nil
 }
 
 // VerifyExecution reads Custody.executed(id) and, when set, looks up the
-// Executed event's tx hash within the lookback window.
-func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID [32]byte) ([32]byte, bool, error) {
+// Executed event's txID within the lookback window.
+func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID [32]byte) (string, bool, error) {
 	executed, err := f.custody.Executed(&bind.CallOpts{Context: ctx}, withdrawalID)
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("check executed: %w", err)
+		return "", false, fmt.Errorf("check executed: %w", err)
 	}
 	if !executed {
-		return [32]byte{}, false, nil
+		return "", false, nil
 	}
 	head, err := f.client.BlockNumber(ctx)
 	if err != nil {
-		return [32]byte{}, true, nil // executed; hash unknown
+		return "", true, nil // executed; txID unknown
 	}
 	var from uint64
 	if head > executedLookupWindow {
@@ -226,13 +226,13 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 	}
 	it, err := f.custody.FilterExecuted(&bind.FilterOpts{Context: ctx, Start: from, End: &head}, [][32]byte{withdrawalID}, nil)
 	if err != nil {
-		return [32]byte{}, true, nil
+		return "", true, nil
 	}
 	defer it.Close()
 	if it.Next() {
-		return it.Event.Raw.TxHash, true, nil
+		return it.Event.Raw.TxHash.Hex(), true, nil
 	}
-	return [32]byte{}, true, nil
+	return "", true, nil
 }
 
 // --- helpers ---
