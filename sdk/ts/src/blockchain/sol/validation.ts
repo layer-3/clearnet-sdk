@@ -1,11 +1,10 @@
 import { Buffer } from "buffer";
 
 import bs58 from "bs58";
-import { sha256 } from "@noble/hashes/sha2.js";
 import { PublicKey } from "@solana/web3.js";
 
 import { ClearnetSdkError } from "../../core/errors.js";
-import type { Bytes32Hex, DepositDestination, TxRef } from "../../core/types.js";
+import type { Bytes32Hex, DepositDestination } from "../../core/types.js";
 import {
   BYTES32_HEX_PATTERN,
   normalizeMinConfirmations,
@@ -173,46 +172,24 @@ export function publicKeyFromString(value: unknown, field: string): PublicKey {
   }
 }
 
-export function requireTxRef(ref: unknown): Uint8Array {
-  if (!ref || typeof ref !== "object") {
-    throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.raw must be a Solana signature",
-    );
-  }
-  const fields = ref as Partial<TxRef>;
-  if (typeof fields.hash !== "string" || !BYTES32_HEX_PATTERN.test(fields.hash)) {
-    throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.hash must be a 32-byte hex value",
-    );
-  }
-  if (typeof fields.raw !== "string") {
-    throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.raw must be a Solana signature",
-    );
+export function requireTxID(txID: unknown): Uint8Array {
+  if (typeof txID !== "string") {
+    throw new ClearnetSdkError("INVALID_TX_ID", "txID must be a Solana signature");
   }
   let signature: Uint8Array;
   try {
-    signature = bs58.decode(fields.raw);
+    signature = bs58.decode(txID);
   } catch (error) {
     throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.raw must be a Solana signature",
+      "INVALID_TX_ID",
+      "txID must be a Solana signature",
       { cause: error },
     );
   }
   if (signature.length !== 64) {
     throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.raw must decode to a 64-byte Solana signature",
-    );
-  }
-  if (fields.hash.toLowerCase() !== bytes32Hex(sha256(signature))) {
-    throw new ClearnetSdkError(
-      "INVALID_TX_REF",
-      "ref.hash must match the Solana signature hash",
+      "INVALID_TX_ID",
+      "txID must decode to a 64-byte Solana signature",
     );
   }
   return signature;

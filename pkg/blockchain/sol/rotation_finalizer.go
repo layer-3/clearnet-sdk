@@ -166,33 +166,33 @@ func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, er
 // assembles the Ed25519-precompile + update_signers transaction, and broadcasts
 // it (fee-payer signed). Idempotent: if the rotation already applied it returns
 // without re-submitting.
-func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (core.TxRef, error) {
+func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
 	var p rotPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
-		return core.TxRef{}, fmt.Errorf("sol: decode packed: %w", err)
+		return "", fmt.Errorf("sol: decode packed: %w", err)
 	}
 	newPubs, err := parseRotationSigners(p.NewSigners)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if _, done, _ := f.VerifyRotation(ctx, p.NewSigners, int(p.NewThreshold)); done {
-		return core.TxRef{}, nil
+		return "", nil
 	}
 
 	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	pubkeys, sigs, err := assembleQuorum(shares, cfg.Signers, int(cfg.Threshold))
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 
 	commitment := SignersCommitment(newPubs, p.NewThreshold)
 	digest := RotateDigest(f.chainID, f.programID, f.configPDA, commitment, p.SignerNonce)
 	ed25519Ix, err := BuildEd25519Instruction(pubkeys, sigs, digest[:])
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	leading := []solana.Instruction{
 		computebudget.NewSetComputeUnitLimitInstruction(f.cuLimit).Build(),
@@ -204,23 +204,23 @@ func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares []
 		f.configPDA, solana.SysVarInstructionsPubkey, f.eventAuth, f.programID,
 	)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("sol: build update_signers ix: %w", err)
+		return "", fmt.Errorf("sol: build update_signers ix: %w", err)
 	}
 	instructions := append(leading, ed25519Ix, updateIx)
 
 	sig, err := signAndSend(ctx, f.client, instructions, f.feePayerPub, f.feePayer, f.commitment, solana.PublicKey{})
 	if err != nil {
 		if _, done, verr := f.VerifyRotation(ctx, p.NewSigners, int(p.NewThreshold)); verr == nil && done {
-			return core.TxRef{}, nil
+			return "", nil
 		}
-		return core.TxRef{}, err
+		return "", err
 	}
-	// Block until the Config reflects the new set, so the returned ref
+	// Block until the Config reflects the new set, so the returned txID
 	// corresponds to an applied rotation (mirrors the withdrawal finalizer).
 	if err := f.waitRotated(ctx, p.NewSigners, int(p.NewThreshold)); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
-	return txRef(sig), nil
+	return txID(sig), nil
 }
 
 func (f *RotationFinalizer) waitRotated(ctx context.Context, newSigners []string, newThreshold int) error {
@@ -241,30 +241,30 @@ func (f *RotationFinalizer) waitRotated(ctx context.Context, newSigners []string
 }
 
 // VerifyRotation reports whether the on-chain Config now holds exactly the
-// requested signer set + threshold. Binary — no tx hash is recoverable from the
-// Config account, so a zero hash is returned with done=true.
-func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) ([32]byte, bool, error) {
+// requested signer set + threshold. Binary: no txID is recoverable from the
+// Config account, so an empty txID is returned with done=true.
+func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) (string, bool, error) {
 	pubs, err := parseRotationSigners(newSigners)
 	if err != nil {
-		return [32]byte{}, false, err
+		return "", false, err
 	}
 	thr, err := checkThreshold(newThreshold, len(pubs))
 	if err != nil {
-		return [32]byte{}, false, err
+		return "", false, err
 	}
 	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
 	if err != nil {
-		return [32]byte{}, false, err
+		return "", false, err
 	}
 	if cfg.Threshold != thr || len(cfg.Signers) != len(pubs) {
-		return [32]byte{}, false, nil
+		return "", false, nil
 	}
 	for i := range pubs {
 		if cfg.Signers[i] != pubs[i] {
-			return [32]byte{}, false, nil
+			return "", false, nil
 		}
 	}
-	return [32]byte{}, true, nil
+	return "", true, nil
 }
 
 // --- helpers ---

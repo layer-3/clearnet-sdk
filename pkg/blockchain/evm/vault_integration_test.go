@@ -106,7 +106,7 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
-	t.Logf("deposit tx %s", depRef.Raw)
+	t.Logf("deposit tx %s", depRef)
 
 	// ── Withdrawal flow (the quorum runs in-process) ──────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, len(signers))
@@ -150,7 +150,7 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	t.Logf("withdrawal tx %s", wRef.Raw)
+	t.Logf("withdrawal tx %s", wRef)
 
 	// 4. Verify execution.
 	_, executed, err := finalizers[0].VerifyExecution(ctx, withdrawalID)
@@ -201,7 +201,7 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rotation Submit: %v", err)
 	}
-	t.Logf("rotation tx %s", rRef.Raw)
+	t.Logf("rotation tx %s", rRef)
 
 	if _, done, err := rotators[0].VerifyRotation(ctx, newAddrs, integrationThreshold); err != nil {
 		t.Fatalf("VerifyRotation: %v", err)

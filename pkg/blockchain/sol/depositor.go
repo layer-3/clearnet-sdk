@@ -2,7 +2,6 @@ package sol
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -76,33 +75,33 @@ func normalizeDepositAssetAddress(assetAddress string) string {
 // crediting clearnet dest.Account (20-byte hex) with the optional ADR-015
 // dest.Ref sub-account reference. assetAddress is "" for native or a base58
 // mint.
-func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (string, error) {
 	acct, err := parseClearnetAccount(dest.Account)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	assetAddress = normalizeDepositAssetAddress(assetAddress)
 	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if amount.Sign() <= 0 {
-		return core.TxRef{}, fmt.Errorf("sol: amount %s not positive", amount.String())
+		return "", fmt.Errorf("sol: amount %s not positive", amount.String())
 	}
 	decimals, err := d.assets.AssetDecimals(ctx, assetAddress)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	baseUnits, err := blockchain.DecimalToBaseUnits(amount, decimals)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("sol: amount: %w", err)
+		return "", fmt.Errorf("sol: amount: %w", err)
 	}
 	if !baseUnits.IsUint64() {
-		return core.TxRef{}, fmt.Errorf("sol: amount %s overflows uint64 base units", amount.String())
+		return "", fmt.Errorf("sol: amount %s overflows uint64 base units", amount.String())
 	}
 	lamports := baseUnits.Uint64()
 	mint, err := resolveMint(assetAddress)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 
 	var ix solana.Instruction
@@ -114,11 +113,11 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 	} else {
 		depositorATA, _, e := solana.FindAssociatedTokenAddress(d.depositorPub, mint)
 		if e != nil {
-			return core.TxRef{}, fmt.Errorf("sol: depositor ATA: %w", e)
+			return "", fmt.Errorf("sol: depositor ATA: %w", e)
 		}
 		vaultATA, _, e := solana.FindAssociatedTokenAddress(d.vaultPDA, mint)
 		if e != nil {
-			return core.TxRef{}, fmt.Errorf("sol: vault ATA: %w", e)
+			return "", fmt.Errorf("sol: vault ATA: %w", e)
 		}
 		ix, err = custody.NewDepositSplInstruction(
 			acct, dest.Ref, lamports,
@@ -127,25 +126,25 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 		)
 	}
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("sol: build deposit ix: %w", err)
+		return "", fmt.Errorf("sol: build deposit ix: %w", err)
 	}
 
 	sig, err := signAndSend(ctx, d.client, []solana.Instruction{ix}, d.depositorPub, d.signer, d.commitment, solana.PublicKey{})
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
-	return txRef(sig), nil
+	return txID(sig), nil
 }
 
-// VerifyDeposit reports the on-chain status of the deposit tx in ref (matched by
-// signature, ref.Raw). minConf maps onto Solana's commitment ladder, which has
-// no numeric depth: minConf 0 accepts the optimistic "confirmed" level (~1-2
+// VerifyDeposit reports the on-chain status of the deposit txID (the base58
+// signature). minConf maps onto Solana's commitment ladder, which has no numeric
+// depth: minConf 0 accepts the optimistic "confirmed" level (~1-2
 // slots), while minConf >= 1 requires "finalized" (irreversible). A failed tx
 // reads as DepositAbsent (it credited nothing).
-func (d *Depositor) VerifyDeposit(ctx context.Context, ref core.TxRef, minConf uint64) (core.DepositStatus, error) {
-	sig, err := solana.SignatureFromBase58(ref.Raw)
+func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint64) (core.DepositStatus, error) {
+	sig, err := solana.SignatureFromBase58(txID)
 	if err != nil {
-		return core.DepositAbsent, fmt.Errorf("sol: bad signature %q: %w", ref.Raw, err)
+		return core.DepositAbsent, fmt.Errorf("sol: bad signature %q: %w", txID, err)
 	}
 	out, err := d.client.GetSignatureStatuses(ctx, true, sig)
 	if err != nil {
@@ -191,9 +190,6 @@ func parseClearnetAccount(account string) ([20]byte, error) {
 	return out, nil
 }
 
-// txRef builds a core.TxRef from a Solana signature: Hash = sha256(sig) (the
-// 32-byte receipt form clearnet uses), Raw = the base58 signature.
-func txRef(sig solana.Signature) core.TxRef {
-	h := sha256.Sum256(sig[:])
-	return core.TxRef{Hash: h, Raw: sig.String()}
+func txID(sig solana.Signature) string {
+	return sig.String()
 }

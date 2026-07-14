@@ -7,7 +7,6 @@ export type {
   EvmSubmitDepositInput,
   SubmitDepositInput,
   SubmitDepositOptions,
-  TxRef,
   VaultDepositor,
 } from "./core/types.js";
 export { ClearnetSdkError } from "./core/errors.js";

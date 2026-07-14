@@ -61,17 +61,16 @@ describe("BitcoinVaultDepositor regtest integration", () => {
     const miningAddress = await wallet.call<string>("getnewaddress", ["", "bech32"]);
     await admin.call("generatetoaddress", [1, miningAddress]);
 
-    const ref = await depositor.submitDeposit({
+    const txID = await depositor.submitDeposit({
       asset: BITCOIN_NATIVE_ASSET,
       amount: "0.2",
       destination: { account: ACCOUNT },
     });
 
-    expect(ref.raw).toMatch(/^[a-f0-9]{64}$/);
-    expect(ref.hash).toBe(`0x${ref.raw.match(/../g)?.reverse().join("")}`);
-    await expect(depositor.verifyDeposit(ref, 1)).resolves.toBe("pending");
+    expect(txID).toMatch(/^[a-f0-9]{64}$/);
+    await expect(depositor.verifyDeposit(txID, 1)).resolves.toBe("pending");
     await admin.call("generatetoaddress", [1, miningAddress]);
-    await expect(depositor.verifyDeposit(ref, 1)).resolves.toBe("confirmed");
+    await expect(depositor.verifyDeposit(txID, 1)).resolves.toBe("confirmed");
   }, 120_000);
 });
 

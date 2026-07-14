@@ -5,7 +5,6 @@ import { ClearnetSdkError } from "../../core/errors.js";
 import type {
   DepositStatus,
   SubmitDepositOptions,
-  TxRef,
   VaultDepositor,
 } from "../../core/types.js";
 import { encodeClearnetMemo } from "./encoding.js";
@@ -25,7 +24,7 @@ import {
   requireReference,
   requireRpcUrl,
   requireSigner,
-  requireTxRef,
+  requireTxID,
   resolveAmount,
 } from "./validation.js";
 
@@ -55,7 +54,7 @@ export class XrplVaultDepositor
   async submitDeposit(
     input: XrplSubmitDepositInput,
     options: SubmitDepositOptions = {},
-  ): Promise<TxRef> {
+  ): Promise<string> {
     const fields =
       input && typeof input === "object"
         ? (input as Partial<XrplSubmitDepositInput>)
@@ -80,23 +79,23 @@ export class XrplVaultDepositor
     const prepared = await this.autofill(payment);
     this.enforceFee(prepared);
     const signed = await this.sign(prepared);
-    const ref = normalizeTxHash(signed.hash);
-    await this.submit(signed.txBlob, ref);
-    submitOptions.onSubmitted?.(ref);
-    return ref;
+    const txID = normalizeTxHash(signed.hash);
+    await this.submit(signed.txBlob, txID);
+    submitOptions.onSubmitted?.(txID);
+    return txID;
   }
 
   async verifyDeposit(
-    ref: TxRef,
+    txID: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
-    const normalized = requireTxRef(ref);
+    const normalized = requireTxID(txID);
     const minConf = normalizeMinConfirmations(minConfirmations);
     await this.ensureConnected();
     try {
       const response = await this.client.request({
         command: "tx",
-        transaction: normalized.raw,
+        transaction: normalized,
       });
       return xrplDepositStatus(response.result.validated === true, minConf);
     } catch (error) {
@@ -168,7 +167,7 @@ export class XrplVaultDepositor
     }
   }
 
-  private async submit(txBlob: string, ref: TxRef): Promise<void> {
+  private async submit(txBlob: string, txID: string): Promise<void> {
     try {
       const response = await this.client.submit(txBlob, { autofill: false });
       const engineResult = response.result.engine_result;
@@ -176,7 +175,7 @@ export class XrplVaultDepositor
         throw new ClearnetSdkError(
           "TX_REVERTED",
           `xrpl: deposit rejected: ${engineResult}`,
-          { txRef: ref },
+          { txID },
         );
       }
     } catch (error) {
@@ -184,7 +183,7 @@ export class XrplVaultDepositor
         throw error;
       }
       throw new ClearnetSdkError("RPC_ERROR", "xrpl: submit", {
-        txRef: ref,
+        txID,
         cause: error,
       });
     }

@@ -8,7 +8,6 @@ import {
   http,
   parseUnits,
 } from "viem";
-import type { TxRef } from "@yellow-org/clearnet-sdk";
 import type { Address, Hash } from "viem";
 
 interface Eip1193Provider {
@@ -28,7 +27,7 @@ const verifyButton = mustElement<HTMLButtonElement>("verify");
 const logOutput = mustElement<HTMLOutputElement>("log");
 
 let walletAccount: Address | undefined;
-let lastRef: TxRef | undefined;
+let lastRef: string | undefined;
 
 connectButton.addEventListener("click", () => {
   void connectWallet();
@@ -119,12 +118,12 @@ async function submitDeposit(): Promise<void> {
         onSubmitted(ref) {
           lastRef = ref;
           verifyButton.disabled = false;
-          writeLog(`Submitted ${ref.hash}`);
+          writeLog(`Submitted ${ref}`);
         },
       },
     );
     verifyButton.disabled = false;
-    writeLog(`Mined ${lastRef.hash}\nraw: ${lastRef.raw}`);
+    writeLog(`Mined ${lastRef}\nraw: ${lastRef}`);
   } catch (error) {
     const txHash = errorTxHash(error);
     writeError(error, txHash === undefined ? undefined : `Submitted ${txHash}`);
@@ -165,7 +164,7 @@ async function verifyLastTx(): Promise<void> {
   setBusy(verifyButton, true);
   try {
     const status = await depositor.verifyDeposit(lastRef, 1);
-    writeLog(`Verify ${lastRef.hash}\nstatus: ${status}`);
+    writeLog(`Verify ${lastRef}\nstatus: ${status}`);
   } catch (error) {
     writeError(error);
   } finally {
@@ -223,9 +222,9 @@ function requireProvider(): Eip1193Provider {
 }
 
 function errorTxHash(error: unknown): Hash | undefined {
-  if (error && typeof error === "object" && "txRef" in error) {
-    const txRef = (error as { txRef?: TxRef }).txRef;
-    return txRef?.hash;
+  if (error && typeof error === "object" && "txID" in error) {
+    const txID = (error as { txID?: string }).txID;
+    return txID?.split("/", 1)[0] as Hash | undefined;
   }
   return undefined;
 }

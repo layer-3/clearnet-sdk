@@ -7,11 +7,6 @@ import type {
 
 export type Bytes32Hex = `0x${string}`;
 
-export interface TxRef {
-  hash: Bytes32Hex;
-  raw: string;
-}
-
 export type DepositStatus = "absent" | "pending" | "confirmed";
 
 export interface DepositDestination {
@@ -37,15 +32,15 @@ export interface EvmSubmitDepositInput extends SubmitDepositInput<string> {
 export interface SubmitDepositOptions {
   signal?: AbortSignal;
   receiptTimeoutMs?: number;
-  onSubmitted?: (ref: TxRef) => void;
+  onSubmitted?: (txID: string) => void;
 }
 
 export interface VaultDepositor<
   TInput extends SubmitDepositInput<unknown> = SubmitDepositInput,
 > {
-  submitDeposit(input: TInput, options?: SubmitDepositOptions): Promise<TxRef>;
+  submitDeposit(input: TInput, options?: SubmitDepositOptions): Promise<string>;
   verifyDeposit(
-    ref: TxRef,
+    txID: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus>;
 }

@@ -15,7 +15,6 @@ import type {
   BitcoinSubmitDepositInput,
   BitcoinPsbtSignerInfo,
   Bytes32Hex,
-  TxRef,
   VaultDepositor,
 } from "../../../src/index.js";
 import { estimateDepositFeeSats } from "../../../src/blockchain/btc/utxo.js";
@@ -38,8 +37,6 @@ const SIGNER_PUBKEY =
   "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const DISPLAY_TXID =
   "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
-const INTERNAL_HASH =
-  "0x1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100";
 const FUNDING_SCRIPT = "0014751e76e8199196d454941c45d1b3a323f1433bd6";
 const NESTED_SEGWIT_ADDRESS = "2NAUYAHhujozruyzpsFRP63mbrdaU5wnEpN";
 const NESTED_SEGWIT_SCRIPT = "a914bcfeb728b584253d5f3f70bcb780e9ef218a68f487";
@@ -50,11 +47,11 @@ describe("BitcoinVaultDepositor", () => {
       VaultDepositor<BitcoinSubmitDepositInput>
     >();
     expectTypeOf<BitcoinSubmitDepositInput["amount"]>().toEqualTypeOf<string>();
-    expectTypeOf<TxRef>().toEqualTypeOf<{ hash: Bytes32Hex; raw: string }>();
+    expectTypeOf<string>().toEqualTypeOf<string>();
     expect(BITCOIN_NATIVE_ASSET).toBe("");
   });
 
-  it("derives stable regtest addresses and tx refs from account and txid bytes", async () => {
+  it("derives stable regtest addresses and txIDs from account and txid bytes", async () => {
     const depositor = createDepositor();
 
     await expect(depositor.depositorAddress()).resolves.toBe(
@@ -66,10 +63,7 @@ describe("BitcoinVaultDepositor", () => {
       depositor.depositAddress(ACCOUNT),
     );
 
-    expect(depositor.txRefFromTxid(DISPLAY_TXID)).toEqual({
-      raw: DISPLAY_TXID,
-      hash: INTERNAL_HASH,
-    });
+    expect(depositor.txIDFromTxid(DISPLAY_TXID)).toBe(DISPLAY_TXID);
   });
 
   it("validates constructor, amount, asset, reference, and options before RPC work", async () => {
@@ -147,7 +141,7 @@ describe("BitcoinVaultDepositor", () => {
     expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
   });
 
-  it("submits a signed native BTC deposit and returns a byte-order-safe tx ref", async () => {
+  it("submits a signed native BTC deposit and returns a display txid", async () => {
     const rpc = createRpc({
       listUnspent: [
         utxo("01".repeat(32), 0, 100_000n, FUNDING_SCRIPT),
@@ -159,7 +153,7 @@ describe("BitcoinVaultDepositor", () => {
     const depositor = createDepositor({ rpc, signer });
     const onSubmitted = vi.fn();
 
-    const ref = await depositor.submitDeposit(
+    const txID = await depositor.submitDeposit(
       {
         asset: BITCOIN_NATIVE_ASSET,
         amount: "0.0005",
@@ -168,15 +162,14 @@ describe("BitcoinVaultDepositor", () => {
       { onSubmitted },
     );
 
-    expect(ref.raw).toMatch(/^[a-f0-9]{64}$/);
-    expect(ref.hash).toBe(`0x${ref.raw.match(/../g)?.reverse().join("")}`);
+    expect(txID).toMatch(/^[a-f0-9]{64}$/);
     expect(rpc.listUnspent).toHaveBeenCalledExactlyOnceWith(1, [
       "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
     ]);
     expect(rpc.estimateSmartFeeSatPerVByte).toHaveBeenCalledExactlyOnceWith(6, 5n);
     expect(rpc.sendRawTransaction).toHaveBeenCalledOnce();
     expect(rpc.sendRawTransaction).toHaveBeenCalledWith(expect.stringMatching(/^[a-f0-9]+$/));
-    expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(ref);
+    expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(txID);
     expect(signer.getPublicKeyCompressed).toHaveBeenCalledTimes(1);
   });
 
@@ -206,10 +199,7 @@ describe("BitcoinVaultDepositor", () => {
     expect(prepared.inputIndexesToSign).toEqual([0, 1]);
     expect(prepared.fundingAddress).toBe(wallet.address);
     expect(prepared.depositAddress).toMatch(/^bcrt1q/);
-    expect(prepared.unsignedRef.raw).toMatch(/^[a-f0-9]{64}$/);
-    expect(prepared.unsignedRef.hash).toBe(
-      `0x${prepared.unsignedRef.raw.match(/../g)?.reverse().join("")}`,
-    );
+    expect(prepared.unsignedTxID).toMatch(/^[a-f0-9]{64}$/);
     expect(rpc.listUnspent).toHaveBeenCalledExactlyOnceWith(1, [wallet.address]);
     expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
   });
@@ -243,14 +233,14 @@ describe("BitcoinVaultDepositor", () => {
     }
     const onSubmitted = vi.fn();
 
-    const ref = await depositor.submitSignedDepositPsbt(bytesToHex(tx.toPSBT()), {
+    const txID = await depositor.submitSignedDepositPsbt(bytesToHex(tx.toPSBT()), {
       onSubmitted,
     });
 
-    expect(ref).toEqual(prepared.unsignedRef);
+    expect(txID).toEqual(prepared.unsignedTxID);
     expect(rpc.sendRawTransaction).toHaveBeenCalledOnce();
     expect(rpc.sendRawTransaction).toHaveBeenCalledWith(expect.stringMatching(/^[a-f0-9]+$/));
-    expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(ref);
+    expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(txID);
   });
 
   it("prepares and broadcasts a wallet-signed nested SegWit PSBT", async () => {
@@ -285,11 +275,11 @@ describe("BitcoinVaultDepositor", () => {
       );
     }
 
-    const ref = await depositor.submitSignedDepositPsbt(bytesToHex(tx.toPSBT()));
+    const txID = await depositor.submitSignedDepositPsbt(bytesToHex(tx.toPSBT()));
 
     expect(prepared.fundingAddress).toBe(NESTED_SEGWIT_ADDRESS);
-    expect(ref.raw).toMatch(/^[a-f0-9]{64}$/);
-    expect(ref).not.toEqual(prepared.unsignedRef);
+    expect(txID).toMatch(/^[a-f0-9]{64}$/);
+    expect(txID).not.toEqual(prepared.unsignedTxID);
     expect(rpc.listUnspent).toHaveBeenCalledExactlyOnceWith(1, [
       NESTED_SEGWIT_ADDRESS,
     ]);
@@ -322,12 +312,12 @@ describe("BitcoinVaultDepositor", () => {
       listUnspent: [utxo("03".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
       sendRawTransactionError: new BitcoinRpcError(-27, "transaction already in block chain"),
     });
-    const alreadyKnownRef = await createDepositor({ rpc: alreadyKnownRpc }).submitDeposit({
+    const alreadyKnownTxID = await createDepositor({ rpc: alreadyKnownRpc }).submitDeposit({
       asset: BITCOIN_NATIVE_ASSET,
       amount: "0.0005",
       destination: { account: ACCOUNT },
     });
-    expect(alreadyKnownRef.raw).toMatch(/^[a-f0-9]{64}$/);
+    expect(alreadyKnownTxID).toMatch(/^[a-f0-9]{64}$/);
 
     const missingRpc = createRpc({
       listUnspent: [utxo("04".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
@@ -340,7 +330,7 @@ describe("BitcoinVaultDepositor", () => {
         amount: "0.0005",
         destination: { account: ACCOUNT },
       }),
-    ).rejects.toMatchObject({ code: "RPC_ERROR", txRef: expect.any(Object) });
+    ).rejects.toMatchObject({ code: "RPC_ERROR", txID: expect.any(String) });
 
     const sendError = new BitcoinRpcError(-25, "bad-txns-inputs-missingorspent");
     const lookupError = new Error("lookup failed");
@@ -357,34 +347,31 @@ describe("BitcoinVaultDepositor", () => {
       }),
     ).rejects.toMatchObject({
       code: "RPC_ERROR",
-      txRef: expect.any(Object),
+      txID: expect.any(String),
       cause: sendError,
     });
   });
 
-  it("verifies absent, pending, confirmed, and malformed tx refs", async () => {
-    const ref = {
-      raw: DISPLAY_TXID,
-      hash: INTERNAL_HASH as Bytes32Hex,
-    };
+  it("verifies absent, pending, confirmed, and malformed txIDs", async () => {
+    const txID = DISPLAY_TXID;
     const depositor = createDepositor({
       rpc: createRpc({ rawTransaction: null }),
     });
-    await expect(depositor.verifyDeposit(ref, 1)).resolves.toBe("absent");
+    await expect(depositor.verifyDeposit(txID, 1)).resolves.toBe("absent");
 
     const pending = createDepositor({
       rpc: createRpc({ rawTransaction: { txid: DISPLAY_TXID, confirmations: 0 } }),
     });
-    await expect(pending.verifyDeposit(ref, 1)).resolves.toBe("pending");
-    await expect(pending.verifyDeposit(ref, 0)).resolves.toBe("confirmed");
+    await expect(pending.verifyDeposit(txID, 1)).resolves.toBe("pending");
+    await expect(pending.verifyDeposit(txID, 0)).resolves.toBe("confirmed");
 
     const confirmed = createDepositor({
       rpc: createRpc({ rawTransaction: { txid: DISPLAY_TXID, confirmations: 2 } }),
     });
-    await expect(confirmed.verifyDeposit(ref, 2)).resolves.toBe("confirmed");
+    await expect(confirmed.verifyDeposit(txID, 2)).resolves.toBe("confirmed");
     await expect(
-      confirmed.verifyDeposit({ ...ref, hash: ZERO_REF }, 1),
-    ).rejects.toMatchObject({ code: "INVALID_TX_REF" });
+      confirmed.verifyDeposit("not-a-txid", 1),
+    ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
   });
 
   it("allows zero funding confirmations but keeps fee knobs positive", () => {

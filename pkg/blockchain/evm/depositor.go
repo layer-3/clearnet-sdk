@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/ethereum/go-ethereum"
@@ -46,21 +48,21 @@ func NewDepositor(client *ethclient.Client, custodyAddr common.Address, signer s
 // (assetAddress is a non-zero hex address) it approves the vault then calls
 // Custody.deposit; for the native marker it sends ETH with msg.value == amount.
 // Blocks until the deposit tx mines.
-func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (string, error) {
 	assetAddress = normalizeDepositAssetAddress(assetAddress)
 	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	if amount.Sign() <= 0 {
-		return core.TxRef{}, fmt.Errorf("evm: amount must be positive")
+		return "", fmt.Errorf("evm: amount must be positive")
 	}
 	decimals, err := d.assets.AssetDecimals(ctx, assetAddress)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	amt, err := blockchain.DecimalToBaseUnits(amount, decimals)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("evm: amount: %w", err)
+		return "", fmt.Errorf("evm: amount: %w", err)
 	}
 	assetAddr := depositAssetAddress(assetAddress)
 	accountAddr := common.HexToAddress(dest.Account)
@@ -68,48 +70,50 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 	if assetAddr == (common.Address{}) {
 		opts, _, err := signerTransactOpts(ctx, d.client, d.signer)
 		if err != nil {
-			return core.TxRef{}, err
+			return "", err
 		}
 		opts.Value = amt
 		tx, err := d.custody.Deposit(opts, accountAddr, common.Address{}, amt, dest.Ref)
 		if err != nil {
-			return core.TxRef{}, fmt.Errorf("ETH deposit: %w", err)
+			return "", fmt.Errorf("ETH deposit: %w", err)
 		}
-		if err := waitMined(ctx, d.client, tx); err != nil {
-			return core.TxRef{}, err
+		receipt, err := waitMinedReceipt(ctx, d.client, tx)
+		if err != nil {
+			return "", err
 		}
-		return core.TxRef{Hash: tx.Hash(), Raw: tx.Hash().Hex()}, nil
+		return d.depositTxID(receipt, accountAddr, common.Address{}, amt, dest.Ref)
 	}
 
 	// ERC-20: approve the vault, then deposit.
 	token, err := NewMockERC20(assetAddr, d.client)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("ERC20 bind %s: %w", assetAddr.Hex(), err)
+		return "", fmt.Errorf("ERC20 bind %s: %w", assetAddr.Hex(), err)
 	}
 	approveOpts, _, err := signerTransactOpts(ctx, d.client, d.signer)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	approveTx, err := token.Approve(approveOpts, d.custodyAddr, amt)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("ERC20 approve: %w", err)
+		return "", fmt.Errorf("ERC20 approve: %w", err)
 	}
 	if err := waitMined(ctx, d.client, approveTx); err != nil {
-		return core.TxRef{}, fmt.Errorf("ERC20 approve wait: %w", err)
+		return "", fmt.Errorf("ERC20 approve wait: %w", err)
 	}
 
 	depositOpts, _, err := signerTransactOpts(ctx, d.client, d.signer)
 	if err != nil {
-		return core.TxRef{}, err
+		return "", err
 	}
 	tx, err := d.custody.Deposit(depositOpts, accountAddr, assetAddr, amt, dest.Ref)
 	if err != nil {
-		return core.TxRef{}, fmt.Errorf("ERC20 deposit: %w", err)
+		return "", fmt.Errorf("ERC20 deposit: %w", err)
 	}
-	if err := waitMined(ctx, d.client, tx); err != nil {
-		return core.TxRef{}, err
+	receipt, err := waitMinedReceipt(ctx, d.client, tx)
+	if err != nil {
+		return "", err
 	}
-	return core.TxRef{Hash: tx.Hash(), Raw: tx.Hash().Hex()}, nil
+	return d.depositTxID(receipt, accountAddr, assetAddr, amt, dest.Ref)
 }
 
 func normalizeDepositAssetAddress(assetAddress string) string {
@@ -119,11 +123,14 @@ func normalizeDepositAssetAddress(assetAddress string) string {
 	return assetAddress
 }
 
-// VerifyDeposit reports the on-chain status of the deposit tx in ref. A reverted
-// deposit (receipt status != 1) reads as DepositAbsent since it credited
-// nothing. Confirmations are counted inclusively (head - blockNumber + 1).
-func (d *Depositor) VerifyDeposit(ctx context.Context, ref core.TxRef, minConf uint64) (core.DepositStatus, error) {
-	hash := common.Hash(ref.Hash)
+// VerifyDeposit reports the on-chain status of the deposit txID. EVM deposit
+// txIDs are event-level IDs of the form txHash/logIndex. A raw txHash is
+// accepted for transaction-level status checks.
+func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint64) (core.DepositStatus, error) {
+	hash, logIndex, err := parseEVMDepositTxID(txID)
+	if err != nil {
+		return core.DepositAbsent, err
+	}
 	receipt, err := d.client.TransactionReceipt(ctx, hash)
 	if err != nil {
 		if errors.Is(err, ethereum.NotFound) {
@@ -138,6 +145,9 @@ func (d *Depositor) VerifyDeposit(ctx context.Context, ref core.TxRef, minConf u
 	if receipt.Status != types.ReceiptStatusSuccessful {
 		return core.DepositAbsent, nil
 	}
+	if logIndex != nil && !d.hasDepositLog(receipt, *logIndex) {
+		return core.DepositAbsent, nil
+	}
 	head, err := d.client.BlockNumber(ctx)
 	if err != nil {
 		return core.DepositPending, fmt.Errorf("evm: block number: %w", err)
@@ -150,4 +160,50 @@ func (d *Depositor) VerifyDeposit(ctx context.Context, ref core.TxRef, minConf u
 		return core.DepositConfirmed, nil
 	}
 	return core.DepositPending, nil
+}
+
+func (d *Depositor) depositTxID(receipt *types.Receipt, account common.Address, asset common.Address, amount *big.Int, ref [32]byte) (string, error) {
+	for _, raw := range receipt.Logs {
+		if raw.Address != d.custodyAddr {
+			continue
+		}
+		event, err := d.custody.ParseDeposited(*raw)
+		if err != nil {
+			continue
+		}
+		if event.Account == account && event.DepositReference == ref && event.Asset == asset && event.Amount.Cmp(amount) == 0 {
+			return fmt.Sprintf("%s/%d", raw.TxHash.Hex(), raw.Index), nil
+		}
+	}
+	return "", fmt.Errorf("evm: deposited event not found in tx %s", receipt.TxHash.Hex())
+}
+
+func (d *Depositor) hasDepositLog(receipt *types.Receipt, logIndex uint) bool {
+	for _, raw := range receipt.Logs {
+		if raw.Index != logIndex || raw.Address != d.custodyAddr {
+			continue
+		}
+		if _, err := d.custody.ParseDeposited(*raw); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func parseEVMDepositTxID(txID string) (common.Hash, *uint, error) {
+	txID = strings.TrimSpace(txID)
+	hashText, indexText, hasIndex := strings.Cut(txID, "/")
+	if !common.IsHexHash(hashText) {
+		return common.Hash{}, nil, fmt.Errorf("evm: txID must be a transaction hash or txHash/logIndex")
+	}
+	hash := common.HexToHash(hashText)
+	if !hasIndex {
+		return hash, nil, nil
+	}
+	index64, err := strconv.ParseUint(indexText, 10, 32)
+	if err != nil {
+		return common.Hash{}, nil, fmt.Errorf("evm: bad txID log index %q: %w", indexText, err)
+	}
+	index := uint(index64)
+	return hash, &index, nil
 }

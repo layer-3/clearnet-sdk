@@ -63,7 +63,7 @@ Open the Vite URL, usually `http://127.0.0.1:5173/`.
 
 The demo builds a single custody instruction, asks the wallet to sign the
 transaction, sends the signed bytes through the configured RPC, and returns the
-Go-compatible `TxRef` shape.
+Go-compatible `txID` string.
 
 ## Troubleshooting
 

@@ -10,7 +10,6 @@ import {
 } from "@yellow-org/clearnet-sdk";
 import type {
   Bytes32Hex,
-  TxRef,
   XrplPreparedPayment,
   XrplSigner,
 } from "@yellow-org/clearnet-sdk";
@@ -29,7 +28,7 @@ const verifyButton = mustElement<HTMLButtonElement>("verify");
 const logOutput = mustElement<HTMLOutputElement>("log");
 
 let signer: XrplSigner | undefined;
-let lastRef: TxRef | undefined;
+let lastRef: string | undefined;
 let depositor: XrplVaultDepositor | undefined;
 
 const GEMWALLET_NETWORK_TIMEOUT_MS = 8_000;
@@ -225,7 +224,7 @@ async function submitDeposit(): Promise<void> {
         onSubmitted(ref) {
           if (depositor === activeDepositor) {
             lastRef = ref;
-            writeLog(`Submitted ${ref.raw}\nhash: ${ref.hash}`);
+            writeLog(`Submitted ${ref}\nhash: ${ref}`);
           }
         },
       },
@@ -234,10 +233,10 @@ async function submitDeposit(): Promise<void> {
     if (depositor === activeDepositor) {
       lastRef = submittedRef;
       verifyButton.disabled = false;
-      writeLog(`Accepted ${submittedRef.raw}\nhash: ${submittedRef.hash}`);
+      writeLog(`Accepted ${submittedRef}\nhash: ${submittedRef}`);
     }
   } catch (error) {
-    const txRef = errorTxRef(error);
+    const txID = errorTxID(error);
     if (
       lastRef !== undefined &&
       activeDepositor !== undefined &&
@@ -245,7 +244,7 @@ async function submitDeposit(): Promise<void> {
     ) {
       verifyButton.disabled = false;
     }
-    writeError(error, txRef === undefined ? undefined : `TxRef ${txRef.raw}`);
+    writeError(error, txID === undefined ? undefined : `string ${txID}`);
   } finally {
     setBusy(submitButton, false);
   }
@@ -259,7 +258,7 @@ async function verifyLastTx(): Promise<void> {
   setBusy(verifyButton, true);
   try {
     const status = await depositor.verifyDeposit(lastRef, 0);
-    writeLog(`Verify ${lastRef.raw}\nstatus: ${status}`);
+    writeLog(`Verify ${lastRef}\nstatus: ${status}`);
   } catch (error) {
     writeError(error);
   } finally {
@@ -466,9 +465,9 @@ function writeError(error: unknown, prefix?: string): void {
   writeLog(prefix === undefined ? message : `${prefix}\n${message}`);
 }
 
-function errorTxRef(error: unknown): TxRef | undefined {
-  if (error && typeof error === "object" && "txRef" in error) {
-    return (error as { txRef?: TxRef }).txRef;
+function errorTxID(error: unknown): string | undefined {
+  if (error && typeof error === "object" && "txID" in error) {
+    return (error as { txID?: string }).txID;
   }
   return undefined;
 }

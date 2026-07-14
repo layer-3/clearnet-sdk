@@ -20,7 +20,6 @@ import {
 import type {
   SolanaCommitment,
   SolanaSigner,
-  TxRef,
 } from "@yellow-org/clearnet-sdk";
 
 type SolanaWalletChain =
@@ -40,7 +39,7 @@ const verifyButton = mustElement<HTMLButtonElement>("verify");
 const logOutput = mustElement<HTMLOutputElement>("log");
 
 let signer: BrowserSolanaSigner | undefined;
-let lastRef: TxRef | undefined;
+let lastRef: string | undefined;
 
 connectButton.addEventListener("click", () => {
   void connectWallet();
@@ -110,15 +109,15 @@ async function submitDeposit(): Promise<void> {
         onSubmitted(ref) {
           lastRef = ref;
           verifyButton.disabled = false;
-          writeLog(`Submitted ${ref.raw}\nhash: ${ref.hash}`);
+          writeLog(`Submitted ${ref}\nhash: ${ref}`);
         },
       },
     );
     verifyButton.disabled = false;
-    writeLog(`Confirmed ${lastRef.raw}\nhash: ${lastRef.hash}`);
+    writeLog(`Confirmed ${lastRef}\nhash: ${lastRef}`);
   } catch (error) {
-    const txRef = errorTxRef(error);
-    writeError(error, txRef === undefined ? undefined : `Submitted ${txRef.raw}`);
+    const txID = errorTxID(error);
+    writeError(error, txID === undefined ? undefined : `Submitted ${txID}`);
   } finally {
     setBusy(submitButton, false);
   }
@@ -140,7 +139,7 @@ async function verifyLastTx(): Promise<void> {
     });
 
     const status = await depositor.verifyDeposit(lastRef, 0);
-    writeLog(`Verify ${lastRef.raw}\nstatus: ${status}`);
+    writeLog(`Verify ${lastRef}\nstatus: ${status}`);
   } catch (error) {
     writeError(error);
   } finally {
@@ -266,9 +265,9 @@ function firstSupportedAccount(
   return account;
 }
 
-function errorTxRef(error: unknown): TxRef | undefined {
-  if (error && typeof error === "object" && "txRef" in error) {
-    return (error as { txRef?: TxRef }).txRef;
+function errorTxID(error: unknown): string | undefined {
+  if (error && typeof error === "object" && "txID" in error) {
+    return (error as { txID?: string }).txID;
   }
   return undefined;
 }

@@ -1,5 +1,4 @@
 import bs58 from "bs58";
-import { sha256 } from "@noble/hashes/sha2.js";
 import {
   Connection,
   PublicKey,
@@ -12,7 +11,6 @@ import { ClearnetSdkError } from "../../core/errors.js";
 import type {
   DepositStatus,
   SubmitDepositOptions,
-  TxRef,
   VaultDepositor,
 } from "../../core/types.js";
 import { decimalToBaseUnits } from "../amounts.js";
@@ -33,7 +31,6 @@ import type {
   SolanaSigner,
 } from "./types.js";
 import {
-  bytes32Hex,
   normalizeCommitment,
   normalizeMinConfirmations,
   publicKeyFromString,
@@ -44,7 +41,7 @@ import {
   requireReference,
   requireRpcUrl,
   requireSigner,
-  requireTxRef,
+  requireTxID,
   resolveMint,
 } from "./validation.js";
 
@@ -96,7 +93,7 @@ export class SolanaVaultDepositor
   async submitDeposit(
     input: SolanaSubmitDepositInput,
     options: SubmitDepositOptions = {},
-  ): Promise<TxRef> {
+  ): Promise<string> {
     const waitOptions = requireSubmitDepositOptions(options);
     const fields =
       input && typeof input === "object"
@@ -123,19 +120,19 @@ export class SolanaVaultDepositor
     );
 
     const signature = await this.signAndSend(transaction);
-    const ref = txRef(signature);
-    waitOptions.onSubmitted?.(ref);
-    await this.waitForCommitment(signature, ref, waitOptions);
-    return ref;
+    const txID = normalizeSolanaTxID(signature);
+    waitOptions.onSubmitted?.(txID);
+    await this.waitForCommitment(signature, txID, waitOptions);
+    return txID;
   }
 
   async verifyDeposit(
-    ref: TxRef,
+    txID: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
-    requireTxRef(ref);
+    requireTxID(txID);
     const minConf = normalizeMinConfirmations(minConfirmations);
-    const status = await this.getSignatureStatus(ref.raw, ref);
+    const status = await this.getSignatureStatus(txID, txID);
     return mapStatus(status, minConf);
   }
 
@@ -259,7 +256,7 @@ export class SolanaVaultDepositor
 
   private async waitForCommitment(
     signature: string,
-    ref: TxRef,
+    txID: string,
     options: SubmitDepositOptions,
   ): Promise<void> {
     const timeoutMs = requireReceiptTimeout(
@@ -269,18 +266,18 @@ export class SolanaVaultDepositor
     for (;;) {
       if (options.signal?.aborted === true) {
         throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-          txRef: ref,
+          txID,
         });
       }
       const status = await waitWithControls(
-        () => this.getSignatureStatus(signature, ref),
-        remainingMs(deadline, ref),
+        () => this.getSignatureStatus(signature, txID),
+        remainingMs(deadline, txID),
         options.signal,
-        ref,
+        txID,
       );
       if (status?.err != null) {
         throw new ClearnetSdkError("TX_REVERTED", "sol: transaction failed", {
-          txRef: ref,
+          txID,
         });
       }
       if (statusSatisfiesCommitment(status, this.commitment)) {
@@ -288,16 +285,16 @@ export class SolanaVaultDepositor
       }
       if (Date.now() >= deadline) {
         throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt timeout", {
-          txRef: ref,
+          txID,
         });
       }
-      await sleep(Math.min(POLL_INTERVAL_MS, remainingMs(deadline, ref)), options.signal, ref);
+      await sleep(Math.min(POLL_INTERVAL_MS, remainingMs(deadline, txID)), options.signal, txID);
     }
   }
 
   private async getSignatureStatus(
     signature: string,
-    txRef: TxRef | undefined,
+    txID: string | undefined,
   ): Promise<SignatureStatusValue> {
     try {
       const out = await this.connection.getSignatureStatuses([signature], {
@@ -308,7 +305,7 @@ export class SolanaVaultDepositor
       throw new ClearnetSdkError(
         "RPC_ERROR",
         "sol: signature status",
-        txRef === undefined ? { cause: error } : { txRef, cause: error },
+        txID === undefined ? { cause: error } : { txID, cause: error },
       );
     }
   }
@@ -335,22 +332,22 @@ function associatedTokenAddress(owner: PublicKey, mint: PublicKey): PublicKey {
   )[0];
 }
 
-function txRef(signature: string): TxRef {
+function normalizeSolanaTxID(signature: string): string {
   let signatureBytes: Uint8Array;
   try {
     signatureBytes = bs58.decode(signature);
   } catch (error) {
-    throw new ClearnetSdkError("INVALID_TX_REF", "Solana signature must be base58", {
+    throw new ClearnetSdkError("INVALID_TX_ID", "Solana signature must be base58", {
       cause: error,
     });
   }
   if (signatureBytes.length !== 64) {
     throw new ClearnetSdkError(
-      "INVALID_TX_REF",
+      "INVALID_TX_ID",
       "Solana signature must decode to 64 bytes",
     );
   }
-  return { hash: bytes32Hex(sha256(signatureBytes)), raw: signature };
+  return signature;
 }
 
 function mapStatus(
@@ -408,11 +405,11 @@ function requireSubmitDepositOptions(options: unknown): SubmitDepositOptions {
   return options;
 }
 
-function remainingMs(deadline: number, ref: TxRef): number {
+function remainingMs(deadline: number, txID: string): number {
   const remaining = deadline - Date.now();
   if (remaining <= 0) {
     throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt timeout", {
-      txRef: ref,
+      txID,
     });
   }
   return remaining;
@@ -422,11 +419,11 @@ async function waitWithControls<T>(
   wait: () => Promise<T>,
   timeoutMs: number,
   signal: AbortSignal | undefined,
-  ref: TxRef,
+  txID: string,
 ): Promise<T> {
   if (signal?.aborted === true) {
     throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-      txRef: ref,
+      txID,
     });
   }
 
@@ -437,7 +434,7 @@ async function waitWithControls<T>(
     timeoutId = setTimeout(() => {
       reject(
         new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt timeout", {
-          txRef: ref,
+          txID,
         }),
       );
     }, timeoutMs);
@@ -450,7 +447,7 @@ async function waitWithControls<T>(
           abortHandler = () => {
             reject(
               new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-                txRef: ref,
+                txID,
               }),
             );
           };
@@ -476,13 +473,13 @@ async function waitWithControls<T>(
 async function sleep(
   ms: number,
   signal: AbortSignal | undefined,
-  txRef: TxRef,
+  txID: string,
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     if (signal?.aborted === true) {
       reject(
         new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-          txRef,
+          txID,
         }),
       );
       return;
@@ -506,7 +503,7 @@ async function sleep(
         cleanup();
         reject(
           new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-            txRef,
+            txID,
           }),
         );
       };

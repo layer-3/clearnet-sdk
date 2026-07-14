@@ -8,7 +8,6 @@ import {
 } from "../../../src/index.js";
 import type {
   Bytes32Hex,
-  TxRef,
   XrplSigner,
 } from "../../../src/index.js";
 
@@ -20,10 +19,7 @@ const REFERENCE =
   "0x1111111111111111111111111111111111111111111111111111111111111111" as Bytes32Hex;
 const UNKNOWN_TX_RAW =
   "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
-const UNKNOWN_TX_REF = {
-  hash: `0x${UNKNOWN_TX_RAW.toLowerCase()}`,
-  raw: UNKNOWN_TX_RAW,
-} satisfies TxRef;
+const UNKNOWN_TX_REF = UNKNOWN_TX_RAW;
 const MEMO_TYPE = "796E65742D6163636F756E74";
 const ASF_DEFAULT_RIPPLE = 8;
 
@@ -228,10 +224,10 @@ async function submitAndAccept(
   return signed.hash;
 }
 
-async function fetchPayment(client: Client, ref: TxRef): Promise<FetchedPayment> {
+async function fetchPayment(client: Client, ref: string): Promise<FetchedPayment> {
   const response = await client.request({
     command: "tx",
-    transaction: ref.raw,
+    transaction: ref,
   });
   const result = response.result as unknown as {
     tx_json?: FetchedPayment;
