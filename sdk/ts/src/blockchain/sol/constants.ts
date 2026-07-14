@@ -1,7 +1,7 @@
 export const SOLANA_CUSTODY_PROGRAM_ID =
   "98eVpih8X9CAcgU9bzNB9V7VtkRrnFZUmqzEnsq7cfmg";
 
-export const SOLANA_NATIVE_ASSET = "SOL";
+export const SOLANA_NATIVE_ASSET = "";
 
 export const SOLANA_SYSTEM_PROGRAM_ID =
   "11111111111111111111111111111111";

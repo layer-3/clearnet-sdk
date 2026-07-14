@@ -5,6 +5,7 @@ package btc
 import (
 	"context"
 	"encoding/hex"
+	"math/big"
 	"os"
 	"strings"
 	"sync"
@@ -63,7 +64,8 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	const account = "yellow://ynet/user/btc-itest"
 	cfg := Config{ConfirmationDepth: 1, FeeConfTarget: 6, FallbackFeeRate: 5, FeeCapSatPerVByte: 10_000}
 
-	depositor, err := NewDepositor(net, node, depositorSigner, pubkeys, btcThreshold, cfg)
+	assets := NewAssetResolver()
+	depositor, err := NewDepositor(net, node, depositorSigner, pubkeys, btcThreshold, cfg, assets)
 	if err != nil {
 		t.Fatalf("NewDepositor: %v", err)
 	}
@@ -93,7 +95,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	node.generateToAddress(ctx, t, 1, miner)
 
 	// ── Deposit flow ──────────────────────────────────────────────────────────
-	depRef, err := depositor.SubmitDeposit(ctx, "BTC", decimal.NewFromInt(20_000_000), core.DepositDestination{Account: account}) // 0.2 BTC
+	depRef, err := depositor.SubmitDeposit(ctx, "", decimal.NewFromBigInt(big.NewInt(20_000_000), -8), core.DepositDestination{Account: account}) // 0.2 BTC
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
@@ -103,7 +105,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	// ── Withdrawal flow (quorum in-process) ───────────────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, btcSignerCount)
 	for i, s := range signers {
-		f, err := NewWithdrawalFinalizer(net, node, s, pubkeys, btcThreshold, cfg)
+		f, err := NewWithdrawalFinalizer(net, node, s, pubkeys, btcThreshold, cfg, assets)
 		if err != nil {
 			t.Fatalf("NewWithdrawalFinalizer %d: %v", i, err)
 		}
@@ -115,7 +117,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 
 	var wid [32]byte
 	wid[0], wid[31] = 0xB7, 0xC0
-	op := &core.WithdrawalOp{Recipient: miner, Amount: decimal.NewFromInt(10_000_000)} // 0.1 BTC to the miner addr
+	op := &core.WithdrawalOp{Recipient: miner, AssetURI: "yellow://ynet/asset/custody/btc/0/0", Amount: decimal.NewFromBigInt(big.NewInt(10_000_000), -8)} // 0.1 BTC to the miner addr
 
 	// deadline is accepted but ignored on BTC (no consensus expiry); a
 	// far-future value keeps parity with the other chains' happy-path tests.
@@ -171,7 +173,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	store := &memVaultStore{pubkeys: pubkeys, threshold: btcThreshold}
 	rotators := make([]*RotationFinalizer, btcSignerCount)
 	for i, s := range signers {
-		r, err := NewRotationFinalizer(net, node, s, store, cfg, account)
+		r, err := NewRotationFinalizer(net, node, s, store, cfg, assets, account)
 		if err != nil {
 			t.Fatalf("NewRotationFinalizer %d: %v", i, err)
 		}

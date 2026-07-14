@@ -1,3 +1,4 @@
+import { zeroAddress } from "viem";
 import type { Address, Hash, TransactionReceipt } from "viem";
 
 import { ClearnetSdkError } from "../../core/errors.js";
@@ -9,17 +10,16 @@ import type {
   TxRef,
   VaultDepositor,
 } from "../../core/types.js";
+import { decimalToBaseUnits } from "../amounts.js";
 import { custodyAbi, erc20Abi } from "./abi.js";
-import {
-  DEFAULT_RECEIPT_TIMEOUT_MS,
-  EVM_NATIVE_ASSET,
-} from "./constants.js";
+import { DEFAULT_RECEIPT_TIMEOUT_MS } from "./constants.js";
 import {
   isTransactionNotFound,
   requireDepositDestination,
   normalizeMinConfirmations,
+  normalizeNativeDecimals,
   requireAddress,
-  requireAmount,
+  requireAsset,
   requireChainId,
   requireTxRef,
   requireWalletAccount,
@@ -32,6 +32,8 @@ type AsyncValidation = Promise<ClearnetSdkError | undefined>;
 
 export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> {
   private readonly config: EvmDepositorConfig;
+  private readonly nativeDecimals: number;
+  private readonly tokenDecimals = new Map<string, number>();
   private readonly initialPublicChainValidation: AsyncValidation;
   private readonly initialWriteChainValidation: AsyncValidation;
 
@@ -53,6 +55,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
     if (config.receiptTimeoutMs !== undefined) {
       requireReceiptTimeout(config.receiptTimeoutMs);
     }
+    this.nativeDecimals = normalizeNativeDecimals(config.nativeDecimals);
     this.config = { ...config };
     this.initialPublicChainValidation = captureValidation(
       this.checkPublicChain(),
@@ -67,13 +70,17 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
     options: SubmitDepositOptions = {},
   ): Promise<TxRef> {
     const destination = requireDepositDestination(input.destination);
-    const asset = requireAddress(input.asset, "asset");
-    const amount = requireAmount(input.amount);
+    const asset = requireAsset(input.asset);
     await this.ensureWriteChain();
 
-    if (asset === EVM_NATIVE_ASSET) {
+    if (asset === "") {
+      const amount = decimalToBaseUnits(input.amount, this.nativeDecimals);
       return this.submitNativeDeposit(destination, amount, options);
     }
+    const amount = decimalToBaseUnits(
+      input.amount,
+      await this.assetDecimals(asset),
+    );
     return this.submitErc20Deposit(destination, asset, amount, options);
   }
 
@@ -129,7 +136,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
         address: this.config.custodyAddress,
         abi: custodyAbi,
         functionName: "deposit",
-        args: [destination.account, EVM_NATIVE_ASSET, amount, destination.ref],
+        args: [destination.account, zeroAddress, amount, destination.ref],
         value: amount,
         account: this.config.walletAccount,
         chain: this.config.walletClient.chain ?? null,
@@ -173,6 +180,27 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
     options.onSubmitted?.(ref);
     await this.waitForSuccessfulReceipt(depositHash, ref, options);
     return ref;
+  }
+
+  private async assetDecimals(asset: Address): Promise<number> {
+    const key = asset.toLowerCase();
+    const cached = this.tokenDecimals.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    try {
+      const decimals = await this.config.publicClient.readContract({
+        address: asset,
+        abi: erc20Abi,
+        functionName: "decimals",
+      });
+      this.tokenDecimals.set(key, decimals);
+      return decimals;
+    } catch (error) {
+      throw new ClearnetSdkError("RPC_ERROR", "evm: token decimals", {
+        cause: error,
+      });
+    }
   }
 
   private async pendingOrAbsent(hash: Hash): Promise<DepositStatus> {

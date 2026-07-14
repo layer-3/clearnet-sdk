@@ -4,11 +4,9 @@
   "opType": "WithdrawalOp",
   "op": {
     "amountDec": "10000000",
-    "asset": "USDT",
-    "chainID": 1,
-    "l1Asset": "0xA0b8000000000000000000000000000000000001",
+    "assetURI": "yellow://ynet/asset/custody/evm/1/0xa0b8000000000000000000000000000000000001",
     "recipient": "0xRecipient",
     "userSignatureHex": "aabbcc"
   },
-  "cborBytes": 75
+  "cborBytes": 103
 }

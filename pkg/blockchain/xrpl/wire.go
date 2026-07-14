@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
@@ -249,39 +251,60 @@ func signSingle(ctx context.Context, s sign.Signer, id Identity, tx transaction.
 }
 
 // BuildAmount converts a WithdrawalOp into an XRPL CurrencyAmount.
-func BuildAmount(op *core.WithdrawalOp) (types.CurrencyAmount, error) {
-	return currencyAmount(op.L1Asset, op.Amount)
+func BuildAmount(ctx context.Context, assets blockchain.AssetResolver, op *core.WithdrawalOp) (types.CurrencyAmount, error) {
+	id, err := blockchain.AssetIDFromURI(op.AssetURI)
+	if err != nil {
+		return nil, fmt.Errorf("xrpl: asset URI: %w", err)
+	}
+	if id.Family != blockchain.ChainFamilyXRPL {
+		return nil, fmt.Errorf("xrpl: asset family %q does not match %q", id.Family, blockchain.ChainFamilyXRPL)
+	}
+	if id.ChainID != 0 {
+		return nil, fmt.Errorf("xrpl: asset chain id must be 0, got %d", id.ChainID)
+	}
+	if err := assets.ValidateAssetAddress(ctx, id.AssetAddress); err != nil {
+		return nil, err
+	}
+	decimals, err := assets.AssetDecimals(ctx, id.AssetAddress)
+	if err != nil {
+		return nil, err
+	}
+	baseUnits, err := blockchain.DecimalToBaseUnits(op.Amount, decimals)
+	if err != nil {
+		return nil, fmt.Errorf("xrpl: amount: %w", err)
+	}
+	return currencyAmountFromBaseUnits(id.AssetAddress, baseUnits, decimals)
 }
 
 // currencyAmount maps an asset key + decimal amount to an XRPL CurrencyAmount:
 //
-//	"" / "XRP"            — native XRP; amount is drops (integer).
-//	"CUR.rIssuer" / "CUR:rIssuer" — issued currency; amount is a decimal value.
+//	"0"          — native XRP; amount is drops (integer).
+//	"CUR.rIssuer" — issued currency; amount is a decimal value.
 func currencyAmount(asset string, amount decimal.Decimal) (types.CurrencyAmount, error) {
-	l1 := strings.TrimSpace(asset)
-	if l1 == "" || strings.EqualFold(l1, "XRP") {
+	if asset == nativeAssetAddress {
 		drops := amount.BigInt()
 		if !drops.IsUint64() {
 			return nil, fmt.Errorf("xrpl: xrp amount %s overflows uint64 drops", drops.String())
 		}
 		return types.XRPCurrencyAmount(drops.Uint64()), nil
 	}
-	var currency, issuer string
-	for _, sep := range []string{".", ":"} {
-		if i := strings.Index(l1, sep); i > 0 {
-			currency, issuer = l1[:i], l1[i+1:]
-			break
-		}
-	}
-	if currency == "" || issuer == "" {
-		return nil, fmt.Errorf("xrpl: invalid asset %q: expected \"XRP\" or \"CUR.rIssuer\"", l1)
+	currency, issuer, err := parseIssuedAssetAddress(asset)
+	if err != nil {
+		return nil, err
 	}
 	return types.IssuedCurrencyAmount{Issuer: types.Address(issuer), Currency: currency, Value: amount.String()}, nil
 }
 
+func currencyAmountFromBaseUnits(asset string, baseUnits *big.Int, decimals uint8) (types.CurrencyAmount, error) {
+	if asset == nativeAssetAddress {
+		return currencyAmount(asset, decimal.NewFromBigInt(baseUnits, 0))
+	}
+	return currencyAmount(asset, blockchain.BaseUnitsToDecimal(baseUnits, decimals))
+}
+
 // ValidateCanonical asserts the canonical flatTx matches the op and that its
 // LastLedgerSequence falls inside the follower's expiry band.
-func ValidateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, withdrawalID [32]byte, vault string, policy llsPolicy) error {
+func ValidateCanonical(ctx context.Context, assets blockchain.AssetResolver, flat transaction.FlatTransaction, op *core.WithdrawalOp, withdrawalID [32]byte, vault string, policy llsPolicy) error {
 	if asString(flat["TransactionType"]) != "Payment" {
 		return fmt.Errorf("xrpl canonical: wrong TransactionType %v", flat["TransactionType"])
 	}
@@ -291,7 +314,7 @@ func ValidateCanonical(flat transaction.FlatTransaction, op *core.WithdrawalOp, 
 	if !strings.EqualFold(asString(flat["Destination"]), op.Recipient) {
 		return fmt.Errorf("xrpl canonical: Destination %v != op.Recipient %s", flat["Destination"], op.Recipient)
 	}
-	wantAmount, err := BuildAmount(op)
+	wantAmount, err := BuildAmount(ctx, assets, op)
 	if err != nil {
 		return fmt.Errorf("xrpl canonical: build expected Amount: %w", err)
 	}

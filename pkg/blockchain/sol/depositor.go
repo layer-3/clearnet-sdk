@@ -11,6 +11,7 @@ import (
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/blockchain/sol/custody"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
@@ -29,6 +30,7 @@ type Depositor struct {
 	signer       sign.Signer
 	depositorPub solana.PublicKey
 	commitment   rpc.CommitmentType
+	assets       blockchain.AssetResolver
 }
 
 var _ core.VaultDepositor = (*Depositor)(nil)
@@ -37,7 +39,10 @@ var _ core.VaultDepositor = (*Depositor)(nil)
 // is the depositor's ed25519 key (it pays + funds). commitment is the level the
 // deposit tx's blockhash + preflight use; empty → CommitmentFinalized (see the
 // NOTE on the withdrawal finalizer's Config.Commitment for the test tradeoff).
-func NewDepositor(rpcURL string, programID solana.PublicKey, signer sign.Signer, commitment rpc.CommitmentType) (*Depositor, error) {
+func NewDepositor(rpcURL string, programID solana.PublicKey, signer sign.Signer, commitment rpc.CommitmentType, assets blockchain.AssetResolver) (*Depositor, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("sol: asset resolver is required")
+	}
 	pub, err := solanaPub(signer)
 	if err != nil {
 		return nil, err
@@ -53,26 +58,49 @@ func NewDepositor(rpcURL string, programID solana.PublicKey, signer sign.Signer,
 		signer:       signer,
 		depositorPub: pub,
 		commitment:   commitment,
+		assets:       assets,
 	}, nil
 }
 
 // DepositorAddress returns the depositor's Solana address.
 func (d *Depositor) DepositorAddress() string { return d.depositorPub.String() }
 
-// SubmitDeposit transfers `amount` of `asset` into the vault, crediting clearnet
-// dest.Account (20-byte hex) with the optional ADR-015 dest.Ref sub-account
-// reference. asset is "" / "SOL" for native or a base58 mint.
-func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
+func normalizeDepositAssetAddress(assetAddress string) string {
+	if strings.TrimSpace(assetAddress) == "" {
+		return nativeAssetAddress
+	}
+	return assetAddress
+}
+
+// SubmitDeposit transfers amount of assetAddress into the vault,
+// crediting clearnet dest.Account (20-byte hex) with the optional ADR-015
+// dest.Ref sub-account reference. assetAddress is "" for native or a base58
+// mint.
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
 	acct, err := parseClearnetAccount(dest.Account)
 	if err != nil {
 		return core.TxRef{}, err
 	}
-	amt := amount.BigInt()
-	if !amt.IsUint64() || amt.Sign() <= 0 {
-		return core.TxRef{}, fmt.Errorf("sol: amount %s not a positive uint64", amount.String())
+	assetAddress = normalizeDepositAssetAddress(assetAddress)
+	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
+		return core.TxRef{}, err
 	}
-	lamports := amt.Uint64()
-	mint, err := resolveMint(asset)
+	if amount.Sign() <= 0 {
+		return core.TxRef{}, fmt.Errorf("sol: amount %s not positive", amount.String())
+	}
+	decimals, err := d.assets.AssetDecimals(ctx, assetAddress)
+	if err != nil {
+		return core.TxRef{}, err
+	}
+	baseUnits, err := blockchain.DecimalToBaseUnits(amount, decimals)
+	if err != nil {
+		return core.TxRef{}, fmt.Errorf("sol: amount: %w", err)
+	}
+	if !baseUnits.IsUint64() {
+		return core.TxRef{}, fmt.Errorf("sol: amount %s overflows uint64 base units", amount.String())
+	}
+	lamports := baseUnits.Uint64()
+	mint, err := resolveMint(assetAddress)
 	if err != nil {
 		return core.TxRef{}, err
 	}

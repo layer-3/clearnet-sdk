@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
@@ -42,6 +43,7 @@ type RotationFinalizer struct {
 	signer   sign.Signer
 	store    VaultStore
 	cfg      Config
+	assets   blockchain.AssetResolver
 	accounts []string // per-account deposit URIs whose UTXOs must also be swept
 }
 
@@ -52,7 +54,10 @@ var _ core.SignerRotationFinalizer = (*RotationFinalizer)(nil)
 // are the per-account deposit accounts whose tagged-address UTXOs must be
 // included in the sweep (the base vault is always swept) — undeclared accounts'
 // UTXOs would be stranded under the old vault.
-func NewRotationFinalizer(net *chaincfg.Params, rpc RPC, signer sign.Signer, store VaultStore, cfg Config, accountURIs ...string) (*RotationFinalizer, error) {
+func NewRotationFinalizer(net *chaincfg.Params, rpc RPC, signer sign.Signer, store VaultStore, cfg Config, assets blockchain.AssetResolver, accountURIs ...string) (*RotationFinalizer, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("btc: asset resolver is required")
+	}
 	if signer.Algorithm() != sign.AlgSecp256k1 {
 		return nil, fmt.Errorf("btc: rotation signer must be secp256k1, got %s", signer.Algorithm())
 	}
@@ -62,6 +67,7 @@ func NewRotationFinalizer(net *chaincfg.Params, rpc RPC, signer sign.Signer, sto
 		signer:   signer,
 		store:    store,
 		cfg:      cfg,
+		assets:   assets,
 		accounts: accountURIs,
 	}, nil
 }
@@ -75,7 +81,7 @@ func (f *RotationFinalizer) currentVault(ctx context.Context) (*WithdrawalFinali
 	if err != nil {
 		return nil, fmt.Errorf("btc: read current vault: %w", err)
 	}
-	cur, err := NewWithdrawalFinalizer(f.net, f.rpc, f.signer, pubkeys, threshold, f.cfg)
+	cur, err := NewWithdrawalFinalizer(f.net, f.rpc, f.signer, pubkeys, threshold, f.cfg, f.assets)
 	if err != nil {
 		return nil, fmt.Errorf("btc: build current vault: %w", err)
 	}

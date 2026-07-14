@@ -8,6 +8,8 @@ import (
 // AssetID is a unique identifier for a token (§2).
 // Symbols (e.g. "USDT", "ETH") are mapped to L1 (ChainID, TokenAddress) pairs
 // via the AssetResolver interface at runtime.
+// TODO: Consider removing AssetID and using AssetURI for protocol asset
+// identity once the issuer asset URI migration reaches transfers/swaps.
 type AssetID string
 
 // FinalizedWithdrawal is the positive clearing-layer finality object consumed

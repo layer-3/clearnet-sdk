@@ -145,7 +145,7 @@ async function submitLocalDeposit(): Promise<void> {
           account: readInput("account"),
         },
         asset: readInput("asset") || BITCOIN_NATIVE_ASSET,
-        amount: readBigInt("amount"),
+        amount: readInput("amount"),
       },
       {
         onSubmitted(ref) {
@@ -262,7 +262,7 @@ async function submitXverseDeposit(): Promise<void> {
           account: readInput("account"),
         },
         asset: readInput("asset") || BITCOIN_NATIVE_ASSET,
-        amount: readBigInt("amount"),
+        amount: readInput("amount"),
       },
       {
         publicKey: wallet.publicKey,

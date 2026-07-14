@@ -72,8 +72,8 @@ describe("EvmVaultDepositor Anvil integration", () => {
 
     const ref = await depositor.submitDeposit({
       destination: { account: deployer.address, ref: DEPOSIT_REFERENCE },
-      asset: zeroAddress,
-      amount,
+      asset: "",
+      amount: "0.01",
     });
     const afterBalance = await publicClient.getBalance({
       address: custodyAddress,
@@ -128,7 +128,7 @@ describe("EvmVaultDepositor Anvil integration", () => {
     const ref = await depositor.submitDeposit({
       destination: { account: deployer.address, ref: DEPOSIT_REFERENCE },
       asset: tokenAddress,
-      amount,
+      amount: "25",
     });
     const allowance = await publicClient.readContract({
       address: tokenAddress,

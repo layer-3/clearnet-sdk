@@ -139,16 +139,14 @@ type RepegOp struct {
 // Delivered to the custody layer after the clearing-side challenge window.
 //
 // Removed fields (now in block header or derived at vault level):
-//   - WithdrawalID: derived at vault level as keccak256(accountId, blockHash, entryIndex, chainId, recipient, asset, amount, nonce)
+//   - WithdrawalID: derived at vault level as keccak256(accountId, blockHash, entryIndex, assetURI, recipient, amount, nonce)
 //   - Nonce: in BlockEntry.Nonce
 //   - K: in Block.K
 //   - SignedAt: in Block.SealedAt
 //   - SignerNodeIDs: recoverable from Block.Attestation.Bitmask + cluster lookup
 type WithdrawalOp struct {
-	Asset         AssetID         // Protocol-level asset name (e.g. "ETH") — needed for ledger finalization
-	L1Asset       string          // On-chain asset address (e.g., "0xA0b8...USDC")
+	AssetURI      AssetURI        // Issuer asset URI — needed for ledger finalization and custody routing
 	Amount        decimal.Decimal // Withdrawal amount in token units
-	ChainID       uint64          // Target L1 chain
 	Recipient     string          // L1 recipient address (chain-native format)
 	UserSignature []byte          // User's ECDSA authorization of the withdrawal
 }

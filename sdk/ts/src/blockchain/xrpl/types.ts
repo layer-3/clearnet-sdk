@@ -6,7 +6,7 @@ import type {
   SubmitDepositInput,
 } from "../../core/types.js";
 
-export type XrplAmount = bigint | string;
+export type XrplAmount = string;
 export type XrplAsset = string;
 export type XrplPreparedPayment = Payment;
 
@@ -15,14 +15,14 @@ export interface XrplDepositDestination extends DepositDestination {
   ref?: Bytes32Hex;
 }
 
-export interface XrplNativeDepositInput extends SubmitDepositInput<bigint> {
-  asset: "" | "XRP";
-  amount: bigint;
+export interface XrplNativeDepositInput extends SubmitDepositInput<string> {
+  asset: "";
+  amount: string;
   destination: XrplDepositDestination;
 }
 
 export interface XrplIssuedDepositInput extends SubmitDepositInput<string> {
-  asset: `${string}.${string}` | `${string}:${string}`;
+  asset: `${string}.${string}`;
   amount: string;
   destination: XrplDepositDestination;
 }
@@ -46,4 +46,5 @@ export interface XrplDepositorConfig {
   vaultAddress: string;
   signer: XrplSigner;
   maxFeeDrops?: bigint | number;
+  issuedAssetDecimals?: Record<string, number>;
 }

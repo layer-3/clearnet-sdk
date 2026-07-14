@@ -364,10 +364,8 @@ func TestGoldens_Preimages(t *testing.T) {
 		// WithdrawalOp
 		t.Run("withdrawal", func(t *testing.T) {
 			op := &WithdrawalOp{
-				Asset:         "USDT",
-				L1Asset:       "0xA0b8000000000000000000000000000000000001",
+				AssetURI:      "yellow://ynet/asset/custody/evm/1/0xa0b8000000000000000000000000000000000001",
 				Amount:        decimal.NewFromBigInt(big.NewInt(10_000_000), 0),
-				ChainID:       1,
 				Recipient:     "0xRecipient",
 				UserSignature: []byte{0xAA, 0xBB, 0xCC},
 			}
@@ -377,8 +375,8 @@ func TestGoldens_Preimages(t *testing.T) {
 				Description: "WithdrawalOp payload = canonical CBOR of WithdrawalOp tuple.",
 				OpType:      "WithdrawalOp",
 				Op: map[string]interface{}{
-					"asset": string(op.Asset), "l1Asset": op.L1Asset,
-					"amountDec": op.Amount.String(), "chainID": op.ChainID, "recipient": op.Recipient,
+					"assetURI":  string(op.AssetURI),
+					"amountDec": op.Amount.String(), "recipient": op.Recipient,
 					"userSignatureHex": hex.EncodeToString(op.UserSignature),
 				},
 				CBORBytes: len(got),

@@ -23,14 +23,14 @@ export interface EvmDepositDestination extends DepositDestination {
   account: Address;
 }
 
-export interface SubmitDepositInput<TAmount = bigint> {
+export interface SubmitDepositInput<TAmount = string> {
   asset: string;
   amount: TAmount;
   destination: DepositDestination;
 }
 
-export interface EvmSubmitDepositInput extends SubmitDepositInput {
-  asset: Address;
+export interface EvmSubmitDepositInput extends SubmitDepositInput<string> {
+  asset: Address | "";
   destination: EvmDepositDestination;
 }
 
@@ -57,4 +57,5 @@ export interface EvmDepositorConfig {
   custodyAddress: Address;
   chainId: number;
   receiptTimeoutMs?: number;
+  nativeDecimals?: number;
 }

@@ -196,6 +196,7 @@ async function submitDeposit(): Promise<void> {
       rpcUrl: readInput("rpc-url"),
       vaultAddress: readInput("vault-address"),
       signer,
+      issuedAssetDecimals: {},
       ...(maxFeeDrops === undefined
         ? {}
         : { maxFeeDrops: BigInt(maxFeeDrops) }),
@@ -209,15 +210,15 @@ async function submitDeposit(): Promise<void> {
               account: readInput("account"),
               ...(ref === undefined ? {} : { ref: ref as Bytes32Hex }),
             },
-            asset: asset === "" ? "" : XRPL_NATIVE_ASSET,
-            amount: BigInt(readInput("amount")),
+            asset: XRPL_NATIVE_ASSET,
+            amount: readInput("amount"),
           }
         : {
             destination: {
               account: readInput("account"),
               ...(ref === undefined ? {} : { ref: ref as Bytes32Hex }),
             },
-            asset: asset as `${string}.${string}` | `${string}:${string}`,
+            asset: asset as `${string}.${string}`,
             amount: readInput("amount"),
           },
       {
@@ -427,7 +428,7 @@ async function withTimeout<T>(
 }
 
 function isNativeAsset(asset: string): boolean {
-  return asset === "" || asset.toUpperCase() === XRPL_NATIVE_ASSET;
+  return asset === XRPL_NATIVE_ASSET;
 }
 
 function readInput(id: string): string {

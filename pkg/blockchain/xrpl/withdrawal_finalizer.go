@@ -12,6 +12,7 @@ import (
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
@@ -36,6 +37,7 @@ type WithdrawalFinalizer struct {
 	signer       sign.Signer
 	id           Identity
 	tickets      TicketProvider
+	assets       blockchain.AssetResolver
 
 	// resolveThreshold, when set, supplies the live SignerQuorum used to size the
 	// multi-sign fee autofill in Pack. It lets a quorum-raising rotation take
@@ -87,7 +89,10 @@ var _ core.VaultWithdrawalFinalizer = (*WithdrawalFinalizer)(nil)
 
 // NewWithdrawalFinalizer builds the XRPL vault finalizer. threshold is the
 // SignerQuorum; tickets authorizes each withdrawal's TicketSequence.
-func NewWithdrawalFinalizer(rpcURL, vaultAddress string, threshold int, signer sign.Signer, tickets TicketProvider) (*WithdrawalFinalizer, error) {
+func NewWithdrawalFinalizer(rpcURL, vaultAddress string, threshold int, signer sign.Signer, tickets TicketProvider, assets blockchain.AssetResolver) (*WithdrawalFinalizer, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("xrpl: asset resolver is required")
+	}
 	client, err := newRPCClient(rpcURL)
 	if err != nil {
 		return nil, err
@@ -103,6 +108,7 @@ func NewWithdrawalFinalizer(rpcURL, vaultAddress string, threshold int, signer s
 		signer:       signer,
 		id:           id,
 		tickets:      tickets,
+		assets:       assets,
 	}, nil
 }
 
@@ -131,9 +137,9 @@ func (f *WithdrawalFinalizer) feeQuorum(ctx context.Context) (int, error) {
 // Pack binds a Ticket and builds the autofilled multi-sign Payment, returning
 // its sorted-key JSON. It sets LastLedgerSequence to current + a per-attempt
 // budget clamped so the tx's estimated close is at or before the deadline
-//; if too little budget remains it fails and the withdrawal parks.
+// ; if too little budget remains it fails and the withdrawal parks.
 func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
-	amount, err := BuildAmount(op)
+	amount, err := BuildAmount(ctx, f.assets, op)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +204,7 @@ func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *c
 		}
 		policy.current = state
 	}
-	return ValidateCanonical(flat, op, withdrawalID, f.vaultAddress, policy)
+	return ValidateCanonical(ctx, f.assets, flat, op, withdrawalID, f.vaultAddress, policy)
 }
 
 // Sign multi-signs the packed Payment and returns this node's blob.

@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 )
 
 // BlockHeader is the signing-preimage projection of a sealed Block
@@ -366,23 +367,23 @@ func RefFromBlock(block *Block, entryIndex uint64) BlockEntryRef {
 // confirm the withdrawal was executed on-chain; the cluster validates the
 // receipt and applies the second leg of the burn (DR 2010 / CR 1020).
 type BurnReceipt struct {
-	WithdrawalID  [32]byte          // keccak256(accountId, blockHash, entryIndex, chainId, recipient, asset, amount, nonce)
+	WithdrawalID  [32]byte          // keccak256(accountId, blockHash, entryIndex, assetURI, amount, recipient, nonce)
 	BlockEntryRef                   // Block hash + entry index of the escrow entry
-	L1TxHash      [32]byte          // Transaction hash on the target chain (zero unless Executed)
+	TxID          string            // Chain-native transaction/reference id (empty unless applicable)
 	Signatures    [][]byte          // k-of-n provider ECDSA signatures over the receipt digest
-	Status        WithdrawalOutcome // Terminal outcome: Executed, Expired, or Failed
+	Status        WithdrawalOutcome // Terminal outcome: Executed, Expired, or failed with reason
 }
 
 // WithdrawalOutcome is the terminal status of a withdrawal, carried in a
 // BurnReceipt. It lets clearnet tell a withdrawal that executed on L1 (settle
 // the burn) apart from one that did not leave the vault (authorize a safe
-// re-credit, with a zero L1TxHash). The status byte is bound into the receipt
+// re-credit, with an empty TxID). The status byte is bound into the receipt
 // digest, so a quorum cannot be tricked into swapping one outcome for another.
 type WithdrawalOutcome uint8
 
 const (
 	// WithdrawalExecuted means the withdrawal was executed on the target chain;
-	// L1TxHash is set and the clearing layer settles the burn.
+	// TxID is set and the clearing layer settles the burn.
 	WithdrawalExecuted WithdrawalOutcome = 1
 	// WithdrawalExpired means the authorization passed its deadline unspent and
 	// can never execute (time-bound expiry); the clearing layer may re-credit.
@@ -393,6 +394,11 @@ const (
 	// WithdrawalUnauthorized means the withdrawal is signed by one or more
 	// unauthorized signers
 	WithdrawalUnauthorized WithdrawalOutcome = 4
+	// WithdrawalInvalidDecimals means the withdrawal amount cannot be represented
+	// in the target chain's base units.
+	// TODO: Replace this status with explicit remainder semantics once
+	// BurnReceipt carries the unexecuted amount.
+	WithdrawalInvalidDecimals WithdrawalOutcome = 5
 )
 
 // MintReceipt is issued by the custody layer after an L1 deposit confirms
@@ -403,16 +409,13 @@ const (
 // the cluster validates the receipt and credits the user account
 // (DR 1010 / CR 2010).
 //
-// Idempotency is keyed by (ChainID, L1TxHash, LogIndex) so a re-issued
-// receipt cannot produce a second credit. Clearnet does not watch the
-// chain — receipts are the only deposit ingress.
+// Idempotency is keyed by (AssetURI, TxID) so a re-issued receipt cannot
+// produce a second credit. Clearnet does not watch the chain — receipts are
+// the only deposit ingress.
 type MintReceipt struct {
-	ChainID     uint64   // EIP-155 chain id where the deposit landed
-	L1TxHash    [32]byte // Transaction hash on the source chain
-	LogIndex    uint64   // Log index of the Deposited event within the tx
-	Account     string   // Clearnet account URI to credit
-	Asset       string   // Asset symbol (matches on-chain symbol)
-	Amount      *big.Int // Deposit amount (base units, must be > 0)
-	BlockNumber uint64   // L1 block number for diagnostics / receipts
-	Signatures  [][]byte // k-of-n provider ECDSA signatures over the receipt digest
+	TxID       string          // Issuer-defined transaction/event id
+	Account    string          // Clearnet account URI to credit
+	AssetURI   AssetURI        // Issuer asset URI
+	Amount     decimal.Decimal // Deposit amount in protocol token units, must be > 0
+	Signatures [][]byte        // k-of-n provider ECDSA signatures over the receipt digest
 }

@@ -12,7 +12,6 @@ import { UINT64_MAX, XRPL_NATIVE_ASSET } from "./constants.js";
 import type { XrplDepositDestination, XrplSigner } from "./types.js";
 
 const HASH_PATTERN = /^[a-fA-F0-9]{64}$/;
-const DECIMAL_PATTERN = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
 const STANDARD_CURRENCY_PATTERN = /^[A-Za-z0-9]{3}$/;
 const HEX_CURRENCY_PATTERN = /^[a-fA-F0-9]{40}$/;
 
@@ -120,12 +119,20 @@ export function requireReference(reference: unknown): Uint8Array {
 export function resolveAmount(
   asset: unknown,
   amount: unknown,
+  issuedAssetDecimals: ReadonlyMap<string, number>,
 ): ResolvedXrplAmount {
   if (isNativeAsset(asset)) {
-    return { kind: "native", amount: requireNativeAmount(amount).toString() };
+    return { kind: "native", amount: decimalToBaseUnits(amount, 6).toString() };
   }
   const issued = requireIssuedAsset(asset);
-  const value = requireIssuedAmount(amount);
+  const decimals = issuedAssetDecimals.get(issued.key);
+  if (decimals === undefined) {
+    throw new ClearnetSdkError(
+      "INVALID_AMOUNT",
+      `issued XRPL decimals are not configured for ${issued.key}`,
+    );
+  }
+  const value = baseUnitsToDecimal(decimalToBaseUnits(amount, decimals), decimals);
   return {
     kind: "issued",
     amount: { currency: issued.currency, issuer: issued.issuer, value },
@@ -198,45 +205,35 @@ function isNativeAsset(asset: unknown): boolean {
   if (asset === "" || asset === undefined) {
     return true;
   }
-  return typeof asset === "string" && asset.trim().toUpperCase() === XRPL_NATIVE_ASSET;
+  return false;
 }
 
-function requireNativeAmount(amount: unknown): bigint {
-  if (typeof amount !== "bigint") {
-    throw new ClearnetSdkError(
-      "INVALID_AMOUNT",
-      "native XRP amount must be a bigint in drops",
-    );
-  }
-  if (amount <= 0n || amount > UINT64_MAX) {
-    throw new ClearnetSdkError(
-      "INVALID_AMOUNT",
-      "native XRP amount must be a positive uint64 drops value",
-    );
-  }
-  return amount;
-}
-
-function requireIssuedAsset(asset: unknown): { currency: string; issuer: string } {
+function requireIssuedAsset(asset: unknown): {
+  key: string;
+  currency: string;
+  issuer: string;
+} {
   if (typeof asset !== "string") {
     throw new ClearnetSdkError(
       "INVALID_ADDRESS",
-      "issued XRPL asset must be CUR.rIssuer or CUR:rIssuer",
+      "issued XRPL asset must be CUR.rIssuer",
     );
   }
   const trimmed = asset.trim();
   const dot = trimmed.indexOf(".");
-  const colon = trimmed.indexOf(":");
-  const separator =
-    dot > 0 && (colon < 0 || dot < colon) ? dot : colon > 0 ? colon : -1;
-  if (separator <= 0 || separator === trimmed.length - 1) {
+  if (
+    dot <= 0 ||
+    dot !== trimmed.lastIndexOf(".") ||
+    dot === trimmed.length - 1 ||
+    trimmed.includes(":")
+  ) {
     throw new ClearnetSdkError(
       "INVALID_ADDRESS",
-      "issued XRPL asset must be CUR.rIssuer or CUR:rIssuer",
+      "issued XRPL asset must be CUR.rIssuer",
     );
   }
-  const currency = trimmed.slice(0, separator);
-  const issuer = trimmed.slice(separator + 1);
+  const currency = trimmed.slice(0, dot);
+  const issuer = trimmed.slice(dot + 1);
   if (
     currency.toUpperCase() === XRPL_NATIVE_ASSET ||
     (!STANDARD_CURRENCY_PATTERN.test(currency) &&
@@ -247,25 +244,78 @@ function requireIssuedAsset(asset: unknown): { currency: string; issuer: string 
       "issued XRPL currency must be a 3-character code or 20-byte hex code",
     );
   }
-  return { currency, issuer: requireClassicAddress(issuer, "asset issuer") };
+  return {
+    key: trimmed,
+    currency,
+    issuer: requireClassicAddress(issuer, "asset issuer"),
+  };
 }
 
-function requireIssuedAmount(amount: unknown): string {
-  if (typeof amount !== "string") {
+export function normalizeIssuedAssetDecimals(
+  decimals: unknown,
+): ReadonlyMap<string, number> {
+  if (decimals === undefined) {
+    return new Map();
+  }
+  if (!decimals || typeof decimals !== "object" || Array.isArray(decimals)) {
     throw new ClearnetSdkError(
       "INVALID_AMOUNT",
-      "issued XRPL amount must be a decimal string",
+      "issuedAssetDecimals must be an object",
     );
   }
-  const trimmed = amount.trim();
-  if (
-    !DECIMAL_PATTERN.test(trimmed) ||
-    trimmed.replace(".", "").replace(/0/g, "") === ""
-  ) {
+  const out = new Map<string, number>();
+  for (const [asset, value] of Object.entries(decimals as Record<string, unknown>)) {
+    requireIssuedAsset(asset);
+    if (
+      typeof value !== "number" ||
+      !Number.isInteger(value) ||
+      value < 0 ||
+      value > 255
+    ) {
+      throw new ClearnetSdkError(
+        "INVALID_AMOUNT",
+        `issued XRPL decimals for ${asset} must be an integer from 0 to 255`,
+      );
+    }
+    out.set(asset, value);
+  }
+  return out;
+}
+
+function decimalToBaseUnits(amount: unknown, decimals: number): bigint {
+  if (typeof amount !== "string" || !/^[0-9]+(?:\.[0-9]+)?$/.test(amount)) {
     throw new ClearnetSdkError(
       "INVALID_AMOUNT",
-      "issued XRPL amount must be a positive decimal string",
+      "XRPL amount must be a positive decimal string",
     );
   }
-  return trimmed;
+  const [whole, fractional = ""] = amount.split(".");
+  if (fractional.length > decimals) {
+    throw new ClearnetSdkError(
+      "INVALID_AMOUNT",
+      `XRPL amount has more than ${decimals} decimal places`,
+    );
+  }
+  const padded = fractional.padEnd(decimals, "0");
+  const base = BigInt(`${whole}${padded}`.replace(/^0+(?=\d)/, ""));
+  if (base <= 0n) {
+    throw new ClearnetSdkError("INVALID_AMOUNT", "XRPL amount must be positive");
+  }
+  if (decimals === 6 && base > UINT64_MAX) {
+    throw new ClearnetSdkError(
+      "INVALID_AMOUNT",
+      "native XRP amount must fit in uint64 drops",
+    );
+  }
+  return base;
+}
+
+function baseUnitsToDecimal(baseUnits: bigint, decimals: number): string {
+  if (decimals === 0) {
+    return baseUnits.toString();
+  }
+  const raw = baseUnits.toString().padStart(decimals + 1, "0");
+  const whole = raw.slice(0, -decimals);
+  const fractional = raw.slice(-decimals).replace(/0+$/, "");
+  return fractional === "" ? whole : `${whole}.${fractional}`;
 }

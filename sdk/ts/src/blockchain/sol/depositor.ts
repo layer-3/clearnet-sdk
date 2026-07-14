@@ -15,6 +15,7 @@ import type {
   TxRef,
   VaultDepositor,
 } from "../../core/types.js";
+import { decimalToBaseUnits } from "../amounts.js";
 import {
   DEFAULT_RECEIPT_TIMEOUT_MS,
   DEPOSIT_SOL_DISCRIMINATOR,
@@ -36,7 +37,6 @@ import {
   normalizeCommitment,
   normalizeMinConfirmations,
   publicKeyFromString,
-  requireAmount,
   requireClearnetAccount,
   requireDepositDestination,
   requireProgramId,
@@ -57,6 +57,8 @@ const SOLANA_TOKEN_PROGRAM_PUBLIC_KEY = new PublicKey(SOLANA_TOKEN_PROGRAM_ID);
 const SOLANA_ASSOCIATED_TOKEN_PROGRAM_PUBLIC_KEY = new PublicKey(
   SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID,
 );
+const SPL_MINT_SIZE = 82;
+const SPL_MINT_DECIMALS_OFFSET = 44;
 const VAULT_SEED = new TextEncoder().encode("vault");
 const EVENT_AUTHORITY_SEED = new TextEncoder().encode("__event_authority");
 
@@ -71,6 +73,7 @@ export class SolanaVaultDepositor
   private readonly connection: Connection;
   private readonly vault: PublicKey;
   private readonly eventAuthority: PublicKey;
+  private readonly mintDecimals = new Map<string, number>();
 
   constructor(config: SolanaDepositorConfig) {
     const rpcUrl = requireRpcUrl(config.rpcUrl);
@@ -102,8 +105,14 @@ export class SolanaVaultDepositor
     const destination = requireDepositDestination(fields.destination);
     const account = requireClearnetAccount(destination.account);
     const reference = requireReference(destination.ref);
-    const amount = requireAmount(fields.amount);
     const mint = resolveMint(fields.asset);
+    const amount = decimalToBaseUnits(
+      fields.amount,
+      mint === undefined ? 9 : await this.assetDecimals(mint),
+    );
+    if (amount > (1n << 64n) - 1n) {
+      throw new ClearnetSdkError("INVALID_AMOUNT", "amount must fit in uint64");
+    }
     validateWaitOptions(waitOptions);
     const transaction = new Transaction();
     transaction.feePayer = this.depositor;
@@ -216,6 +225,36 @@ export class SolanaVaultDepositor
         cause: error,
       });
     }
+  }
+
+  private async assetDecimals(mint: PublicKey): Promise<number> {
+    const key = mint.toBase58();
+    const cached = this.mintDecimals.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    let account;
+    try {
+      account = await this.connection.getAccountInfo(mint, this.commitment);
+    } catch (error) {
+      throw new ClearnetSdkError("RPC_ERROR", "sol: read mint", {
+        cause: error,
+      });
+    }
+    if (account === null) {
+      throw new ClearnetSdkError("INVALID_ADDRESS", `sol: mint ${key} not found`);
+    }
+    // TODO: Verify the mint account owner is the SPL Token program before
+    // trusting mint account data.
+    if (account.data.length < SPL_MINT_SIZE) {
+      throw new ClearnetSdkError("INVALID_ADDRESS", `sol: mint ${key} is invalid`);
+    }
+    const decimals = account.data[SPL_MINT_DECIMALS_OFFSET];
+    if (decimals === undefined) {
+      throw new ClearnetSdkError("INVALID_ADDRESS", `sol: mint ${key} is invalid`);
+    }
+    this.mintDecimals.set(key, decimals);
+    return decimals;
   }
 
   private async waitForCommitment(

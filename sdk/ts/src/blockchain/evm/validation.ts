@@ -1,4 +1,4 @@
-import { isAddress, zeroHash } from "viem";
+import { isAddress, zeroAddress, zeroHash } from "viem";
 import type { Account, Address, Hash } from "viem";
 
 import { ClearnetSdkError } from "../../core/errors.js";
@@ -64,6 +64,38 @@ export function requireAmount(amount: unknown): bigint {
     );
   }
   return amount;
+}
+
+export function requireAsset(asset: unknown): Address | "" {
+  if (asset === "") {
+    return "";
+  }
+  const address = requireAddress(asset, "asset");
+  if (address.toLowerCase() === zeroAddress) {
+    throw new ClearnetSdkError(
+      "INVALID_ADDRESS",
+      'zero address is not a valid asset; use "" for native ETH',
+    );
+  }
+  return address;
+}
+
+export function normalizeNativeDecimals(value: unknown): number {
+  if (value === undefined) {
+    return 18;
+  }
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > 255
+  ) {
+    throw new ClearnetSdkError(
+      "INVALID_AMOUNT",
+      "nativeDecimals must be an integer from 0 to 255",
+    );
+  }
+  return value;
 }
 
 export function requireDepositDestination(

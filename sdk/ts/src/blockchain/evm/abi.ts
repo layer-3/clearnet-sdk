@@ -86,6 +86,13 @@ export const erc20Abi = [
   },
   {
     type: "function",
+    name: "decimals",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8", internalType: "uint8" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
     name: "mint",
     inputs: [
       { name: "to", type: "address", internalType: "address" },

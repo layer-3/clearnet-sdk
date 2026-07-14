@@ -2,7 +2,6 @@ package receipt
 
 import (
 	"context"
-	"math/big"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	p2pproto "github.com/layer-3/clearnet-sdk/pkg/p2p/protocol"
 )
 
@@ -44,7 +44,7 @@ func TestReceipt_BurnRoundTrip(t *testing.T) {
 
 	want := &core.BurnReceipt{Signatures: [][]byte{{0x1, 0x2}}}
 	want.WithdrawalID[0] = 0xBE
-	want.L1TxHash[31] = 0xEF
+	want.TxID = "tx/ef"
 
 	ack, err := NewClient(cli, srv.ID(), nil).SendBurnReceipt(ctx, want)
 	if err != nil {
@@ -53,7 +53,7 @@ func TestReceipt_BurnRoundTrip(t *testing.T) {
 	if !ack.Accepted {
 		t.Fatalf("ack not accepted: %+v", ack)
 	}
-	if got == nil || got.WithdrawalID != want.WithdrawalID || got.L1TxHash != want.L1TxHash {
+	if got == nil || got.WithdrawalID != want.WithdrawalID || got.TxID != want.TxID {
 		t.Fatalf("server received %+v, want %+v", got, want)
 	}
 }
@@ -70,7 +70,7 @@ func TestReceipt_MintRejected(t *testing.T) {
 	}, nil).Register(srv)
 
 	ack, err := NewClient(cli, srv.ID(), nil).SendMintReceipt(ctx, &core.MintReceipt{
-		ChainID: 1, Account: "yellow://x", Asset: "ETH", Amount: big.NewInt(5),
+		TxID: "tx/1", Account: "yellow://x", AssetURI: "yellow://ynet/asset/custody/evm/1/0x0", Amount: decimal.NewFromInt(5),
 	})
 	if err != nil {
 		t.Fatalf("SendMintReceipt: %v", err)

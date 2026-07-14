@@ -237,7 +237,7 @@ func TestRotationValidateRejectsPartialSweep(t *testing.T) {
 	}
 	store := &stubVaultStore{pubkeys: pubs, threshold: 2}
 
-	rf, err := NewRotationFinalizer(net, rpc, signer, store, cfg)
+	rf, err := NewRotationFinalizer(net, rpc, signer, store, cfg, NewAssetResolver())
 	if err != nil {
 		t.Fatalf("NewRotationFinalizer: %v", err)
 	}

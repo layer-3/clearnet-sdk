@@ -21,7 +21,7 @@ func TestFeeQuorumResolver(t *testing.T) {
 	}
 	signer := sign.NewKeySignerFromECDSA(k)
 
-	f, err := NewWithdrawalFinalizer("http://127.0.0.1:1", "rVaultAddressNotARealAccount11111111", 5, signer, nil)
+	f, err := NewWithdrawalFinalizer("http://127.0.0.1:1", "rVaultAddressNotARealAccount11111111", 5, signer, nil, NewAssetResolver(AssetResolverConfig{}))
 	if err != nil {
 		t.Fatalf("NewWithdrawalFinalizer: %v", err)
 	}

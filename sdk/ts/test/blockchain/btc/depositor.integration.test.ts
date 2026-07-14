@@ -63,7 +63,7 @@ describe("BitcoinVaultDepositor regtest integration", () => {
 
     const ref = await depositor.submitDeposit({
       asset: BITCOIN_NATIVE_ASSET,
-      amount: 20_000_000n,
+      amount: "0.2",
       destination: { account: ACCOUNT },
     });
 

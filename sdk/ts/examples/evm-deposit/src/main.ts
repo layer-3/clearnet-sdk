@@ -85,9 +85,10 @@ async function submitDeposit(): Promise<void> {
   const rpcUrl = readInput("rpc-url");
   const custodyAddress = getAddress(readInput("custody-address"));
   const account = getAddress(readInput("account"));
-  const asset = getAddress(readInput("asset"));
+  const assetInput = readInput("asset");
+  const asset = assetInput === "" ? EVM_NATIVE_ASSET : getAddress(assetInput);
   const ref = readOptionalHash("reference");
-  const amount = parseUnits(readInput("amount"), readInt("decimals"));
+  const amount = readInput("amount");
   const publicClient = createPublicClient({ transport: http(rpcUrl) });
   const walletClient = createWalletClient({
     account: walletAccount,
@@ -99,6 +100,7 @@ async function submitDeposit(): Promise<void> {
     walletAccount,
     custodyAddress,
     chainId,
+    nativeDecimals: readInt("decimals"),
   });
 
   setBusy(submitButton, true);
@@ -135,6 +137,12 @@ async function verifyLastTx(): Promise<void> {
   if (lastRef === undefined) {
     return;
   }
+  if (walletAccount === undefined) {
+    await connectWallet();
+  }
+  if (walletAccount === undefined) {
+    return;
+  }
   const chainId = readChainId();
   const rpcUrl = readInput("rpc-url");
   await requireConfiguredRpcChain(rpcUrl, chainId);
@@ -149,7 +157,7 @@ async function verifyLastTx(): Promise<void> {
   const depositor = new EvmVaultDepositor({
     publicClient,
     walletClient,
-    walletAccount: walletAccount ?? EVM_NATIVE_ASSET,
+    walletAccount,
     custodyAddress: getAddress(readInput("custody-address")),
     chainId,
   });

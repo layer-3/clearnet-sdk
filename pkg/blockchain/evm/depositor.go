@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
@@ -22,30 +24,45 @@ type Depositor struct {
 	custody     *Custody
 	custodyAddr common.Address
 	signer      sign.Signer
+	assets      blockchain.AssetResolver
 }
 
 var _ core.VaultDepositor = (*Depositor)(nil)
 
 // NewDepositor binds the Custody vault at custodyAddr over client; signer is the
 // depositor's secp256k1 identity (it pays and, for ERC-20, approves).
-func NewDepositor(client *ethclient.Client, custodyAddr common.Address, signer sign.Signer) (*Depositor, error) {
+func NewDepositor(client *ethclient.Client, custodyAddr common.Address, signer sign.Signer, assets blockchain.AssetResolver) (*Depositor, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("evm: asset resolver is required")
+	}
 	custody, err := NewCustody(custodyAddr, client)
 	if err != nil {
 		return nil, fmt.Errorf("load custody: %w", err)
 	}
-	return &Depositor{client: client, custody: custody, custodyAddr: custodyAddr, signer: signer}, nil
+	return &Depositor{client: client, custody: custody, custodyAddr: custodyAddr, signer: signer, assets: assets}, nil
 }
 
-// SubmitDeposit credits `account` with `amount` of `asset`. For an ERC-20 (asset is a
-// non-zero hex address) it approves the vault then calls
-// Custody.deposit(account, asset, amount); for the zero address it sends native
-// ETH with msg.value == amount. Blocks until the deposit tx mines.
-func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
-	assetAddr, err := depositAssetAddress(asset)
+// SubmitDeposit credits dest.Account with amount of assetAddress. For an ERC-20
+// (assetAddress is a non-zero hex address) it approves the vault then calls
+// Custody.deposit; for the native marker it sends ETH with msg.value == amount.
+// Blocks until the deposit tx mines.
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.TxRef, error) {
+	assetAddress = normalizeDepositAssetAddress(assetAddress)
+	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
+		return core.TxRef{}, err
+	}
+	if amount.Sign() <= 0 {
+		return core.TxRef{}, fmt.Errorf("evm: amount must be positive")
+	}
+	decimals, err := d.assets.AssetDecimals(ctx, assetAddress)
 	if err != nil {
 		return core.TxRef{}, err
 	}
-	amt := amount.BigInt()
+	amt, err := blockchain.DecimalToBaseUnits(amount, decimals)
+	if err != nil {
+		return core.TxRef{}, fmt.Errorf("evm: amount: %w", err)
+	}
+	assetAddr := depositAssetAddress(assetAddress)
 	accountAddr := common.HexToAddress(dest.Account)
 
 	if assetAddr == (common.Address{}) {
@@ -93,6 +110,13 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, asset string, amount deci
 		return core.TxRef{}, err
 	}
 	return core.TxRef{Hash: tx.Hash(), Raw: tx.Hash().Hex()}, nil
+}
+
+func normalizeDepositAssetAddress(assetAddress string) string {
+	if strings.TrimSpace(assetAddress) == "" {
+		return nativeAssetAddress
+	}
+	return assetAddress
 }
 
 // VerifyDeposit reports the on-chain status of the deposit tx in ref. A reverted

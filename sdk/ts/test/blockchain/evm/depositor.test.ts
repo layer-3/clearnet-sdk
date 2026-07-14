@@ -37,6 +37,7 @@ interface ClientMocks {
   walletClient: WalletClient;
   publicMock: {
     getChainId: ReturnType<typeof vi.fn>;
+    readContract: ReturnType<typeof vi.fn>;
     waitForTransactionReceipt: ReturnType<typeof vi.fn>;
     getTransactionReceipt: ReturnType<typeof vi.fn>;
     getTransaction: ReturnType<typeof vi.fn>;
@@ -59,8 +60,8 @@ describe("EvmVaultDepositor", () => {
     >();
   });
 
-  it("exports the native zero-address constant", () => {
-    expect(EVM_NATIVE_ASSET).toBe(zeroAddress);
+  it("exports the native depositor asset marker", () => {
+    expect(EVM_NATIVE_ASSET).toBe("");
   });
 
   it("submits a native ETH deposit with matching value and returns the deposit hash", async () => {
@@ -72,8 +73,8 @@ describe("EvmVaultDepositor", () => {
     const ref = await depositor.submitDeposit(
       {
         destination: { account: ACCOUNT, ref: DEPOSIT_REFERENCE },
-        asset: zeroAddress,
-        amount: 10n,
+        asset: EVM_NATIVE_ASSET,
+        amount: "10",
       },
       { onSubmitted },
     );
@@ -104,7 +105,7 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
     const onSubmitted = vi.fn();
     const ref = await depositor.submitDeposit(
-      { destination: { account: ACCOUNT }, asset: TOKEN, amount: 25n },
+      { destination: { account: ACCOUNT }, asset: TOKEN, amount: "25" },
       { onSubmitted },
     );
 
@@ -150,8 +151,8 @@ describe("EvmVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         destination: { account: ACCOUNT },
-        asset: zeroAddress,
-        amount: 1n,
+        asset: EVM_NATIVE_ASSET,
+        amount: "1",
       }),
     ).rejects.toMatchObject({
       code: "TX_REVERTED",
@@ -170,7 +171,7 @@ describe("EvmVaultDepositor", () => {
       depositor.submitDeposit({
         destination: { account: ACCOUNT },
         asset: TOKEN,
-        amount: 1n,
+        amount: "1",
       }),
     ).rejects.toMatchObject({
       code: "TX_REVERTED",
@@ -188,7 +189,7 @@ describe("EvmVaultDepositor", () => {
 
     await expect(
       depositor.submitDeposit(
-        { destination: { account: ACCOUNT }, asset: zeroAddress, amount: 1n },
+        { destination: { account: ACCOUNT }, asset: EVM_NATIVE_ASSET, amount: "1" },
         { receiptTimeoutMs: 1 },
       ),
     ).rejects.toMatchObject({
@@ -204,8 +205,8 @@ describe("EvmVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         destination: { account: ACCOUNT, ref: "invoice-1" as Hash },
-        asset: zeroAddress,
-        amount: 1n,
+        asset: EVM_NATIVE_ASSET,
+        amount: "1",
       }),
     ).rejects.toMatchObject({ code: "INVALID_REFERENCE" });
     expect(clients.walletMock.writeContract).not.toHaveBeenCalled();
@@ -219,21 +220,28 @@ describe("EvmVaultDepositor", () => {
       depositor.submitDeposit({
         destination: { account: ACCOUNT },
         asset: "not-an-address" as Address,
-        amount: 1n,
+        amount: "1",
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
         destination: { account: "not-an-address" as Address },
-        asset: zeroAddress,
-        amount: 1n,
+        asset: EVM_NATIVE_ASSET,
+        amount: "1",
       }),
     ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
     await expect(
       depositor.submitDeposit({
         destination: { account: ACCOUNT },
         asset: zeroAddress,
-        amount: 0n,
+        amount: "1",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    await expect(
+      depositor.submitDeposit({
+        destination: { account: ACCOUNT },
+        asset: EVM_NATIVE_ASSET,
+        amount: "0",
       }),
     ).rejects.toMatchObject({ code: "INVALID_AMOUNT" });
     expect(clients.walletMock.writeContract).not.toHaveBeenCalled();
@@ -246,8 +254,8 @@ describe("EvmVaultDepositor", () => {
     await expect(
       depositor.submitDeposit({
         destination: { account: ACCOUNT },
-        asset: zeroAddress,
-        amount: 1n,
+        asset: EVM_NATIVE_ASSET,
+        amount: "1",
       }),
     ).rejects.toMatchObject({ code: "CHAIN_MISMATCH" });
     expect(clients.walletMock.writeContract).not.toHaveBeenCalled();
@@ -381,6 +389,7 @@ function createDepositor(clients: ClientMocks): EvmVaultDepositor {
     walletAccount: ACCOUNT,
     custodyAddress: CUSTODY_ADDRESS,
     chainId: CHAIN_ID,
+    nativeDecimals: 0,
   });
 }
 
@@ -397,6 +406,7 @@ function createClients(options: {
 } = {}): ClientMocks {
   const publicMock = {
     getChainId: vi.fn().mockResolvedValue(options.publicChainId ?? CHAIN_ID),
+    readContract: vi.fn().mockResolvedValue(0),
     waitForTransactionReceipt: vi
       .fn()
       .mockImplementation(() =>
