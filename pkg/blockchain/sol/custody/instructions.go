@@ -68,9 +68,7 @@ func NewDepositSolInstruction(
 	}
 
 	// Create the instruction.
-	return solanago.NewInstruction(
-		ProgramID,
-		accounts__,
+	return solanago.NewInstruction(programAccount, accounts__,
 		buf__.Bytes(),
 	), nil
 }
@@ -144,9 +142,7 @@ func NewDepositSplInstruction(
 	}
 
 	// Create the instruction.
-	return solanago.NewInstruction(
-		ProgramID,
-		accounts__,
+	return solanago.NewInstruction(programAccount, accounts__,
 		buf__.Bytes(),
 	), nil
 }
@@ -242,9 +238,7 @@ func NewExecuteInstruction(
 	}
 
 	// Create the instruction.
-	return solanago.NewInstruction(
-		ProgramID,
-		accounts__,
+	return solanago.NewInstruction(programAccount, accounts__,
 		buf__.Bytes(),
 	), nil
 }
@@ -306,9 +300,7 @@ func NewInitializeInstruction(
 	}
 
 	// Create the instruction.
-	return solanago.NewInstruction(
-		ProgramID,
-		accounts__,
+	return solanago.NewInstruction(programAccount, accounts__,
 		buf__.Bytes(),
 	), nil
 }
@@ -367,9 +359,7 @@ func NewUpdateSignersInstruction(
 	}
 
 	// Create the instruction.
-	return solanago.NewInstruction(
-		ProgramID,
-		accounts__,
+	return solanago.NewInstruction(programAccount, accounts__,
 		buf__.Bytes(),
 	), nil
 }
