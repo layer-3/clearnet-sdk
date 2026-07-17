@@ -502,7 +502,7 @@ Config fields:
 |---|---|---|
 | `rpcUrl` | `string` | Used for signature-status verification and commitment waits. |
 | `signer` | `SolanaSigner` | Provides `publicKey` and `signAndSend(transaction)`. |
-| `programId` | `string` | Optional. Must be the default custody program ID in this version. |
+| `programId` | `string` | Optional Solana custody program public key; defaults to the SDK's bundled custody program ID. |
 | `commitment` | `"processed" \| "confirmed" \| "finalized"` | Optional; defaults to `finalized`. |
 | `receiptTimeoutMs` | `number` | Optional default timeout for commitment waits. |
 

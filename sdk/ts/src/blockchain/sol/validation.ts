@@ -43,17 +43,9 @@ export function requireSigner(signer: unknown): SolanaSigner {
 }
 
 export function requireProgramId(value: unknown): PublicKey {
-  const programId =
-    value === undefined
-      ? new PublicKey(SOLANA_CUSTODY_PROGRAM_ID)
-      : publicKeyFromString(value, "programId");
-  if (programId.toBase58() !== SOLANA_CUSTODY_PROGRAM_ID) {
-    throw new ClearnetSdkError(
-      "INVALID_ADDRESS",
-      `programId must be ${SOLANA_CUSTODY_PROGRAM_ID}`,
-    );
-  }
-  return programId;
+  return value === undefined
+    ? new PublicKey(SOLANA_CUSTODY_PROGRAM_ID)
+    : publicKeyFromString(value, "programId");
 }
 
 export function normalizeCommitment(
