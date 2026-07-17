@@ -27,6 +27,7 @@ import { bytes32Hex } from "../../../src/blockchain/sol/validation.js";
 import type {
   Bytes32Hex,
   DepositStatus,
+  SolanaDepositorConfig,
   SolanaSigner,
   SolanaSubmitDepositInput,
   SubmitDepositOptions,
@@ -225,14 +226,41 @@ describe("SolanaVaultDepositor", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("requires the default program ID for v1", () => {
+  it("uses a custom program ID for SOL instruction and PDA derivation", async () => {
+    stubSignatureStatus({ confirmationStatus: "finalized" });
+    const signer = createSigner();
+    const customProgramId = publicKey(33);
+    const customVault = sdkVaultPda(customProgramId);
+    const customEventAuthority = sdkEventAuthorityPda(customProgramId);
+    const depositor = createDepositor(signer, {
+      programId: customProgramId.toBase58(),
+    });
+
+    await depositor.submitDeposit({
+      asset: SOLANA_NATIVE_ASSET,
+      amount: "0.00000001",
+      destination: { account: ACCOUNT },
+    });
+
+    const instruction = signedTransaction(signer).instructions[0]!;
+    expect(instruction.programId.toBase58()).toBe(customProgramId.toBase58());
+    expect(metas(instruction)).toEqual([
+      meta(DEPOSITOR, true, true),
+      meta(customVault, false, true),
+      meta(SYSTEM_PROGRAM_ID, false, false),
+      meta(customEventAuthority, false, false),
+      meta(customProgramId, false, false),
+    ]);
+  });
+
+  it("rejects invalid Solana configuration", () => {
     const signer = createSigner();
 
     expect(() =>
       new SolanaVaultDepositor({
         rpcUrl: RPC_URL,
         signer,
-        programId: publicKey(33).toBase58(),
+        programId: "not-base58",
       }),
     ).toThrow(ClearnetSdkError);
     expect(() =>
@@ -543,8 +571,11 @@ describe("SolanaVaultDepositor", () => {
   });
 });
 
-function createDepositor(signer: SolanaSigner): SolanaVaultDepositor {
-  return new SolanaVaultDepositor({ rpcUrl: RPC_URL, signer });
+function createDepositor(
+  signer: SolanaSigner,
+  overrides: Partial<Omit<SolanaDepositorConfig, "rpcUrl" | "signer">> = {},
+): SolanaVaultDepositor {
+  return new SolanaVaultDepositor({ rpcUrl: RPC_URL, signer, ...overrides });
 }
 
 function createSigner(): MockSigner {
