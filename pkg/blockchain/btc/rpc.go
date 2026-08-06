@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
 // RPC is the bitcoind RPC surface the adapters depend on. It is supplied by the
@@ -52,23 +54,60 @@ type RawVout struct {
 	ScriptPubKeyHex string
 }
 
-// isAlreadyKnown reports whether a SendRawTransaction error means the tx (or a
-// prior attempt spending the same inputs) is already in the chain/mempool — the
-// UTXO-model analogue of EVM's executed[withdrawalID] guard. It prefers the
-// typed bitcoind error code (RPC_VERIFY_ALREADY_IN_CHAIN = -27,
-// RPC_VERIFY_ERROR = -25 for spent/missing inputs) when the caller supplies
-// *Client, and falls back to error-text matching for other RPC implementations.
+// isAlreadyKnown reports whether a SendRawTransaction error unambiguously says
+// the exact submitted transaction is already in the chain/mempool. A generic
+// RPC_VERIFY_ERROR (-25), including a missing-inputs error, is deliberately not
+// sufficient: the inputs may have been spent by a different transaction.
 func isAlreadyKnown(err error) bool {
+	if err == nil {
+		return false
+	}
 	var rpcErr *RPCError
 	if errors.As(err, &rpcErr) {
-		switch rpcErr.Code {
-		case -27, -25:
+		if rpcErr.Code == -27 { // RPC_VERIFY_ALREADY_IN_CHAIN
 			return true
+		}
+		if rpcErr.Code == -25 { // RPC_VERIFY_ERROR always requires an exact lookup
+			return false
 		}
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "already in block chain") ||
-		strings.Contains(msg, "txn-already-known") ||
-		strings.Contains(msg, "missingorspent") ||
+		strings.Contains(msg, "txn-already-known")
+}
+
+// broadcastAlreadyAccepted reports whether a failed broadcast can safely be
+// treated as an idempotent success for txID. Ambiguous verification failures
+// are accepted only after an independent lookup returns that exact transaction.
+func broadcastAlreadyAccepted(ctx context.Context, rpc RPC, txID string, broadcastErr error) bool {
+	if isAlreadyKnown(broadcastErr) {
+		return true
+	}
+	if !requiresBroadcastLookup(broadcastErr) {
+		return false
+	}
+
+	raw, err := rpc.GetRawTransaction(ctx, txID)
+	if err != nil || raw == nil {
+		return false
+	}
+	localHash, err := chainhash.NewHashFromStr(txID)
+	if err != nil {
+		return false
+	}
+	foundHash, err := chainhash.NewHashFromStr(raw.TxID)
+	return err == nil && foundHash.IsEqual(localHash)
+}
+
+func requiresBroadcastLookup(err error) bool {
+	if err == nil {
+		return false
+	}
+	var rpcErr *RPCError
+	if errors.As(err, &rpcErr) && rpcErr.Code == -25 { // RPC_VERIFY_ERROR
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "missingorspent") ||
 		strings.Contains(msg, "missing inputs")
 }

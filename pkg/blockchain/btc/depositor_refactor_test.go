@@ -26,6 +26,8 @@ type depositorTestRPC struct {
 	sendErr      error
 	rawTx        *RawTx
 	rawErr       error
+	rawFunc      func(string) (*RawTx, error)
+	rawTxID      string
 	listMin      int
 	listAddrs    []string
 	feeTarget    int
@@ -69,7 +71,11 @@ func (r *depositorTestRPC) GetBlockHash(context.Context, int64) (string, error) 
 func (r *depositorTestRPC) GetBlockTxids(context.Context, string) ([]string, error) {
 	return nil, nil
 }
-func (r *depositorTestRPC) GetRawTransaction(context.Context, string) (*RawTx, error) {
+func (r *depositorTestRPC) GetRawTransaction(_ context.Context, txID string) (*RawTx, error) {
+	r.rawTxID = txID
+	if r.rawFunc != nil {
+		return r.rawFunc(txID)
+	}
 	return r.rawTx, r.rawErr
 }
 
@@ -162,6 +168,137 @@ func TestDepositorUsesGenericSenderAndPreservesTaggedDestination(t *testing.T) {
 	}
 	if rpc.feeTarget != defaultDepositorFeeConfirmationTarget || rpc.feeFallback != defaultDepositorFallbackFeeRate {
 		t.Fatalf("legacy fee args = (%d,%d)", rpc.feeTarget, rpc.feeFallback)
+	}
+}
+
+func TestDepositorBroadcastAlreadyAcceptedIsIdempotent(t *testing.T) {
+	tests := []struct {
+		name       string
+		sendErr    error
+		lookup     func(string) (*RawTx, error)
+		wantOK     bool
+		wantLookup bool
+	}{
+		{
+			name:    "already in chain needs no lookup",
+			sendErr: &RPCError{Code: -27, Message: "Transaction already in block chain"},
+			wantOK:  true,
+		},
+		{
+			name:    "verify error with exact transaction",
+			sendErr: &RPCError{Code: -25, Message: "Missing inputs"},
+			lookup: func(txID string) (*RawTx, error) {
+				return &RawTx{TxID: txID}, nil
+			},
+			wantOK:     true,
+			wantLookup: true,
+		},
+		{
+			name:       "verify error with absent transaction",
+			sendErr:    &RPCError{Code: -25, Message: "Missing inputs"},
+			lookup:     func(string) (*RawTx, error) { return nil, nil },
+			wantLookup: true,
+		},
+		{
+			name:       "typed verify error cannot bypass lookup by message",
+			sendErr:    &RPCError{Code: -25, Message: "Transaction already in block chain"},
+			lookup:     func(string) (*RawTx, error) { return nil, nil },
+			wantLookup: true,
+		},
+		{
+			name:    "verify error with unknown transaction",
+			sendErr: &RPCError{Code: -25, Message: "Missing inputs"},
+			lookup: func(string) (*RawTx, error) {
+				return nil, &RPCError{Code: -5, Message: "No such mempool or blockchain transaction"}
+			},
+			wantLookup: true,
+		},
+		{
+			name:    "verify error with lookup failure",
+			sendErr: &RPCError{Code: -25, Message: "Missing inputs"},
+			lookup: func(string) (*RawTx, error) {
+				return nil, errP2WPKHTestBackend
+			},
+			wantLookup: true,
+		},
+		{
+			name:    "verify error with different transaction",
+			sendErr: &RPCError{Code: -25, Message: "Missing inputs"},
+			lookup: func(string) (*RawTx, error) {
+				var other chainhash.Hash
+				other[0] = 0xff
+				return &RawTx{TxID: other.String()}, nil
+			},
+			wantLookup: true,
+		},
+		{
+			name:       "max fee rejection remains an error",
+			sendErr:    &RPCError{Code: -25, Message: "Fee exceeds maximum configured by user"},
+			lookup:     func(string) (*RawTx, error) { return nil, nil },
+			wantLookup: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rpc := &depositorTestRPC{
+				feeRate: defaultDepositorFallbackFeeRate,
+				sendErr: tc.sendErr,
+				rawFunc: tc.lookup,
+			}
+			signer, vaultKeys := depositorTestVaultKeys(t)
+			depositor, err := NewDepositor(&chaincfg.RegressionNetParams, rpc, signer, vaultKeys, 2, Config{}, NewAssetResolver())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fundingHash chainhash.Hash
+			fundingHash[0] = 0x43
+			rpc.unspent = []Unspent{{
+				TxID:          fundingHash.String(),
+				AmountSats:    50_000,
+				Confirmations: int64(defaultDepositorMinConfirmations),
+				ScriptPubKey:  hex.EncodeToString(depositor.sender.sourceScript),
+			}}
+
+			got, err := depositor.SubmitDeposit(
+				context.Background(),
+				"",
+				decimal.RequireFromString("0.0001"),
+				core.DepositDestination{Account: "clearnet:account:idempotent"},
+			)
+			raw, decodeErr := hex.DecodeString(rpc.broadcastHex)
+			if decodeErr != nil {
+				t.Fatal(decodeErr)
+			}
+			tx, decodeErr := decodeP2WPKHTestTx(raw)
+			if decodeErr != nil {
+				t.Fatal(decodeErr)
+			}
+			localTxID := tx.TxHash().String()
+
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("SubmitDeposit: %v", err)
+				}
+				if got != localTxID {
+					t.Fatalf("SubmitDeposit txid = %q, want locally calculated %q", got, localTxID)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("SubmitDeposit unexpectedly succeeded")
+				}
+				if !errors.Is(err, tc.sendErr) {
+					t.Fatalf("SubmitDeposit error %v does not wrap original broadcast error %v", err, tc.sendErr)
+				}
+			}
+			if tc.wantLookup {
+				if rpc.rawTxID != localTxID {
+					t.Fatalf("GetRawTransaction txid = %q, want local %q", rpc.rawTxID, localTxID)
+				}
+			} else if rpc.rawTxID != "" {
+				t.Fatalf("unexpected GetRawTransaction lookup for %q", rpc.rawTxID)
+			}
+		})
 	}
 }
 

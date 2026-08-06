@@ -237,9 +237,8 @@ func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, er
 }
 
 // Submit assembles the witnesses from the collected shares and broadcasts the
-// sweep. Idempotent by the UTXO model: if the sweep already landed, its inputs
-// are spent and the rebroadcast is rejected as already-known/missing-inputs, in
-// which case the original txID is returned.
+// sweep. An unambiguous already-known reply is idempotent; an ambiguous
+// missing-inputs reply is accepted only when the exact sweep can be looked up.
 func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
 	cur, err := f.currentVault(ctx)
 	if err != nil {
@@ -256,7 +255,7 @@ func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares []
 	hash := [32]byte(tx.TxHash())
 	txid := hashToTxid(hash)
 	if _, err := f.rpc.SendRawTransaction(ctx, hex.EncodeToString(merged)); err != nil {
-		if isAlreadyKnown(err) {
+		if broadcastAlreadyAccepted(ctx, f.rpc, txid, err) {
 			return txid, nil
 		}
 		return "", fmt.Errorf("btc rotation submit: sendrawtransaction: %w", err)

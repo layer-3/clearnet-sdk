@@ -60,7 +60,19 @@ func (b *depositorRPCBackend) FeeRateSatPerVByte(ctx context.Context, confirmati
 }
 
 func (b *depositorRPCBackend) Broadcast(ctx context.Context, rawTx []byte) (string, error) {
-	return b.rpc.SendRawTransaction(ctx, hex.EncodeToString(rawTx))
+	tx, err := deserializeTx(rawTx)
+	if err != nil {
+		return "", fmt.Errorf("decode transaction before broadcast: %w", err)
+	}
+	txID := tx.TxHash().String()
+	returnedID, err := b.rpc.SendRawTransaction(ctx, hex.EncodeToString(rawTx))
+	if err != nil {
+		if broadcastAlreadyAccepted(ctx, b.rpc, txID, err) {
+			return txID, nil
+		}
+		return "", err
+	}
+	return returnedID, nil
 }
 
 func (b *depositorRPCBackend) GetTransactionConfirmations(ctx context.Context, txID string) (uint64, bool, error) {
