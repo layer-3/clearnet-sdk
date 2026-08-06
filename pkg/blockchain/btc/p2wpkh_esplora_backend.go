@@ -22,10 +22,10 @@ import (
 
 const (
 	maxEsploraResponseBytes int64 = 8 << 20
-	// maxEsploraUTXORows bounds the number of per-transaction lookups made by
-	// ListUnspent. It matches the legacy depositor's default MaxInputs policy:
-	// callers with more fragmented funding must consolidate before depositing.
-	maxEsploraUTXORows = defaultDepositorMaxInputs
+	// defaultEsploraMaxUTXORows bounds the per-transaction lookups ListUnspent
+	// makes when MaxUTXORows is unset. It is a transport-cost bound only: how
+	// many inputs a transaction may spend is P2WPKHConfig.MaxInputs.
+	defaultEsploraMaxUTXORows = 100
 )
 
 // EsploraP2WPKHBackendConfig configures a reusable Esplora depositor backend.
@@ -40,6 +40,14 @@ type EsploraP2WPKHBackendConfig struct {
 	// RequestTimeout bounds each Esplora HTTP request when positive. Zero
 	// relies on the caller context and HTTPClient's timeout.
 	RequestTimeout time.Duration
+	// MaxUTXORows bounds how many UTXO rows ListUnspent accepts for one
+	// address, and so how many funding transactions a single call fetches.
+	// Zero applies defaultEsploraMaxUTXORows. This bounds the cost of discovery
+	// and is independent of coin selection: an address may hold far more
+	// outputs than a transaction spends, so callers whose wallet is more
+	// fragmented — or whose P2WPKHConfig.MaxInputs exceeds the default — raise
+	// this bound rather than treating wallet size as an input count.
+	MaxUTXORows int
 }
 
 // EsploraP2WPKHBackend supplies reusable indexed public-chain access for a
@@ -50,6 +58,7 @@ type EsploraP2WPKHBackend struct {
 	http           *http.Client
 	fixedFeeRate   int64
 	requestTimeout time.Duration
+	maxUTXORows    int
 }
 
 var _ DepositorBackend = (*EsploraP2WPKHBackend)(nil)
@@ -69,10 +78,17 @@ func NewEsploraP2WPKHBackend(cfg EsploraP2WPKHBackendConfig) (*EsploraP2WPKHBack
 	if cfg.RequestTimeout < 0 {
 		return nil, fmt.Errorf("btc: Esplora P2WPKH request timeout must not be negative")
 	}
+	if cfg.MaxUTXORows < 0 {
+		return nil, fmt.Errorf("btc: Esplora P2WPKH maximum UTXO rows must not be negative")
+	}
 	base.Path = strings.TrimRight(base.Path, "/")
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	maxUTXORows := cfg.MaxUTXORows
+	if maxUTXORows == 0 {
+		maxUTXORows = defaultEsploraMaxUTXORows
 	}
 	return &EsploraP2WPKHBackend{
 		baseURL:        base,
@@ -80,6 +96,7 @@ func NewEsploraP2WPKHBackend(cfg EsploraP2WPKHBackendConfig) (*EsploraP2WPKHBack
 		http:           httpClient,
 		fixedFeeRate:   cfg.FixedFeeRateSatPerVByte,
 		requestTimeout: cfg.RequestTimeout,
+		maxUTXORows:    maxUTXORows,
 	}, nil
 }
 
@@ -116,8 +133,8 @@ func (b *EsploraP2WPKHBackend) ListUnspent(ctx context.Context, address string, 
 	if err := b.getJSON(ctx, b.endpoint("address", address, "utxo"), &rows); err != nil {
 		return nil, fmt.Errorf("btc: list Esplora P2WPKH UTXOs: %w", err)
 	}
-	if len(rows) > maxEsploraUTXORows {
-		return nil, fmt.Errorf("btc: Esplora P2WPKH UTXO count %d exceeds maximum %d", len(rows), maxEsploraUTXORows)
+	if len(rows) > b.maxUTXORows {
+		return nil, fmt.Errorf("btc: Esplora P2WPKH UTXO count %d exceeds maximum %d", len(rows), b.maxUTXORows)
 	}
 	tipHeight, err := b.tipHeight(ctx)
 	if err != nil {
@@ -192,12 +209,29 @@ func (b *EsploraP2WPKHBackend) FeeRateSatPerVByte(ctx context.Context, confirmat
 	return rate, nil
 }
 
+// Broadcast submits rawTx and returns its transaction ID. The transaction ID is
+// derived locally before submission so an ambiguous failure — a lost reply or
+// any non-2xx status — can be resolved by an exact lookup. When Esplora already
+// holds that exact transaction the broadcast has in fact succeeded and is
+// reported as such: returning the failure instead would invite a retry that
+// selects fresh inputs and funds the destination twice.
 func (b *EsploraP2WPKHBackend) Broadcast(ctx context.Context, rawTx []byte) (string, error) {
+	tx, err := deserializeTx(rawTx)
+	if err != nil {
+		return "", fmt.Errorf("btc: decode transaction before Esplora broadcast: %w", err)
+	}
+	localTxID := tx.TxHash().String()
 	status, data, err := b.request(ctx, http.MethodPost, b.endpoint("tx"), []byte(hex.EncodeToString(rawTx)))
 	if err != nil {
+		if b.broadcastAlreadyAccepted(ctx, localTxID) {
+			return localTxID, nil
+		}
 		return "", fmt.Errorf("btc: Esplora broadcast: %w", err)
 	}
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		if b.broadcastAlreadyAccepted(ctx, localTxID) {
+			return localTxID, nil
+		}
 		return "", esploraHTTPStatusError(status, data)
 	}
 	txID := strings.TrimSpace(string(data))
@@ -205,6 +239,46 @@ func (b *EsploraP2WPKHBackend) Broadcast(ctx context.Context, rawTx []byte) (str
 		return "", fmt.Errorf("btc: Esplora broadcast returned invalid txid %q: %w", txID, err)
 	}
 	return txID, nil
+}
+
+// broadcastAlreadyAccepted reports whether a failed broadcast can safely be
+// treated as an idempotent success for txID. Esplora reports rejections as free
+// text, so nothing is inferred from the response body: only an independent
+// lookup returning that exact transaction is accepted, mirroring the Core
+// backend's discipline. A lookup that fails leaves the broadcast a failure.
+func (b *EsploraP2WPKHBackend) broadcastAlreadyAccepted(ctx context.Context, txID string) bool {
+	known, err := b.transactionExists(ctx, txID)
+	return err == nil && known
+}
+
+// transactionExists reports whether Esplora resolves txID in its mempool or
+// active chain. GET /tx/:txid/status answers 200 {"confirmed":false} both for a
+// mempool transaction and for one Esplora has never seen, so presence has to be
+// settled by the transaction endpoint, which answers 404 when it is absent.
+func (b *EsploraP2WPKHBackend) transactionExists(ctx context.Context, txID string) (bool, error) {
+	if err := validateHashString(txID); err != nil {
+		return false, fmt.Errorf("btc: invalid Esplora transaction ID %q: %w", txID, err)
+	}
+	statusCode, data, err := b.request(ctx, http.MethodGet, b.endpoint("tx", txID), nil)
+	if err != nil {
+		return false, err
+	}
+	if statusCode == http.StatusNotFound {
+		return false, nil
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return false, esploraHTTPStatusError(statusCode, data)
+	}
+	var tx struct {
+		TxID string `json:"txid"`
+	}
+	if err := decodeEsploraJSON(data, &tx); err != nil {
+		return false, fmt.Errorf("btc: decode Esplora transaction: %w", err)
+	}
+	if tx.TxID != "" && !strings.EqualFold(tx.TxID, txID) {
+		return false, fmt.Errorf("btc: Esplora transaction ID mismatch: requested %s, returned %s", txID, tx.TxID)
+	}
+	return true, nil
 }
 
 func (b *EsploraP2WPKHBackend) GetTransactionConfirmations(ctx context.Context, txID string) (uint64, bool, error) {
@@ -229,7 +303,15 @@ func (b *EsploraP2WPKHBackend) GetTransactionConfirmations(ctx context.Context, 
 		return 0, false, fmt.Errorf("btc: decode Esplora transaction status: %w", err)
 	}
 	if !status.Confirmed {
-		return 0, true, nil
+		// An unconfirmed status is not evidence the transaction exists: Esplora
+		// answers 200 {"confirmed":false} for a transaction it has never seen,
+		// so a mempool transaction is only distinguished from an absent one by
+		// resolving the transaction itself.
+		known, err := b.transactionExists(ctx, txID)
+		if err != nil {
+			return 0, false, err
+		}
+		return 0, known, nil
 	}
 	tipHeight, err := b.tipHeight(ctx)
 	if err != nil {
