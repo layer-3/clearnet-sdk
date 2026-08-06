@@ -217,6 +217,8 @@ func TestDepositorVerifyDepositStatusCompatibility(t *testing.T) {
 		{"unknown typed RPC error", nil, &RPCError{Code: -5, Message: "not found"}, 1, core.DepositAbsent, false},
 		{"nil raw", nil, nil, 1, core.DepositAbsent, false},
 		{"mempool", &RawTx{Confirmations: 0}, nil, 1, core.DepositPending, false},
+		{"zero depth still requires a block", &RawTx{Confirmations: 0}, nil, 0, core.DepositPending, false},
+		{"zero depth confirmed on chain", &RawTx{Confirmations: 1}, nil, 0, core.DepositConfirmed, false},
 		{"below depth", &RawTx{Confirmations: 1}, nil, 2, core.DepositPending, false},
 		{"confirmed", &RawTx{Confirmations: 2}, nil, 2, core.DepositConfirmed, false},
 		{"transport error", nil, errP2WPKHTestBackend, 1, core.DepositAbsent, true},

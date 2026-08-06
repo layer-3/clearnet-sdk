@@ -2,7 +2,6 @@ package btc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -20,7 +19,7 @@ import (
 // + threshold (the same address the withdrawal finalizer can later spend).
 type Depositor struct {
 	net          *chaincfg.Params
-	rpc          RPC
+	backend      DepositorBackend
 	sender       *P2WPKHSender
 	vaultPubkeys [][]byte
 	threshold    int
@@ -28,6 +27,16 @@ type Depositor struct {
 }
 
 var _ core.VaultDepositor = (*Depositor)(nil)
+
+// DepositorBackend supplies the chain access needed to submit and observe BTC
+// deposits without prescribing Bitcoin Core, Esplora, wallet ownership, or a
+// transport. GetTransactionConfirmations reports whether txID is known in the
+// mempool or active chain and, when known, its current confirmation count. The
+// Depositor owns the core.VaultDepositor status and minimum-depth semantics.
+type DepositorBackend interface {
+	P2WPKHBackend
+	GetTransactionConfirmations(ctx context.Context, txID string) (confirmations uint64, known bool, err error)
+}
 
 // NewDepositor builds the BTC depositor. signer is the depositor's secp256k1
 // key; vaultPubkeys + threshold define the vault whose per-account deposit
@@ -45,13 +54,29 @@ func NewDepositor(net *chaincfg.Params, rpc RPC, signer sign.Signer, vaultPubkey
 	}
 	senderCfg := depositorP2WPKHConfig(cfg)
 	backend := &depositorRPCBackend{rpc: rpc, fallbackFeeRate: senderCfg.FallbackFeeRateSatPerVByte}
-	sender, err := NewP2WPKHSender(net, backend, signer, senderCfg)
+	return NewDepositorWithBackend(net, backend, signer, vaultPubkeys, threshold, senderCfg, assets)
+}
+
+// NewDepositorWithBackend builds a BTC depositor using transport-independent
+// chain access. Unlike the legacy RPC constructor, cfg is explicit: callers
+// must provide a fully populated P2WPKHConfig accepted by NewP2WPKHSender.
+// backend owns funding transaction submission and transport-neutral transaction
+// observation; Depositor applies deposit verification semantics so the returned
+// value fully implements core.VaultDepositor.
+func NewDepositorWithBackend(net *chaincfg.Params, backend DepositorBackend, signer sign.Signer, vaultPubkeys [][]byte, threshold int, cfg P2WPKHConfig, assets blockchain.AssetResolver) (*Depositor, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("btc: asset resolver is required")
+	}
+	if nilInterface(backend) {
+		return nil, fmt.Errorf("btc: depositor backend is required")
+	}
+	sender, err := NewP2WPKHSender(net, backend, signer, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("btc: create depositor sender: %w", err)
 	}
 	return &Depositor{
 		net:          net,
-		rpc:          rpc,
+		backend:      backend,
 		sender:       sender,
 		vaultPubkeys: vaultPubkeys,
 		threshold:    threshold,
@@ -106,25 +131,25 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 	return d.sender.Send(ctx, depositAddr.EncodeAddress(), sats)
 }
 
-// VerifyDeposit reports the on-chain status of the deposit txID. Requires the
-// node to resolve the tx (txindex=1, or the tx
-// unspent / in the mempool). A tx the node has never seen — or one reorged out
-// and dropped — reads as DepositAbsent; a mempool tx (0 confs) is DepositPending
+// VerifyDeposit reports the backend's on-chain status for the deposit txID.
+// The legacy RPC backend requires the node to resolve the tx (txindex=1, or the
+// tx unspent / in the mempool). A tx it has never seen — or one reorged out and
+// dropped — reads as DepositAbsent; a mempool tx (0 confs) is DepositPending
 // until it is mined with at least max(1, minConf) confirmations (a deposit is
 // only Confirmed once on chain, consistent with the other chains).
 func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint64) (core.DepositStatus, error) {
-	raw, err := d.rpc.GetRawTransaction(ctx, txID)
+	confirmations, known, err := d.backend.GetTransactionConfirmations(ctx, txID)
 	if err != nil {
-		var rpcErr *RPCError
-		if errors.As(err, &rpcErr) && rpcErr.Code == -5 { // RPC_INVALID_ADDRESS_OR_KEY: unknown tx
-			return core.DepositAbsent, nil
-		}
-		return core.DepositAbsent, fmt.Errorf("btc: getrawtransaction: %w", err)
+		return core.DepositAbsent, err
 	}
-	if raw == nil {
+	if !known {
 		return core.DepositAbsent, nil
 	}
-	if raw.Confirmations > 0 && raw.Confirmations >= int64(minConf) {
+	required := minConf
+	if required == 0 {
+		required = 1
+	}
+	if confirmations >= required {
 		return core.DepositConfirmed, nil
 	}
 	return core.DepositPending, nil

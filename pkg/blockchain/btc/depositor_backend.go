@@ -3,6 +3,7 @@ package btc
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 )
@@ -24,7 +25,7 @@ type depositorRPCBackend struct {
 	fallbackFeeRate int64
 }
 
-var _ P2WPKHBackend = (*depositorRPCBackend)(nil)
+var _ DepositorBackend = (*depositorRPCBackend)(nil)
 
 func (b *depositorRPCBackend) ListUnspent(ctx context.Context, address string, minConfirmations uint64) ([]UnspentOutput, error) {
 	if minConfirmations > uint64(math.MaxInt) {
@@ -60,6 +61,26 @@ func (b *depositorRPCBackend) FeeRateSatPerVByte(ctx context.Context, confirmati
 
 func (b *depositorRPCBackend) Broadcast(ctx context.Context, rawTx []byte) (string, error) {
 	return b.rpc.SendRawTransaction(ctx, hex.EncodeToString(rawTx))
+}
+
+func (b *depositorRPCBackend) GetTransactionConfirmations(ctx context.Context, txID string) (uint64, bool, error) {
+	raw, err := b.rpc.GetRawTransaction(ctx, txID)
+	if err != nil {
+		var rpcErr *RPCError
+		if errors.As(err, &rpcErr) && rpcErr.Code == -5 { // RPC_INVALID_ADDRESS_OR_KEY: unknown tx
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("btc: getrawtransaction: %w", err)
+	}
+	if raw == nil {
+		return 0, false, nil
+	}
+	if raw.Confirmations < 0 {
+		// Preserve the legacy behavior for a known conflicted transaction: it
+		// remains observed but has no active-chain confirmations.
+		return 0, true, nil
+	}
+	return uint64(raw.Confirmations), true, nil
 }
 
 func depositorP2WPKHConfig(cfg Config) P2WPKHConfig {
