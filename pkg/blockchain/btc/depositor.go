@@ -2,22 +2,27 @@ package btc
 
 import (
 	"context"
-	"encoding/hex"
-	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
 
 	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
+)
+
+// These defaults apply only when the legacy custody Config leaves the
+// corresponding depositor setting at zero. The public P2WPKHConfig remains
+// explicit and does not apply defaults.
+const (
+	defaultDepositorMinConfirmations      uint64 = 1
+	defaultDepositorFeeConfirmationTarget        = 6
+	defaultDepositorFallbackFeeRate       int64  = 5
+	defaultDepositorFeeCapSatPerVByte     int64  = 1_000
+	defaultDepositorDustThresholdSats     int64  = 330
+	defaultDepositorMaxInputs                    = 100
 )
 
 // Depositor funds a per-account deposit address from the depositor's own
@@ -26,48 +31,100 @@ import (
 // + threshold (the same address the withdrawal finalizer can later spend).
 type Depositor struct {
 	net          *chaincfg.Params
-	rpc          RPC
-	signer       sign.Signer
-	signerPub    []byte
-	depositAddr  btcutil.Address // depositor's own P2WPKH address (funding source)
+	backend      DepositorBackend
+	sender       *P2WPKHSender
 	vaultPubkeys [][]byte
 	threshold    int
-	cfg          Config
 	assets       blockchain.AssetResolver
 }
 
 var _ core.VaultDepositor = (*Depositor)(nil)
 
+// DepositorBackend supplies the chain access needed to submit and observe BTC
+// deposits without prescribing Bitcoin Core, Esplora, wallet ownership, or a
+// transport. GetTransactionConfirmations reports whether txID is known in the
+// mempool or active chain and, when known, its current confirmation count. The
+// Depositor owns the core.VaultDepositor status and minimum-depth semantics.
+type DepositorBackend interface {
+	P2WPKHBackend
+	GetTransactionConfirmations(ctx context.Context, txID string) (confirmations uint64, known bool, err error)
+}
+
 // NewDepositor builds the BTC depositor. signer is the depositor's secp256k1
 // key; vaultPubkeys + threshold define the vault whose per-account deposit
-// addresses funds are sent to.
+// addresses funds are sent to. For backward compatibility, zero legacy Config
+// values are normalized for the funding sender to one confirmation, a six-block
+// fee target, a 5 sat/vB fallback, and a 1000 sat/vB fee cap. Deposits also use
+// a fixed 330-satoshi change threshold and a 100-input limit; those policies do
+// not borrow the P2WSH-only MaxInputsPerWithdrawal setting.
 func NewDepositor(net *chaincfg.Params, rpc RPC, signer sign.Signer, vaultPubkeys [][]byte, threshold int, cfg Config, assets blockchain.AssetResolver) (*Depositor, error) {
 	if assets == nil {
 		return nil, fmt.Errorf("btc: asset resolver is required")
 	}
-	if signer.Algorithm() != sign.AlgSecp256k1 {
-		return nil, fmt.Errorf("btc: depositor signer must be secp256k1, got %s", signer.Algorithm())
+	if nilInterface(rpc) {
+		return nil, fmt.Errorf("btc: depositor RPC is required")
 	}
-	pub := signer.PublicKey()
-	addr, err := btcutil.NewAddressWitnessPubKeyHash(btcutil.Hash160(pub), net)
+	senderCfg := depositorP2WPKHConfig(cfg)
+	backend := newLegacyCoreP2WPKHBackend(rpc, senderCfg.FallbackFeeRateSatPerVByte)
+	return NewDepositorWithBackend(net, backend, signer, vaultPubkeys, threshold, senderCfg, assets)
+}
+
+func depositorP2WPKHConfig(cfg Config) P2WPKHConfig {
+	minConfirmations := cfg.ConfirmationDepth
+	if minConfirmations == 0 {
+		minConfirmations = defaultDepositorMinConfirmations
+	}
+	feeTarget := cfg.FeeConfTarget
+	if feeTarget == 0 {
+		feeTarget = defaultDepositorFeeConfirmationTarget
+	}
+	fallbackRate := cfg.FallbackFeeRate
+	if fallbackRate == 0 {
+		fallbackRate = defaultDepositorFallbackFeeRate
+	}
+	feeCap := cfg.FeeCapSatPerVByte
+	if feeCap == 0 {
+		feeCap = defaultDepositorFeeCapSatPerVByte
+	}
+	return P2WPKHConfig{
+		MinConfirmations:           minConfirmations,
+		FeeConfirmationTarget:      feeTarget,
+		FallbackFeeRateSatPerVByte: fallbackRate,
+		FeeCapSatPerVByte:          feeCap,
+		DustThresholdSats:          defaultDepositorDustThresholdSats,
+		MaxInputs:                  defaultDepositorMaxInputs,
+	}
+}
+
+// NewDepositorWithBackend builds a BTC depositor using transport-independent
+// chain access. Unlike the legacy RPC constructor, cfg is explicit: callers
+// must provide a fully populated P2WPKHConfig accepted by NewP2WPKHSender.
+// backend owns funding transaction submission and transport-neutral transaction
+// observation; Depositor applies deposit verification semantics so the returned
+// value fully implements core.VaultDepositor.
+func NewDepositorWithBackend(net *chaincfg.Params, backend DepositorBackend, signer sign.Signer, vaultPubkeys [][]byte, threshold int, cfg P2WPKHConfig, assets blockchain.AssetResolver) (*Depositor, error) {
+	if assets == nil {
+		return nil, fmt.Errorf("btc: asset resolver is required")
+	}
+	if nilInterface(backend) {
+		return nil, fmt.Errorf("btc: depositor backend is required")
+	}
+	sender, err := NewP2WPKHSender(net, backend, signer, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("btc: derive depositor address: %w", err)
+		return nil, fmt.Errorf("btc: create depositor sender: %w", err)
 	}
 	return &Depositor{
 		net:          net,
-		rpc:          rpc,
-		signer:       signer,
-		signerPub:    pub,
-		depositAddr:  addr,
+		backend:      backend,
+		sender:       sender,
 		vaultPubkeys: vaultPubkeys,
 		threshold:    threshold,
-		cfg:          cfg,
 		assets:       assets,
 	}, nil
 }
 
 // DepositorAddress returns the depositor's own P2WPKH funding address.
-func (d *Depositor) DepositorAddress() string { return d.depositAddr.EncodeAddress() }
+func (d *Depositor) DepositorAddress() string { return d.sender.Address() }
 
 func normalizeDepositAssetAddress(assetAddress string) string {
 	if strings.TrimSpace(assetAddress) == "" {
@@ -110,176 +167,29 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 	if err != nil {
 		return "", fmt.Errorf("btc: derive deposit address: %w", err)
 	}
-
-	myAddr := d.depositAddr.EncodeAddress()
-	unspent, err := d.rpc.ListUnspent(ctx, int(d.cfg.ConfirmationDepth), []string{myAddr})
-	if err != nil {
-		return "", fmt.Errorf("btc: list depositor utxos: %w", err)
-	}
-	utxos, scripts, err := depositorUTXOs(unspent, myAddr, d.net)
-	if err != nil {
-		return "", err
-	}
-	feeRate, err := d.rpc.EstimateSmartFeeSatPerVByte(ctx, d.cfg.FeeConfTarget, d.cfg.FallbackFeeRate)
-	if err != nil {
-		return "", fmt.Errorf("btc: estimate fee: %w", err)
-	}
-	// numFixedOutputs = recipient (deposit address); change is sized in.
-	selected, feeSats, err := SelectUTXOs(utxos, sats, feeRate, 1, 0)
-	if err != nil {
-		return "", err
-	}
-
-	tx, err := buildDepositTx(selected, depositAddr, sats, d.depositAddr, feeSats)
-	if err != nil {
-		return "", err
-	}
-	if err := d.signP2WPKH(ctx, tx, selected, scripts); err != nil {
-		return "", err
-	}
-
-	raw, err := serializeTx(tx)
-	if err != nil {
-		return "", err
-	}
-	hash := [32]byte(tx.TxHash())
-	txid := hashToTxid(hash)
-	if _, err := d.rpc.SendRawTransaction(ctx, hex.EncodeToString(raw)); err != nil {
-		if isAlreadyKnown(err) {
-			return txid, nil
-		}
-		return "", fmt.Errorf("btc: sendrawtransaction: %w", err)
-	}
-	return txid, nil
+	return d.sender.Send(ctx, depositAddr.EncodeAddress(), sats)
 }
 
-// VerifyDeposit reports the on-chain status of the deposit txID. Requires the
-// node to resolve the tx (txindex=1, or the tx
-// unspent / in the mempool). A tx the node has never seen — or one reorged out
-// and dropped — reads as DepositAbsent; a mempool tx (0 confs) is DepositPending
+// VerifyDeposit reports the backend's on-chain status for the deposit txID.
+// The legacy RPC backend requires the node to resolve the tx (txindex=1, or the
+// tx unspent / in the mempool). A tx it has never seen — or one reorged out and
+// dropped — reads as DepositAbsent; a mempool tx (0 confs) is DepositPending
 // until it is mined with at least max(1, minConf) confirmations (a deposit is
 // only Confirmed once on chain, consistent with the other chains).
 func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint64) (core.DepositStatus, error) {
-	raw, err := d.rpc.GetRawTransaction(ctx, txID)
+	confirmations, known, err := d.backend.GetTransactionConfirmations(ctx, txID)
 	if err != nil {
-		var rpcErr *RPCError
-		if errors.As(err, &rpcErr) && rpcErr.Code == -5 { // RPC_INVALID_ADDRESS_OR_KEY: unknown tx
-			return core.DepositAbsent, nil
-		}
-		return core.DepositAbsent, fmt.Errorf("btc: getrawtransaction: %w", err)
+		return core.DepositAbsent, err
 	}
-	if raw == nil {
+	if !known {
 		return core.DepositAbsent, nil
 	}
-	if raw.Confirmations > 0 && raw.Confirmations >= int64(minConf) {
+	required := minConf
+	if required == 0 {
+		required = 1
+	}
+	if confirmations >= required {
 		return core.DepositConfirmed, nil
 	}
 	return core.DepositPending, nil
-}
-
-// depositorUTXOs filters unspent outputs to the depositor's own address and
-// returns the UTXO set plus a per-outpoint amount/script index for signing.
-func depositorUTXOs(unspent []Unspent, myAddr string, net *chaincfg.Params) ([]UTXO, map[wire.OutPoint]int64, error) {
-	addr, err := btcutil.DecodeAddress(myAddr, net)
-	if err != nil {
-		return nil, nil, fmt.Errorf("btc: decode depositor addr: %w", err)
-	}
-	myScript, err := txscript.PayToAddrScript(addr)
-	if err != nil {
-		return nil, nil, fmt.Errorf("btc: depositor pkScript: %w", err)
-	}
-	myScriptHex := strings.ToLower(hex.EncodeToString(myScript))
-
-	utxos := make([]UTXO, 0, len(unspent))
-	amounts := make(map[wire.OutPoint]int64)
-	for _, u := range unspent {
-		if strings.ToLower(u.ScriptPubKey) != myScriptHex {
-			continue
-		}
-		h, err := chainhash.NewHashFromStr(u.TxID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("btc: bad txid %q: %w", u.TxID, err)
-		}
-		utxos = append(utxos, UTXO{TxID: *h, Vout: u.Vout, Amount: u.AmountSats})
-		amounts[wire.OutPoint{Hash: *h, Index: u.Vout}] = u.AmountSats
-	}
-	return utxos, amounts, nil
-}
-
-// buildDepositTx builds the unsigned funding tx: output 0 pays the deposit
-// address `sats`, with change back to the depositor above dust.
-func buildDepositTx(utxos []UTXO, depositAddr btcutil.Address, sats int64, change btcutil.Address, feeSats int64) (*wire.MsgTx, error) {
-	if len(utxos) == 0 {
-		return nil, fmt.Errorf("btc: no depositor UTXOs selected")
-	}
-	ordered := make([]UTXO, len(utxos))
-	copy(ordered, utxos)
-	sort.Slice(ordered, func(i, j int) bool {
-		if c := compareHash(ordered[i].TxID[:], ordered[j].TxID[:]); c != 0 {
-			return c < 0
-		}
-		return ordered[i].Vout < ordered[j].Vout
-	})
-
-	var inTotal int64
-	tx := wire.NewMsgTx(wire.TxVersion)
-	for _, u := range ordered {
-		op := wire.NewOutPoint(&u.TxID, u.Vout)
-		tx.AddTxIn(wire.NewTxIn(op, nil, nil))
-		inTotal += u.Amount
-	}
-	depScript, err := txscript.PayToAddrScript(depositAddr)
-	if err != nil {
-		return nil, fmt.Errorf("btc: deposit script: %w", err)
-	}
-	tx.AddTxOut(wire.NewTxOut(sats, depScript))
-
-	rem := inTotal - sats - feeSats
-	if rem < 0 {
-		return nil, fmt.Errorf("btc: depositor inputs %d below amount %d + fee %d", inTotal, sats, feeSats)
-	}
-	if rem >= dustThresholdSats {
-		changeScript, err := txscript.PayToAddrScript(change)
-		if err != nil {
-			return nil, fmt.Errorf("btc: change script: %w", err)
-		}
-		tx.AddTxOut(wire.NewTxOut(rem, changeScript))
-	}
-	return tx, nil
-}
-
-// signP2WPKH signs every input as a P2WPKH spend with the depositor key and
-// installs the [sig, pubkey] witness.
-func (d *Depositor) signP2WPKH(ctx context.Context, tx *wire.MsgTx, utxos []UTXO, amounts map[wire.OutPoint]int64) error {
-	pkh := btcutil.Hash160(d.signerPub)
-	// BIP-143 scriptCode for P2WPKH is the corresponding P2PKH script.
-	scriptCode, err := txscript.NewScriptBuilder().
-		AddOp(txscript.OP_DUP).AddOp(txscript.OP_HASH160).
-		AddData(pkh).
-		AddOp(txscript.OP_EQUALVERIFY).AddOp(txscript.OP_CHECKSIG).Script()
-	if err != nil {
-		return fmt.Errorf("btc: build scriptCode: %w", err)
-	}
-	myScript, err := txscript.PayToAddrScript(d.depositAddr)
-	if err != nil {
-		return fmt.Errorf("btc: depositor pkScript: %w", err)
-	}
-	fetcher := txscript.NewMultiPrevOutFetcher(nil)
-	for op, amt := range amounts {
-		fetcher.AddPrevOut(op, wire.NewTxOut(amt, myScript))
-	}
-	sigHashes := txscript.NewTxSigHashes(tx, fetcher)
-	for idx, in := range tx.TxIn {
-		amt := amounts[in.PreviousOutPoint]
-		sighash, err := txscript.CalcWitnessSigHash(scriptCode, sigHashes, txscript.SigHashAll, tx, idx, amt)
-		if err != nil {
-			return fmt.Errorf("btc: sighash input %d: %w", idx, err)
-		}
-		der, err := d.signer.Sign(ctx, sighash)
-		if err != nil {
-			return fmt.Errorf("btc: sign input %d: %w", idx, err)
-		}
-		tx.TxIn[idx].Witness = wire.TxWitness{append(der, byte(txscript.SigHashAll)), d.signerPub}
-	}
-	return nil
 }

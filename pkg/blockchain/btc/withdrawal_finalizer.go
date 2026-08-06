@@ -345,7 +345,8 @@ func (f *WithdrawalFinalizer) merge(ctx context.Context, packed []byte, shares [
 }
 
 // Submit assembles the witnesses from the collected shares and broadcasts the
-// signed tx, returning its hash. Idempotent on an already-known/spent reply.
+// signed tx, returning its hash. An ambiguous already-spent reply is treated as
+// idempotent only when the exact locally built transaction can be looked up.
 func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
 	merged, err := f.merge(ctx, packed, shares)
 	if err != nil {
@@ -358,7 +359,7 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares 
 	hash := [32]byte(tx.TxHash())
 	txid := hashToTxid(hash)
 	if _, err := f.rpc.SendRawTransaction(ctx, hex.EncodeToString(merged)); err != nil {
-		if isAlreadyKnown(err) {
+		if broadcastAlreadyAccepted(ctx, f.rpc, txid, err) {
 			return txid, nil
 		}
 		return "", fmt.Errorf("btc submit: sendrawtransaction: %w", err)
