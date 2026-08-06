@@ -337,6 +337,7 @@ func TestDepositorSubmitValidationRemainsDepositSpecific(t *testing.T) {
 }
 
 func TestDepositorVerifyDepositStatusCompatibility(t *testing.T) {
+	txID := strings.Repeat("a", 64)
 	rpc := &depositorTestRPC{}
 	signer, vaultKeys := depositorTestVaultKeys(t)
 	depositor, err := NewDepositor(&chaincfg.RegressionNetParams, rpc, signer, vaultKeys, 2, Config{}, NewAssetResolver())
@@ -363,7 +364,7 @@ func TestDepositorVerifyDepositStatusCompatibility(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rpc.rawTx, rpc.rawErr = tc.raw, tc.err
-			got, err := depositor.VerifyDeposit(context.Background(), "txid", tc.minConf)
+			got, err := depositor.VerifyDeposit(context.Background(), txID, tc.minConf)
 			if (err != nil) != tc.wantErr || got != tc.want {
 				t.Fatalf("VerifyDeposit = (%v,%v), want (%v,error=%v)", got, err, tc.want, tc.wantErr)
 			}
@@ -385,13 +386,13 @@ func TestDepositorRPCBackendRejectsMalformedLegacyUTXOs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rpc := &depositorTestRPC{unspent: []Unspent{tc.u}}
-			backend := &depositorRPCBackend{rpc: rpc, fallbackFeeRate: 1}
+			backend := newLegacyCoreP2WPKHBackend(rpc, 1)
 			if _, err := backend.ListUnspent(context.Background(), "address", 1); err == nil {
 				t.Fatal("adapter accepted malformed legacy UTXO")
 			}
 		})
 	}
-	backend := &depositorRPCBackend{rpc: &depositorTestRPC{}, fallbackFeeRate: 1}
+	backend := newLegacyCoreP2WPKHBackend(&depositorTestRPC{}, 1)
 	if _, err := backend.ListUnspent(context.Background(), "address", uint64(math.MaxInt)); err != nil {
 		t.Fatalf("adapter rejected maximum int confirmations: %v", err)
 	}

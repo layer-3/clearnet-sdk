@@ -13,6 +13,18 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
+// These defaults apply only when the legacy custody Config leaves the
+// corresponding depositor setting at zero. The public P2WPKHConfig remains
+// explicit and does not apply defaults.
+const (
+	defaultDepositorMinConfirmations      uint64 = 1
+	defaultDepositorFeeConfirmationTarget        = 6
+	defaultDepositorFallbackFeeRate       int64  = 5
+	defaultDepositorFeeCapSatPerVByte     int64  = 1_000
+	defaultDepositorDustThresholdSats     int64  = 330
+	defaultDepositorMaxInputs                    = 100
+)
+
 // Depositor funds a per-account deposit address from the depositor's own
 // P2WPKH wallet (the key the supplied sign.Signer holds). It implements
 // core.VaultDepositor. The deposit address is derived from the vault's pubkeys
@@ -53,8 +65,35 @@ func NewDepositor(net *chaincfg.Params, rpc RPC, signer sign.Signer, vaultPubkey
 		return nil, fmt.Errorf("btc: depositor RPC is required")
 	}
 	senderCfg := depositorP2WPKHConfig(cfg)
-	backend := &depositorRPCBackend{rpc: rpc, fallbackFeeRate: senderCfg.FallbackFeeRateSatPerVByte}
+	backend := newLegacyCoreP2WPKHBackend(rpc, senderCfg.FallbackFeeRateSatPerVByte)
 	return NewDepositorWithBackend(net, backend, signer, vaultPubkeys, threshold, senderCfg, assets)
+}
+
+func depositorP2WPKHConfig(cfg Config) P2WPKHConfig {
+	minConfirmations := cfg.ConfirmationDepth
+	if minConfirmations == 0 {
+		minConfirmations = defaultDepositorMinConfirmations
+	}
+	feeTarget := cfg.FeeConfTarget
+	if feeTarget == 0 {
+		feeTarget = defaultDepositorFeeConfirmationTarget
+	}
+	fallbackRate := cfg.FallbackFeeRate
+	if fallbackRate == 0 {
+		fallbackRate = defaultDepositorFallbackFeeRate
+	}
+	feeCap := cfg.FeeCapSatPerVByte
+	if feeCap == 0 {
+		feeCap = defaultDepositorFeeCapSatPerVByte
+	}
+	return P2WPKHConfig{
+		MinConfirmations:           minConfirmations,
+		FeeConfirmationTarget:      feeTarget,
+		FallbackFeeRateSatPerVByte: fallbackRate,
+		FeeCapSatPerVByte:          feeCap,
+		DustThresholdSats:          defaultDepositorDustThresholdSats,
+		MaxInputs:                  defaultDepositorMaxInputs,
+	}
 }
 
 // NewDepositorWithBackend builds a BTC depositor using transport-independent

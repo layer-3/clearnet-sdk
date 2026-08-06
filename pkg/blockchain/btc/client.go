@@ -363,33 +363,48 @@ func (c *Client) SendRawTransaction(ctx context.Context, hexTx string) (string, 
 	return txid, nil
 }
 
-// EstimateSmartFeeSatPerVByte returns Core's estimate rounded upward to an
-// integer sat/vB. A valid response with no estimate uses fallbackRate;
-// transport, HTTP, JSON-RPC, and malformed-result failures are returned.
-func (c *Client) EstimateSmartFeeSatPerVByte(ctx context.Context, confTarget int, fallbackRate int64) (int64, error) {
+// estimateSmartFeeSatPerVByte returns Core's estimate rounded upward to an
+// integer sat/vB. available is false only when Core returned a valid
+// unavailable-estimate response. Transport and malformed-result failures are
+// returned as errors.
+func (c *Client) estimateSmartFeeSatPerVByte(ctx context.Context, confTarget int) (rate int64, available bool, err error) {
 	var raw struct {
 		FeeRate *json.Number `json:"feerate"`
 		Errors  []string     `json:"errors"`
 	}
 	if err := c.call(ctx, "estimatesmartfee", []any{confTarget}, &raw); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if raw.FeeRate == nil {
 		for _, message := range raw.Errors {
 			if strings.TrimSpace(message) != "" {
-				if fallbackRate <= 0 {
-					return 0, fmt.Errorf("btc rpc estimatesmartfee: unavailable estimate has non-positive fallback rate %d", fallbackRate)
-				}
-				return fallbackRate, nil
+				return 0, false, nil
 			}
 		}
-		return 0, fmt.Errorf("btc rpc estimatesmartfee: decode result: missing feerate without an unavailable-estimate error")
+		return 0, false, fmt.Errorf("btc rpc estimatesmartfee: decode result: missing feerate without an unavailable-estimate error")
 	}
-	rate, err := feeRateBTCPerKVByteToSatPerVByte(*raw.FeeRate)
+	rate, err = feeRateBTCPerKVByteToSatPerVByte(*raw.FeeRate)
 	if err != nil {
-		return 0, fmt.Errorf("btc rpc estimatesmartfee: feerate: %w", err)
+		return 0, false, fmt.Errorf("btc rpc estimatesmartfee: feerate: %w", err)
 	}
-	return rate, nil
+	return rate, true, nil
+}
+
+// EstimateSmartFeeSatPerVByte returns Core's estimate rounded upward to an
+// integer sat/vB. A valid response with no estimate uses fallbackRate;
+// transport, HTTP, JSON-RPC, and malformed-result failures are returned.
+func (c *Client) EstimateSmartFeeSatPerVByte(ctx context.Context, confTarget int, fallbackRate int64) (int64, error) {
+	rate, available, err := c.estimateSmartFeeSatPerVByte(ctx, confTarget)
+	if err != nil {
+		return 0, err
+	}
+	if available {
+		return rate, nil
+	}
+	if fallbackRate <= 0 {
+		return 0, fmt.Errorf("btc rpc estimatesmartfee: unavailable estimate has non-positive fallback rate %d", fallbackRate)
+	}
+	return fallbackRate, nil
 }
 
 // GetBlockCount returns the height of the most-work fully-validated chain.
