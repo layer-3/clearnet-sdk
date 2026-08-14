@@ -3,6 +3,7 @@
 package btc
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"math/big"
@@ -126,20 +127,55 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
+	auth := WithdrawalAuthorization{Operation: op, WithdrawalID: wid, Deadline: deadline}
+	prepared, err := finalizers[0].Prepare(ctx, packed, auth)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
 	shares := make([][]byte, 0, len(finalizers))
 	for i, f := range finalizers {
-		if err := f.Validate(ctx, packed, op, wid, deadline); err != nil {
-			t.Fatalf("Validate[%d]: %v", i, err)
+		if err := f.ValidatePrepared(prepared, auth); err != nil {
+			t.Fatalf("ValidatePrepared[%d]: %v", i, err)
 		}
-		s, err := f.Sign(ctx, packed)
+		s, err := f.SignPrepared(ctx, prepared, auth)
 		if err != nil {
-			t.Fatalf("Sign[%d]: %v", i, err)
+			t.Fatalf("SignPrepared[%d]: %v", i, err)
 		}
 		shares = append(shares, s)
 	}
-	ref, err := finalizers[0].Submit(ctx, packed, shares)
+	raw, expectedTxID, err := finalizers[0].FinalizePrepared(prepared, auth, shares)
 	if err != nil {
-		t.Fatalf("Submit: %v", err)
+		t.Fatalf("FinalizePrepared: %v", err)
+	}
+	ref, err := finalizers[0].BroadcastPrepared(ctx, prepared, auth, raw)
+	if err != nil {
+		t.Fatalf("BroadcastPrepared: %v", err)
+	}
+	if ref != expectedTxID {
+		t.Fatalf("broadcast txid %s != prepared %s", ref, expectedTxID)
+	}
+	// Once accepted, bitcoind hides the inputs from gettxout(include_mempool).
+	// Recovery must still verify and idempotently rebroadcast from the opaque
+	// prepared snapshot without consulting live prevouts.
+	if err := finalizers[0].VerifyFinalizedPrepared(prepared, auth, raw); err != nil {
+		t.Fatalf("VerifyFinalizedPrepared after mempool acceptance: %v", err)
+	}
+	recoveryShares := make([][]byte, len(finalizers))
+	for i, f := range finalizers {
+		recoveryShares[i], err = f.SignPrepared(ctx, prepared, auth)
+		if err != nil {
+			t.Fatalf("SignPrepared[%d] after mempool acceptance: %v", i, err)
+		}
+	}
+	recoveredRaw, recoveredTxID, err := finalizers[0].FinalizePrepared(prepared, auth, recoveryShares)
+	if err != nil {
+		t.Fatalf("FinalizePrepared after mempool acceptance: %v", err)
+	}
+	if recoveredTxID != expectedTxID || !bytes.Equal(recoveredRaw, raw) {
+		t.Fatal("offline mempool recovery changed finalized transaction")
+	}
+	if retry, err := finalizers[0].BroadcastPrepared(ctx, prepared, auth, raw); err != nil || retry != expectedTxID {
+		t.Fatalf("BroadcastPrepared retry = %s, %v", retry, err)
 	}
 	node.generateToAddress(ctx, t, 1, miner) // confirm the withdrawal
 	t.Logf("withdrawal tx %s", ref)

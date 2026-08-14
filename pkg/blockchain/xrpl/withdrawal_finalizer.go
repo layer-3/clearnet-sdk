@@ -163,7 +163,7 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureNetworkID(f.client); err != nil {
+	if _, err := ResolveNetworkIDPolicy(f.client); err != nil {
 		return nil, err
 	}
 	if err := f.client.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
@@ -194,7 +194,7 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
 	var flat transaction.FlatTransaction
 	if err := json.Unmarshal(packed, &flat); err != nil {
-		return fmt.Errorf("xrpl: decode packed: %w", err)
+		return candidateRejected(fmt.Errorf("xrpl: decode packed: %w", err))
 	}
 	policy := llsPolicy{standalone: f.standalone, deadline: deadline}
 	if !f.standalone {
@@ -204,7 +204,17 @@ func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *c
 		}
 		policy.current = state
 	}
-	return ValidateCanonical(ctx, f.assets, flat, op, withdrawalID, f.vaultAddress, policy)
+	networkPolicy, err := ResolveNetworkIDPolicy(f.client)
+	if err != nil {
+		return err
+	}
+	if err := ValidateNetworkID(flat, networkPolicy); err != nil {
+		return candidateRejected(err)
+	}
+	if err := ValidateCanonical(ctx, f.assets, flat, op, withdrawalID, f.vaultAddress, policy); err != nil {
+		return candidateRejected(err)
+	}
+	return nil
 }
 
 // Sign multi-signs the packed Payment and returns this node's blob.

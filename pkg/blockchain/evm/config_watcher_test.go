@@ -36,7 +36,7 @@ func TestConfigWatcher_BackfillAndLookup(t *testing.T) {
 	csum[31] = 0xAB
 
 	reg := fakeConfigReader{
-		checksums: map[[32]byte][32]byte{kConfig: csum},        // kSigners not committed yet
+		checksums: map[[32]byte][32]byte{kConfig: csum},         // kSigners not committed yet
 		epochs:    map[[32]byte]uint64{kConfig: 3, kSigners: 0}, // genesis for signers
 	}
 	w, err := NewConfigWatcher(nil, reg, [][32]byte{kConfig, kSigners}, 12)
