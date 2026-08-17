@@ -3,6 +3,7 @@ package btc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -153,59 +154,57 @@ func (f *RotationFinalizer) Pack(ctx context.Context, opID [32]byte, newSigners 
 // consumes only current-vault UTXOs, and keeps the implied fee within the
 // ceiling.
 func (f *RotationFinalizer) Validate(ctx context.Context, opID [32]byte, packed []byte, newSigners []string, newThreshold int) error {
-	_, newVaultScript, _, err := f.newVaultAddress(newSigners, newThreshold)
+	_, err := f.Prepare(ctx, packed, RotationAuthorization{OperationID: opID, Signers: newSigners, Threshold: newThreshold})
+	return err
+}
+
+// Prepare performs the full rotation validation, including sweep completeness,
+// then captures the exact previous outputs needed for offline share validation,
+// signing, and finalization.
+func (f *RotationFinalizer) Prepare(ctx context.Context, packed []byte, auth RotationAuthorization) (*PreparedRotation, error) {
+	return f.prepare(ctx, packed, auth)
+}
+
+func (f *RotationFinalizer) prepare(ctx context.Context, packed []byte, auth RotationAuthorization) (*PreparedRotation, error) {
+	_, newVaultScript, _, err := f.newVaultAddress(auth.Signers, auth.Threshold)
 	if err != nil {
-		return err
+		return nil, candidateError("btc rotation prepare", err)
 	}
-	tx, err := deserializeTx(packed)
+	tx, err := deserializeUnsignedCanonical(packed)
 	if err != nil {
-		return fmt.Errorf("btc rotation validate: %w", err)
+		return nil, candidateError("btc rotation prepare", err)
 	}
 	if err := validateFixedTxFields(tx); err != nil {
-		return fmt.Errorf("btc rotation validate: %w", err)
+		return nil, candidateError("btc rotation prepare", err)
 	}
 	if len(tx.TxOut) != 2 {
-		return fmt.Errorf("btc rotation validate: expected 2 outputs (new vault + OP_RETURN), got %d", len(tx.TxOut))
+		return nil, candidateError("btc rotation prepare", fmt.Errorf("expected 2 outputs (new vault + OP_RETURN), got %d", len(tx.TxOut)))
 	}
 	if !bytes.Equal(tx.TxOut[0].PkScript, newVaultScript) {
-		return fmt.Errorf("btc rotation validate: output 0 not paid to the new vault")
+		return nil, candidateError("btc rotation prepare", fmt.Errorf("output 0 not paid to the new vault"))
 	}
-	wantMarker, err := txscript.NullDataScript(opID[:])
+	wantMarker, err := txscript.NullDataScript(auth.OperationID[:])
 	if err != nil {
-		return fmt.Errorf("btc rotation validate: opID marker script: %w", err)
+		return nil, fmt.Errorf("btc rotation validate: opID marker script: %w", err)
 	}
 	if tx.TxOut[1].Value != 0 || !bytes.Equal(tx.TxOut[1].PkScript, wantMarker) {
-		return fmt.Errorf("btc rotation validate: final output is not OP_RETURN(opID)")
+		return nil, candidateError("btc rotation prepare", fmt.Errorf("final output is not OP_RETURN(opID)"))
 	}
 	cur, err := f.currentVault(ctx)
 	if err != nil {
-		return err
-	}
-	totalIn, err := cur.sumValidatedInputs(ctx, tx)
-	if err != nil {
-		return err
-	}
-	fee := totalIn - tx.TxOut[0].Value
-	if fee < 0 {
-		return fmt.Errorf("btc rotation validate: output exceeds inputs (fee %d)", fee)
-	}
-	if cap := EstimateFeeSats(len(tx.TxIn), 2, f.cfg.FeeCapSatPerVByte); f.cfg.FeeCapSatPerVByte > 0 && fee > cap {
-		return fmt.Errorf("btc rotation validate: fee %d exceeds ceiling %d", fee, cap)
+		return nil, err
 	}
 
 	// Completeness: a rotation sweep must spend every currently-owned UTXO. The
-	// checks above only prove each PRESENT input is a valid vault UTXO — they do
-	// not catch a sweep that silently omits some. An incomplete sweep would
-	// strand those funds at the old vault, which is abandoned the moment the
-	// pivot lands. Re-list the owned set and require exact set-equality with the
-	// tx's inputs.
+	// prepared snapshot below proves every present input is a confirmed vault
+	// UTXO; this set comparison catches a sweep that silently omits one.
 	unspent, err := cur.rpc.ListUnspent(ctx, int(f.cfg.ConfirmationDepth), cur.watchAddresses())
 	if err != nil {
-		return fmt.Errorf("btc rotation validate: list vault utxos: %w", err)
+		return nil, fmt.Errorf("btc rotation validate: list vault utxos: %w", err)
 	}
 	owned, err := cur.toUTXOs(unspent)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	want := make(map[string]struct{}, len(owned))
 	for _, u := range owned {
@@ -216,51 +215,158 @@ func (f *RotationFinalizer) Validate(ctx context.Context, opID [32]byte, packed 
 		got[fmt.Sprintf("%s:%d", in.PreviousOutPoint.Hash.String(), in.PreviousOutPoint.Index)] = struct{}{}
 	}
 	if len(want) != len(got) {
-		return fmt.Errorf("btc rotation validate: spends %d inputs, expected all %d owned utxos", len(got), len(want))
+		return nil, candidateError("btc rotation prepare", fmt.Errorf("spends %d inputs, expected all %d owned utxos", len(got), len(want)))
 	}
 	for k := range want {
 		if _, ok := got[k]; !ok {
-			return fmt.Errorf("btc rotation validate: omits owned utxo %s", k)
+			return nil, candidateError("btc rotation prepare", fmt.Errorf("omits owned utxo %s", k))
 		}
 	}
+	authHash, err := hashRotationAuthorization(auth)
+	if err != nil {
+		return nil, candidateError("btc rotation prepare", err)
+	}
+	prepared, err := cur.prepareTransactionFromCanonical(ctx, packed, preparedOperationRotation, authHash)
+	if err != nil {
+		return nil, fmt.Errorf("btc rotation validate: %w", err)
+	}
+	return &PreparedRotation{preparedTransaction: *prepared}, nil
+}
+
+// ValidatePrepared revalidates the exact rotation authorization and old-vault
+// snapshot without reading VaultStore or the UTXO set.
+func (f *RotationFinalizer) ValidatePrepared(prepared *PreparedRotation, auth RotationAuthorization) error {
+	txState := rotationTransaction(prepared)
+	hash, err := hashRotationAuthorization(auth)
+	if err != nil {
+		return err
+	}
+	if err := validateAuthorizationHash(txState, preparedOperationRotation, hash); err != nil {
+		return err
+	}
+	verifier, err := f.preparedVerifier(txState)
+	if err != nil {
+		return err
+	}
+	tx, _, err := validatePreparedLocal(txState)
+	if err != nil {
+		return err
+	}
+	_, target, _, err := f.newVaultAddress(auth.Signers, auth.Threshold)
+	if err != nil {
+		return err
+	}
+	if len(tx.TxOut) != 2 || !bytes.Equal(tx.TxOut[0].PkScript, target) {
+		return fmt.Errorf("btc rotation prepared: wrong target vault")
+	}
+	marker, err := txscript.NullDataScript(auth.OperationID[:])
+	if err != nil {
+		return err
+	}
+	if tx.TxOut[1].Value != 0 || !bytes.Equal(tx.TxOut[1].PkScript, marker) {
+		return fmt.Errorf("btc rotation prepared: wrong operation marker")
+	}
+	_ = verifier
 	return nil
 }
 
-// Sign produces this node's per-input signatures over the sweep, delegating to
-// the current-vault signing machinery.
+func (f *RotationFinalizer) preparedVerifier(prepared *preparedTransaction) (*WithdrawalFinalizer, error) {
+	base := &WithdrawalFinalizer{net: f.net, rpc: f.rpc, signer: f.signer, assets: f.assets}
+	return base.offlineVerifier(prepared)
+}
+
+// SignPrepared signs the prepared sweep without reading its inputs from RPC.
+func (f *RotationFinalizer) SignPrepared(ctx context.Context, prepared *PreparedRotation, auth RotationAuthorization) ([]byte, error) {
+	if err := f.ValidatePrepared(prepared, auth); err != nil {
+		return nil, err
+	}
+	cur, err := f.preparedVerifier(rotationTransaction(prepared))
+	if err != nil {
+		return nil, err
+	}
+	return cur.signPrepared(ctx, rotationTransaction(prepared))
+}
+
+// VerifySharePrepared cryptographically validates one prepared sweep share.
+func (f *RotationFinalizer) VerifySharePrepared(prepared *PreparedRotation, auth RotationAuthorization, share []byte) error {
+	if err := f.ValidatePrepared(prepared, auth); err != nil {
+		return err
+	}
+	cur, err := f.preparedVerifier(rotationTransaction(prepared))
+	if err != nil {
+		return err
+	}
+	return cur.verifySharePrepared(rotationTransaction(prepared), share)
+}
+
+// FinalizePrepared filters invalid and duplicate shares and deterministically
+// assembles the prepared sweep without reading its inputs from RPC.
+func (f *RotationFinalizer) FinalizePrepared(prepared *PreparedRotation, auth RotationAuthorization, shares [][]byte) ([]byte, string, error) {
+	if err := f.ValidatePrepared(prepared, auth); err != nil {
+		return nil, "", err
+	}
+	cur, err := f.preparedVerifier(rotationTransaction(prepared))
+	if err != nil {
+		return nil, "", err
+	}
+	return cur.finalizePrepared(rotationTransaction(prepared), shares)
+}
+
+// VerifyFinalizedPrepared verifies the finalized sweep and every input witness.
+func (f *RotationFinalizer) VerifyFinalizedPrepared(prepared *PreparedRotation, auth RotationAuthorization, raw []byte) error {
+	if err := f.ValidatePrepared(prepared, auth); err != nil {
+		return err
+	}
+	cur, err := f.preparedVerifier(rotationTransaction(prepared))
+	if err != nil {
+		return err
+	}
+	return cur.verifyFinalizedPrepared(rotationTransaction(prepared), raw)
+}
+
+// BroadcastPrepared cryptographically verifies the finalized sweep immediately
+// before broadcasting it.
+func (f *RotationFinalizer) BroadcastPrepared(ctx context.Context, prepared *PreparedRotation, auth RotationAuthorization, raw []byte) (string, error) {
+	if err := f.VerifyFinalizedPrepared(prepared, auth, raw); err != nil {
+		return "", err
+	}
+	base := &WithdrawalFinalizer{rpc: f.rpc}
+	return base.sendVerifiedPrepared(ctx, raw, prepared.expectedTxID)
+}
+
+// Sign retains the core interface method. It captures and fully validates the
+// live previous outputs before signing through the prepared implementation.
 func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, error) {
 	cur, err := f.currentVault(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return cur.Sign(ctx, packed)
+	legacyHash := sha256.Sum256(append([]byte("clearnet-sdk/btc/legacy-rotation/v1"), packed...))
+	prepared, err := cur.prepareTransactionFromCanonical(ctx, packed, preparedOperationRotation, legacyHash)
+	if err != nil {
+		return nil, fmt.Errorf("btc rotation sign: %w", err)
+	}
+	return cur.signPrepared(ctx, prepared)
 }
 
-// Submit assembles the witnesses from the collected shares and broadcasts the
-// sweep. An unambiguous already-known reply is idempotent; an ambiguous
-// missing-inputs reply is accepted only when the exact sweep can be looked up.
+// Submit retains the core interface method. It recaptures and validates every
+// live input, cryptographically verifies shares and finalized witnesses, then
+// broadcasts through the prepared implementation.
 func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
 	cur, err := f.currentVault(ctx)
 	if err != nil {
 		return "", err
 	}
-	merged, err := cur.merge(ctx, packed, shares)
-	if err != nil {
-		return "", err
-	}
-	tx, err := deserializeTx(merged)
+	legacyHash := sha256.Sum256(append([]byte("clearnet-sdk/btc/legacy-rotation/v1"), packed...))
+	prepared, err := cur.prepareTransactionFromCanonical(ctx, packed, preparedOperationRotation, legacyHash)
 	if err != nil {
 		return "", fmt.Errorf("btc rotation submit: %w", err)
 	}
-	hash := [32]byte(tx.TxHash())
-	txid := hashToTxid(hash)
-	if _, err := f.rpc.SendRawTransaction(ctx, hex.EncodeToString(merged)); err != nil {
-		if broadcastAlreadyAccepted(ctx, f.rpc, txid, err) {
-			return txid, nil
-		}
-		return "", fmt.Errorf("btc rotation submit: sendrawtransaction: %w", err)
+	raw, _, err := cur.finalizePrepared(prepared, shares)
+	if err != nil {
+		return "", err
 	}
-	return txid, nil
+	return cur.broadcastPrepared(ctx, prepared, raw)
 }
 
 // VerifyRotation reports whether the sweep landed — the new vault holds at least

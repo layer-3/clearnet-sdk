@@ -9,7 +9,9 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"sort"
 	"strconv"
@@ -31,6 +33,17 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
+
+// ErrCandidateRejected classifies deterministic peer-supplied canonical-body
+// invalidity. RPC, context, and local backend failures do not wrap it.
+var ErrCandidateRejected = errors.New("xrpl: candidate rejected")
+
+func candidateRejected(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %v", ErrCandidateRejected, err)
+}
 
 // maxAcceptableFeeDrops caps the Fee a node will sign on a canonical Payment.
 const maxAcceptableFeeDrops uint64 = 1_000_000
@@ -360,6 +373,35 @@ func ValidateCanonical(ctx context.Context, assets blockchain.AssetResolver, fla
 	return nil
 }
 
+// ValidateNetworkID enforces the exact live network-domain policy on a flat
+// transaction. Numeric strings and fractional JSON numbers are rejected.
+func ValidateNetworkID(flat transaction.FlatTransaction, policy NetworkIDPolicy) error {
+	raw, present := flat["NetworkID"]
+	if !policy.Required {
+		if present {
+			return fmt.Errorf("xrpl canonical: NetworkID must be absent on this network")
+		}
+		return nil
+	}
+	if !present {
+		return fmt.Errorf("xrpl canonical: missing NetworkID %d", policy.NetworkID)
+	}
+	got, ok := canonicalNetworkID(raw)
+	if !ok || got != policy.NetworkID {
+		return fmt.Errorf("xrpl canonical: NetworkID %v != live network %d", raw, policy.NetworkID)
+	}
+	return nil
+}
+
+func canonicalNetworkID(raw any) (uint32, bool) {
+	switch raw.(type) {
+	case json.Number, float64, int, uint32, uint64:
+		return uint32Field(raw)
+	default:
+		return 0, false
+	}
+}
+
 // rotationAllowedFields is the allowlist of top-level keys a node accepts on a
 // canonical SignerListSet flatTx before signing.
 var rotationAllowedFields = map[string]struct{}{
@@ -500,7 +542,7 @@ func uint32Field(raw any) (uint32, bool) {
 		}
 		return uint32(n), true
 	case float64:
-		if v < 0 || v > float64(^uint32(0)) {
+		if v < 0 || v > float64(^uint32(0)) || math.Trunc(v) != v {
 			return 0, false
 		}
 		return uint32(v), true

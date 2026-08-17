@@ -127,7 +127,7 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 			return nil, fmt.Errorf("xrpl: resolve live quorum: %w", err)
 		}
 	}
-	if err := ensureNetworkID(f.client); err != nil {
+	if _, err := ResolveNetworkIDPolicy(f.client); err != nil {
 		return nil, err
 	}
 	if err := f.client.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
@@ -157,7 +157,7 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []byte, newSigners []string, newThreshold int) error {
 	var flat transaction.FlatTransaction
 	if err := json.Unmarshal(packed, &flat); err != nil {
-		return fmt.Errorf("xrpl: decode packed: %w", err)
+		return candidateRejected(fmt.Errorf("xrpl: decode packed: %w", err))
 	}
 	policy := llsPolicy{standalone: f.standalone}
 	if !f.standalone {
@@ -167,7 +167,17 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 		}
 		policy.current = state
 	}
-	return validateCanonicalRotation(flat, newSigners, newThreshold, f.vaultAddress, policy)
+	networkPolicy, err := ResolveNetworkIDPolicy(f.client)
+	if err != nil {
+		return err
+	}
+	if err := ValidateNetworkID(flat, networkPolicy); err != nil {
+		return candidateRejected(err)
+	}
+	if err := validateCanonicalRotation(flat, newSigners, newThreshold, f.vaultAddress, policy); err != nil {
+		return candidateRejected(err)
+	}
+	return nil
 }
 
 // Sign multi-signs the packed SignerListSet and returns this node's blob.

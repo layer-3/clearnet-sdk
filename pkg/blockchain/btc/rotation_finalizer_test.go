@@ -122,7 +122,7 @@ func TestBuildSweepTx_OpReturnMarker(t *testing.T) {
 
 // stubRotationRPC is a minimal RPC seam for exercising Validate without a node.
 // ListUnspent reports the owned UTXO set; GetTxOut answers each input as a
-// confirmed output of vaultScript so sumValidatedInputs accepts it. The other
+// confirmed output of vaultScript so prepared validation accepts it. The other
 // methods are unused by Validate.
 type stubRotationRPC struct {
 	unspent     []Unspent

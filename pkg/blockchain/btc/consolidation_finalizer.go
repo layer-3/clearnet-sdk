@@ -3,11 +3,11 @@ package btc
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 
@@ -193,42 +193,60 @@ func (f *ConsolidationFinalizer) Pack(ctx context.Context, consolidationID [32]b
 // confirmed owned UTXO (nothing foreign dragged in); the batch within the size
 // bound; and the implied fee within the griefing ceiling.
 func (f *ConsolidationFinalizer) Validate(ctx context.Context, consolidationID [32]byte, packed []byte) error {
-	cur, err := f.currentVault(ctx)
+	target, err := f.TargetVaultIdentity(ctx)
 	if err != nil {
 		return err
 	}
+	_, err = f.Prepare(ctx, packed, ConsolidationAuthorization{OperationID: consolidationID, TargetVaultIdentity: target})
+	return err
+}
+
+// Prepare performs the full fold-specific validation, then captures the exact
+// previous outputs needed for offline share validation, signing, and finalization.
+func (f *ConsolidationFinalizer) Prepare(ctx context.Context, packed []byte, auth ConsolidationAuthorization) (*PreparedConsolidation, error) {
+	return f.prepare(ctx, packed, auth)
+}
+
+func (f *ConsolidationFinalizer) prepare(ctx context.Context, packed []byte, auth ConsolidationAuthorization) (*PreparedConsolidation, error) {
+	cur, err := f.currentVault(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if auth.TargetVaultIdentity != cur.vaultAddr.EncodeAddress() {
+		return nil, candidateError("btc consolidate prepare", fmt.Errorf("target vault identity mismatch"))
+	}
 	tx, err := deserializeTx(packed)
 	if err != nil {
-		return fmt.Errorf("btc consolidate validate: %w", err)
+		return nil, candidateError("btc consolidate prepare", err)
 	}
 	if err := validateFixedTxFields(tx); err != nil {
-		return fmt.Errorf("btc consolidate validate: %w", err)
+		return nil, candidateError("btc consolidate prepare", err)
 	}
 	if n := len(tx.TxOut); n != 2 {
-		return fmt.Errorf("btc consolidate validate: expected 2 outputs, got %d", n)
+		return nil, candidateError("btc consolidate prepare", fmt.Errorf("expected 2 outputs, got %d", n))
 	}
 	if !bytes.Equal(tx.TxOut[0].PkScript, cur.vaultScript) {
-		return errors.New("btc consolidate validate: output 0 is not the base vault")
+		return nil, candidateError("btc consolidate prepare", errors.New("output 0 is not the base vault"))
 	}
-	wantOpReturn, err := txscript.NullDataScript(consolidationID[:])
+	wantOpReturn, err := txscript.NullDataScript(auth.OperationID[:])
 	if err != nil {
-		return fmt.Errorf("btc consolidate validate: opreturn script: %w", err)
+		return nil, fmt.Errorf("btc consolidate validate: opreturn script: %w", err)
 	}
 	if tx.TxOut[1].Value != 0 || !bytes.Equal(tx.TxOut[1].PkScript, wantOpReturn) {
-		return errors.New("btc consolidate validate: output 1 is not OP_RETURN <consolidationID>")
+		return nil, candidateError("btc consolidate prepare", errors.New("output 1 is not OP_RETURN <consolidationID>"))
 	}
 	if len(tx.TxIn) < 2 {
-		return fmt.Errorf("btc consolidate validate: %d inputs; a fold spends at least 2", len(tx.TxIn))
+		return nil, candidateError("btc consolidate prepare", fmt.Errorf("%d inputs; a fold spends at least 2", len(tx.TxIn)))
 	}
 	if max := f.batchMax(); len(tx.TxIn) > max {
-		return fmt.Errorf("btc consolidate validate: %d inputs exceed batch max %d", len(tx.TxIn), max)
+		return nil, candidateError("btc consolidate prepare", fmt.Errorf("%d inputs exceed batch max %d", len(tx.TxIn), max))
 	}
 
 	// Every input must be a confirmed, owned UTXO. Re-list the owned set and
 	// require the inputs to be a subset of it (lenient: no full-set match).
 	owned, err := f.listOwned(ctx, cur)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	byOutpoint := make(map[string]int64, len(owned))
 	for _, u := range owned {
@@ -239,55 +257,141 @@ func (f *ConsolidationFinalizer) Validate(ctx context.Context, consolidationID [
 		key := fmt.Sprintf("%s:%d", in.PreviousOutPoint.Hash.String(), in.PreviousOutPoint.Index)
 		amt, ok := byOutpoint[key]
 		if !ok {
-			return fmt.Errorf("btc consolidate validate: input %s is not a confirmed owned utxo", key)
+			return nil, candidateError("btc consolidate prepare", fmt.Errorf("input %s is not a confirmed owned utxo", key))
 		}
 		totalIn += amt
 	}
 
 	fee := totalIn - tx.TxOut[0].Value // output 1 is the zero-value OP_RETURN
 	if fee < 0 {
-		return fmt.Errorf("btc consolidate validate: outputs exceed inputs (fee %d)", fee)
+		return nil, candidateError("btc consolidate prepare", fmt.Errorf("outputs exceed inputs (fee %d)", fee))
 	}
 	if cap := EstimateFeeSats(len(tx.TxIn), 2, f.cfg.FeeCapSatPerVByte); f.cfg.FeeCapSatPerVByte > 0 && fee > cap {
-		return fmt.Errorf("btc consolidate validate: fee %d exceeds ceiling %d", fee, cap)
+		return nil, candidateError("btc consolidate prepare", fmt.Errorf("fee %d exceeds ceiling %d", fee, cap))
 	}
+	authHash, err := hashConsolidationAuthorization(auth)
+	if err != nil {
+		return nil, candidateError("btc consolidate prepare", err)
+	}
+	prepared, err := cur.prepareTransactionFromCanonical(ctx, packed, preparedOperationConsolidate, authHash)
+	if err != nil {
+		return nil, fmt.Errorf("btc consolidate validate: %w", err)
+	}
+	return &PreparedConsolidation{preparedTransaction: *prepared}, nil
+}
+
+// TargetVaultIdentity returns the canonical current base-vault address. It is
+// intentionally a prepare-time operation; persisted authorizations carry this
+// identity through all later offline recovery steps.
+func (f *ConsolidationFinalizer) TargetVaultIdentity(ctx context.Context) (string, error) {
+	cur, err := f.currentVault(ctx)
+	if err != nil {
+		return "", err
+	}
+	return cur.vaultAddr.EncodeAddress(), nil
+}
+
+// ValidatePrepared rechecks the fold marker and snapshotted target vault with
+// no mutable vault-store or UTXO reads.
+func (f *ConsolidationFinalizer) ValidatePrepared(prepared *PreparedConsolidation, auth ConsolidationAuthorization) error {
+	txState := consolidationTransaction(prepared)
+	hash, err := hashConsolidationAuthorization(auth)
+	if err != nil {
+		return err
+	}
+	if err := validateAuthorizationHash(txState, preparedOperationConsolidate, hash); err != nil {
+		return err
+	}
+	cur, err := f.preparedVerifier(txState)
+	if err != nil {
+		return err
+	}
+	tx, _, err := validatePreparedLocal(txState)
+	if err != nil {
+		return err
+	}
+	target, err := btcutil.DecodeAddress(auth.TargetVaultIdentity, f.net)
+	if err != nil {
+		return fmt.Errorf("btc consolidate prepared: target: %w", err)
+	}
+	targetScript, err := PkScript(target)
+	if err != nil {
+		return err
+	}
+	if len(tx.TxOut) != 2 || !bytes.Equal(tx.TxOut[0].PkScript, targetScript) {
+		return fmt.Errorf("btc consolidate prepared: wrong target vault")
+	}
+	marker, err := txscript.NullDataScript(auth.OperationID[:])
+	if err != nil {
+		return err
+	}
+	if tx.TxOut[1].Value != 0 || !bytes.Equal(tx.TxOut[1].PkScript, marker) {
+		return fmt.Errorf("btc consolidate prepared: wrong operation marker")
+	}
+	_ = cur
 	return nil
 }
 
-// Sign produces this node's per-input signatures over the fold, delegating to
-// the current-vault signing machinery (the fold spends base-vault and deposit
-// inputs under the current redeem scripts, exactly as a withdrawal).
-func (f *ConsolidationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, error) {
-	cur, err := f.currentVault(ctx)
+func (f *ConsolidationFinalizer) preparedVerifier(prepared *preparedTransaction) (*WithdrawalFinalizer, error) {
+	base := &WithdrawalFinalizer{net: f.net, rpc: f.rpc, signer: f.signer, assets: f.assets}
+	return base.offlineVerifier(prepared)
+}
+
+// SignPrepared signs the prepared fold without reading its inputs from RPC.
+func (f *ConsolidationFinalizer) SignPrepared(ctx context.Context, prepared *PreparedConsolidation, auth ConsolidationAuthorization) ([]byte, error) {
+	if err := f.ValidatePrepared(prepared, auth); err != nil {
+		return nil, err
+	}
+	cur, err := f.preparedVerifier(consolidationTransaction(prepared))
 	if err != nil {
 		return nil, err
 	}
-	return cur.Sign(ctx, packed)
+	return cur.signPrepared(ctx, consolidationTransaction(prepared))
 }
 
-// Submit assembles the witnesses from the collected shares and broadcasts the
-// fold, returning its hash. An ambiguous already-spent reply is treated as
-// idempotent only when the exact locally built transaction can be looked up.
-func (f *ConsolidationFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
-	cur, err := f.currentVault(ctx)
+// VerifySharePrepared cryptographically validates one prepared fold share.
+func (f *ConsolidationFinalizer) VerifySharePrepared(prepared *PreparedConsolidation, auth ConsolidationAuthorization, share []byte) error {
+	if err := f.ValidatePrepared(prepared, auth); err != nil {
+		return err
+	}
+	cur, err := f.preparedVerifier(consolidationTransaction(prepared))
 	if err != nil {
+		return err
+	}
+	return cur.verifySharePrepared(consolidationTransaction(prepared), share)
+}
+
+// FinalizePrepared filters invalid and duplicate shares and deterministically
+// assembles the prepared fold without reading its inputs from RPC.
+func (f *ConsolidationFinalizer) FinalizePrepared(prepared *PreparedConsolidation, auth ConsolidationAuthorization, shares [][]byte) ([]byte, string, error) {
+	if err := f.ValidatePrepared(prepared, auth); err != nil {
+		return nil, "", err
+	}
+	cur, err := f.preparedVerifier(consolidationTransaction(prepared))
+	if err != nil {
+		return nil, "", err
+	}
+	return cur.finalizePrepared(consolidationTransaction(prepared), shares)
+}
+
+// VerifyFinalizedPrepared verifies the finalized fold and every input witness.
+func (f *ConsolidationFinalizer) VerifyFinalizedPrepared(prepared *PreparedConsolidation, auth ConsolidationAuthorization, raw []byte) error {
+	if err := f.ValidatePrepared(prepared, auth); err != nil {
+		return err
+	}
+	cur, err := f.preparedVerifier(consolidationTransaction(prepared))
+	if err != nil {
+		return err
+	}
+	return cur.verifyFinalizedPrepared(consolidationTransaction(prepared), raw)
+}
+
+// BroadcastPrepared cryptographically verifies the finalized fold immediately
+// before broadcasting it.
+func (f *ConsolidationFinalizer) BroadcastPrepared(ctx context.Context, prepared *PreparedConsolidation, auth ConsolidationAuthorization, raw []byte) (string, error) {
+	if err := f.VerifyFinalizedPrepared(prepared, auth, raw); err != nil {
 		return "", err
 	}
-	merged, err := cur.merge(ctx, packed, shares)
-	if err != nil {
-		return "", err
-	}
-	tx, err := deserializeTx(merged)
-	if err != nil {
-		return "", fmt.Errorf("btc consolidate submit: %w", err)
-	}
-	hash := [32]byte(tx.TxHash())
-	txid := hashToTxid(hash)
-	if _, err := f.rpc.SendRawTransaction(ctx, hex.EncodeToString(merged)); err != nil {
-		if broadcastAlreadyAccepted(ctx, f.rpc, txid, err) {
-			return txid, nil
-		}
-		return "", fmt.Errorf("btc consolidate submit: sendrawtransaction: %w", err)
-	}
-	return txid, nil
+	base := &WithdrawalFinalizer{rpc: f.rpc}
+	return base.sendVerifiedPrepared(ctx, raw, prepared.expectedTxID)
 }

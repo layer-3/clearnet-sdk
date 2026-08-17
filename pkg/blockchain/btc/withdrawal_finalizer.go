@@ -3,8 +3,8 @@ package btc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -197,64 +197,8 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 // OP_RETURN <withdrawalID>, any middle output is change to the vault, every
 // input is a confirmed vault UTXO, and the implied fee is within the ceiling.
 func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
-	_ = deadline // no consensus expiry on BTC; see Pack's doc comment.
-	recipient, amount, err := f.parseOp(ctx, op)
-	if err != nil {
-		return err
-	}
-	tx, err := deserializeTx(packed)
-	if err != nil {
-		return fmt.Errorf("btc validate: %w", err)
-	}
-	if err := validateFixedTxFields(tx); err != nil {
-		return fmt.Errorf("btc validate: %w", err)
-	}
-	if n := len(tx.TxOut); n != 2 && n != 3 {
-		return fmt.Errorf("btc validate: expected 2 or 3 outputs, got %d", n)
-	}
-	recipientScript, err := txscript.PayToAddrScript(recipient)
-	if err != nil {
-		return fmt.Errorf("btc validate: recipient script: %w", err)
-	}
-	if !bytes.Equal(tx.TxOut[0].PkScript, recipientScript) {
-		return fmt.Errorf("btc validate: output 0 not the op recipient")
-	}
-	if tx.TxOut[0].Value != amount {
-		return fmt.Errorf("btc validate: output 0 value %d != op amount %d", tx.TxOut[0].Value, amount)
-	}
-	wantOpReturn, err := txscript.NullDataScript(withdrawalID[:])
-	if err != nil {
-		return fmt.Errorf("btc validate: opreturn script: %w", err)
-	}
-	last := tx.TxOut[len(tx.TxOut)-1]
-	if last.Value != 0 || !bytes.Equal(last.PkScript, wantOpReturn) {
-		return fmt.Errorf("btc validate: final output is not OP_RETURN <withdrawalID>")
-	}
-	if len(tx.TxOut) == 3 {
-		change := tx.TxOut[1]
-		if !bytes.Equal(change.PkScript, f.vaultScript) {
-			return fmt.Errorf("btc validate: change output not paid to the vault")
-		}
-		if change.Value < dustThresholdSats {
-			return fmt.Errorf("btc validate: change output %d below dust", change.Value)
-		}
-	}
-	totalIn, err := f.sumValidatedInputs(ctx, tx)
-	if err != nil {
-		return err
-	}
-	var totalOut int64
-	for _, o := range tx.TxOut {
-		totalOut += o.Value
-	}
-	fee := totalIn - totalOut
-	if fee < 0 {
-		return fmt.Errorf("btc validate: outputs exceed inputs (fee %d)", fee)
-	}
-	if cap := EstimateFeeSats(len(tx.TxIn), len(tx.TxOut), f.cfg.FeeCapSatPerVByte); f.cfg.FeeCapSatPerVByte > 0 && fee > cap {
-		return fmt.Errorf("btc validate: fee %d exceeds ceiling %d", fee, cap)
-	}
-	return nil
+	_, err := f.Prepare(ctx, packed, WithdrawalAuthorization{Operation: op, WithdrawalID: withdrawalID, Deadline: deadline})
+	return err
 }
 
 // SigShare is one signer's contribution: a DER+sighash signature per input, in
@@ -264,107 +208,31 @@ type SigShare struct {
 	Sigs   []string `json:"sigs"`
 }
 
-// Sign produces this node's signature over every input of the packed tx, each
-// under its own witness script. Returns a JSON SigShare.
+// Sign retains the core interface method. It captures and fully validates the
+// live previous outputs before signing through the prepared implementation.
 func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, error) {
-	tx, err := deserializeTx(packed)
+	legacyHash := sha256.Sum256(append([]byte("clearnet-sdk/btc/legacy-withdrawal/v1"), packed...))
+	prepared, err := f.prepareTransactionFromCanonical(ctx, packed, preparedOperationWithdrawal, legacyHash)
 	if err != nil {
 		return nil, fmt.Errorf("btc sign: %w", err)
 	}
-	prevFetcher, amounts, redeems, err := f.prevOutputs(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	sigs := make([]string, len(tx.TxIn))
-	for idx := range tx.TxIn {
-		sighash, err := SighashAll(tx, idx, redeems[idx], amounts[idx], prevFetcher)
-		if err != nil {
-			return nil, fmt.Errorf("btc sign: sighash input %d: %w", idx, err)
-		}
-		der, err := f.signer.Sign(ctx, sighash)
-		if err != nil {
-			return nil, fmt.Errorf("btc sign: input %d: %w", idx, err)
-		}
-		sigs[idx] = hex.EncodeToString(append(der, byte(txscript.SigHashAll)))
-	}
-	return json.Marshal(SigShare{PubKey: hex.EncodeToString(f.signerPub), Sigs: sigs})
+	return f.signPrepared(ctx, prepared)
 }
 
-// merge assembles the witness for every input from the collected shares (the
-// threshold lowest by redeem-script key position) and returns the fully-signed
-// tx serialization.
-func (f *WithdrawalFinalizer) merge(ctx context.Context, packed []byte, shares [][]byte) ([]byte, error) {
-	tx, err := deserializeTx(packed)
-	if err != nil {
-		return nil, fmt.Errorf("btc merge: %w", err)
-	}
-	_, _, redeems, err := f.prevOutputs(ctx, tx)
-	if err != nil {
-		return nil, fmt.Errorf("btc merge: %w", err)
-	}
-
-	parsed := make([]SigShare, 0, len(shares))
-	for _, raw := range shares {
-		var s SigShare
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return nil, fmt.Errorf("btc merge: decode share: %w", err)
-		}
-		if _, ok := f.pubkeyPos[strings.ToLower(s.PubKey)]; !ok {
-			return nil, fmt.Errorf("btc merge: share from unknown signer %s", s.PubKey)
-		}
-		if len(s.Sigs) != len(tx.TxIn) {
-			return nil, fmt.Errorf("btc merge: share has %d sigs, tx has %d inputs", len(s.Sigs), len(tx.TxIn))
-		}
-		parsed = append(parsed, s)
-	}
-
-	for idx := range tx.TxIn {
-		type posSig struct {
-			pos int
-			sig []byte
-		}
-		collected := make([]posSig, 0, len(parsed))
-		for _, s := range parsed {
-			sig, err := hex.DecodeString(s.Sigs[idx])
-			if err != nil {
-				return nil, fmt.Errorf("btc merge: decode sig: %w", err)
-			}
-			collected = append(collected, posSig{pos: f.pubkeyPos[strings.ToLower(s.PubKey)], sig: sig})
-		}
-		if len(collected) < f.threshold {
-			return nil, fmt.Errorf("btc merge: input %d has %d sigs, need %d", idx, len(collected), f.threshold)
-		}
-		sort.Slice(collected, func(i, j int) bool { return collected[i].pos < collected[j].pos })
-		ordered := make([][]byte, f.threshold)
-		for i := 0; i < f.threshold; i++ {
-			ordered[i] = collected[i].sig
-		}
-		tx.TxIn[idx].Witness = AssembleWitness(redeems[idx], ordered)
-	}
-	return serializeTx(tx)
-}
-
-// Submit assembles the witnesses from the collected shares and broadcasts the
-// signed tx, returning its hash. An ambiguous already-spent reply is treated as
-// idempotent only when the exact locally built transaction can be looked up.
+// Submit retains the core interface method. It recaptures and validates every
+// live input, cryptographically verifies shares and the finalized witnesses,
+// then broadcasts through the prepared implementation.
 func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
-	merged, err := f.merge(ctx, packed, shares)
-	if err != nil {
-		return "", err
-	}
-	tx, err := deserializeTx(merged)
+	legacyHash := sha256.Sum256(append([]byte("clearnet-sdk/btc/legacy-withdrawal/v1"), packed...))
+	prepared, err := f.prepareTransactionFromCanonical(ctx, packed, preparedOperationWithdrawal, legacyHash)
 	if err != nil {
 		return "", fmt.Errorf("btc submit: %w", err)
 	}
-	hash := [32]byte(tx.TxHash())
-	txid := hashToTxid(hash)
-	if _, err := f.rpc.SendRawTransaction(ctx, hex.EncodeToString(merged)); err != nil {
-		if broadcastAlreadyAccepted(ctx, f.rpc, txid, err) {
-			return txid, nil
-		}
-		return "", fmt.Errorf("btc submit: sendrawtransaction: %w", err)
+	raw, _, err := f.finalizePrepared(prepared, shares)
+	if err != nil {
+		return "", err
 	}
-	return txid, nil
+	return f.broadcastPrepared(ctx, prepared, raw)
 }
 
 // VerifyExecution scans the most recent blocks for a tx carrying
@@ -455,54 +323,6 @@ func (f *WithdrawalFinalizer) toUTXOs(unspent []Unspent) ([]UTXO, error) {
 		out = append(out, UTXO{TxID: *h, Vout: u.Vout, Amount: u.AmountSats})
 	}
 	return out, nil
-}
-
-func (f *WithdrawalFinalizer) prevOutputs(ctx context.Context, tx *wire.MsgTx) (txscript.PrevOutputFetcher, []int64, [][]byte, error) {
-	fetcher := txscript.NewMultiPrevOutFetcher(nil)
-	amounts := make([]int64, len(tx.TxIn))
-	redeems := make([][]byte, len(tx.TxIn))
-	for i, in := range tx.TxIn {
-		out, err := f.rpc.GetTxOut(ctx, in.PreviousOutPoint.Hash.String(), in.PreviousOutPoint.Index, true)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("btc: gettxout input %d: %w", i, err)
-		}
-		if out == nil {
-			return nil, nil, nil, fmt.Errorf("btc: input %d references a spent or unknown output", i)
-		}
-		redeem, ok := f.resolveScript(out.ScriptPubKey)
-		if !ok {
-			return nil, nil, nil, fmt.Errorf("btc: input %d not a vault output", i)
-		}
-		pkScript, err := hex.DecodeString(out.ScriptPubKey)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("btc: input %d bad scriptPubKey %q: %w", i, out.ScriptPubKey, err)
-		}
-		amounts[i] = out.AmountSats
-		redeems[i] = redeem
-		fetcher.AddPrevOut(in.PreviousOutPoint, wire.NewTxOut(out.AmountSats, pkScript))
-	}
-	return fetcher, amounts, redeems, nil
-}
-
-func (f *WithdrawalFinalizer) sumValidatedInputs(ctx context.Context, tx *wire.MsgTx) (int64, error) {
-	var total int64
-	for i, in := range tx.TxIn {
-		out, err := f.rpc.GetTxOut(ctx, in.PreviousOutPoint.Hash.String(), in.PreviousOutPoint.Index, true)
-		if err != nil {
-			return 0, fmt.Errorf("btc validate: gettxout input %d: %w", i, err)
-		}
-		if out == nil {
-			return 0, fmt.Errorf("btc validate: input %d spent or unknown", i)
-		}
-		if _, ok := f.resolveScript(out.ScriptPubKey); !ok {
-			return 0, fmt.Errorf("btc validate: input %d not a vault output", i)
-		}
-		if out.Confirmations < int64(f.cfg.ConfirmationDepth) {
-			return 0, fmt.Errorf("btc validate: input %d has %d confs, need %d", i, out.Confirmations, f.cfg.ConfirmationDepth)
-		}
-		total += out.AmountSats
-	}
-	return total, nil
 }
 
 func serializeTx(tx *wire.MsgTx) ([]byte, error) {
