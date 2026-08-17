@@ -2,15 +2,54 @@ package evm
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
+
+// fakeBlockNumberServer stands up an HTTP JSON-RPC stub that answers
+// eth_blockNumber with a fixed height and returns a real *ethclient.Client
+// dialed against it. Backfill's only use of c.client is BlockNumber(ctx), so
+// this is enough to drive the confirmed-height computation without pulling
+// in a full chain simulator. Any other RPC method returns a JSON-RPC error —
+// Backfill must never need one, and a stray call is a bug worth failing on.
+func fakeBlockNumberServer(t *testing.T, head uint64) *ethclient.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("stub rpc server: decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "eth_blockNumber":
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x%x"}`, string(req.ID), head)
+		default:
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"stub does not support %s"}}`, string(req.ID), req.Method)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("dial stub rpc server: %v", err)
+	}
+	t.Cleanup(client.Close)
+	return client
+}
 
 // TestBLSPubkeyCache_PutDeleteLookup exercises the low-level mutation helpers
 // without touching a chain adapter.
@@ -157,21 +196,38 @@ func TestBLSPubkeyCache_G2Zero_FourFieldGuard(t *testing.T) {
 
 // stubBLSRegistry is a minimal BLSPubkeyCacheRegistry fake for watermark /
 // backfill tests that don't need live block-number tracking.
+//
+// callOptsBlockNumbers records the CallOpts.BlockNumber seen by every method
+// call (nil means "latest was requested"), so tests can prove Backfill read
+// at the confirmed height rather than at head.
 type stubBLSRegistry struct {
 	total    *big.Int
 	ids      [][32]byte
 	pubkeys  [][4]*big.Int
 	idsErr   error
 	totalErr error
+
+	callOptsBlockNumbers []*big.Int
 }
 
-func (s *stubBLSRegistry) TotalNodes(_ *bind.CallOpts) (*big.Int, error) {
+func (s *stubBLSRegistry) recordCallOpts(opts *bind.CallOpts) {
+	if opts == nil {
+		s.callOptsBlockNumbers = append(s.callOptsBlockNumbers, nil)
+		return
+	}
+	s.callOptsBlockNumbers = append(s.callOptsBlockNumbers, opts.BlockNumber)
+}
+
+func (s *stubBLSRegistry) TotalNodes(opts *bind.CallOpts) (*big.Int, error) {
+	s.recordCallOpts(opts)
 	return s.total, s.totalErr
 }
-func (s *stubBLSRegistry) GetNodeIds(_ *bind.CallOpts, _ *big.Int, _ *big.Int) ([][32]byte, error) {
+func (s *stubBLSRegistry) GetNodeIds(opts *bind.CallOpts, _ *big.Int, _ *big.Int) ([][32]byte, error) {
+	s.recordCallOpts(opts)
 	return s.ids, s.idsErr
 }
-func (s *stubBLSRegistry) GetNodes(_ *bind.CallOpts, _ *big.Int, _ *big.Int) ([]NodeRecord, error) {
+func (s *stubBLSRegistry) GetNodes(opts *bind.CallOpts, _ *big.Int, _ *big.Int) ([]NodeRecord, error) {
+	s.recordCallOpts(opts)
 	records := make([]NodeRecord, len(s.ids))
 	for i := range s.ids {
 		records[i].BlsPubkeyG2 = s.pubkeys[i]
@@ -217,6 +273,131 @@ func TestBLSPubkeyCache_Watermark_NeverRegresses(t *testing.T) {
 
 	if wm := cache.Watermark(); wm < 42 {
 		t.Fatalf("watermark regressed after Backfill: got %d, want >=42 (Backfill unconditionally assigned a lower startBlock — would cause double-application of confirmed events in Watch.pollOnce on next tick)", wm)
+	}
+}
+
+// Backfill must read contract state at head-confirmations, not at latest.
+// For a consumer whose registry is immutable, Backfill is the ONLY path that
+// ever populates the cache, so a `latest` read carries no reorg protection —
+// a restart could seed the cache from a block that later reorgs out. The stub
+// records the CallOpts.BlockNumber it was actually asked for, so this proves
+// the read height rather than merely the end result (which a stub ignoring
+// BlockNumber would also produce).
+func TestBLSPubkeyCache_Backfill_ReadsAtConfirmedHeight(t *testing.T) {
+	const head = uint64(100)
+	const confirmations = uint64(10)
+	const wantConfirmed = head - confirmations
+
+	id := [32]byte{0x01}
+	reg := &stubBLSRegistry{
+		total:   big.NewInt(1),
+		ids:     [][32]byte{id},
+		pubkeys: [][4]*big.Int{{big.NewInt(1), big.NewInt(2), big.NewInt(3), big.NewInt(4)}},
+	}
+	client := fakeBlockNumberServer(t, head)
+	cache := NewBLSPubkeyCache(client, common.Address{0x02}, reg, confirmations)
+
+	if err := cache.Backfill(context.Background()); err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+
+	if len(reg.callOptsBlockNumbers) == 0 {
+		t.Fatal("no registry calls recorded — stub not wired correctly")
+	}
+	for i, bn := range reg.callOptsBlockNumbers {
+		if bn == nil {
+			t.Fatalf("call %d: CallOpts.BlockNumber = nil (read at latest), want %d (confirmed height)", i, wantConfirmed)
+		}
+		if bn.Uint64() != wantConfirmed {
+			t.Fatalf("call %d: CallOpts.BlockNumber = %d, want %d (head=%d - confirmations=%d)", i, bn.Uint64(), wantConfirmed, head, confirmations)
+		}
+	}
+
+	// The watermark must land on the confirmed height, NOT on head. If it
+	// landed on head, pollOnce would next start at head+1 and permanently
+	// skip every block between confirmed and head, losing events emitted
+	// in that window.
+	if wm := cache.Watermark(); wm != wantConfirmed {
+		t.Fatalf("Watermark() = %d, want %d (confirmed height, not head=%d)", wm, wantConfirmed, head)
+	}
+}
+
+// TestBLSPubkeyCache_Backfill_WatermarkNeverRewindsPastWatch pins the B6
+// monotonic guard specifically against a confirmed-height Backfill: a prior
+// Watch-driven advance must not be rewound just because a later Backfill's
+// confirmed height happens to be behind it (e.g. a daemon restarts and
+// briefly observes a shorter chain view before the RPC catches up).
+func TestBLSPubkeyCache_Backfill_WatermarkNeverRewindsPastWatch(t *testing.T) {
+	const head = uint64(100)
+	const confirmations = uint64(10)
+	const confirmed = head - confirmations // 90
+
+	reg := &stubBLSRegistry{total: big.NewInt(0)}
+	client := fakeBlockNumberServer(t, head)
+	cache := NewBLSPubkeyCache(client, common.Address{0x02}, reg, confirmations)
+
+	// Simulate a prior Watch-driven advance past what this Backfill would
+	// compute (95 > confirmed=90).
+	cache.setWatermark(95)
+
+	if err := cache.Backfill(context.Background()); err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+
+	if wm := cache.Watermark(); wm != 95 {
+		t.Fatalf("Watermark() = %d, want 95 (must not rewind to confirmed=%d)", wm, confirmed)
+	}
+}
+
+// TestBLSPubkeyCache_Backfill_HeadBelowConfirmations pins the underflow
+// guard: head - confirmations on a uint64 would wrap around to a huge number
+// if computed unconditionally (e.g. head=1, confirmations=5 on a freshly
+// started chain). Backfill must refuse to run rather than either panicking
+// downstream on a bogus BlockNumber or — worse — silently succeeding with an
+// empty cache.
+func TestBLSPubkeyCache_Backfill_HeadBelowConfirmations(t *testing.T) {
+	const head = uint64(1)
+	const confirmations = uint64(5)
+
+	reg := &stubBLSRegistry{total: big.NewInt(1)}
+	client := fakeBlockNumberServer(t, head)
+	cache := NewBLSPubkeyCache(client, common.Address{0x02}, reg, confirmations)
+
+	err := cache.Backfill(context.Background())
+	if err == nil {
+		t.Fatal("Backfill succeeded with head < confirmations, want an error")
+	}
+	if len(reg.callOptsBlockNumbers) != 0 {
+		t.Fatalf("registry was called %d time(s) before the confirmation-depth guard rejected the read; want zero — no read should ever happen at an unconfirmed height", len(reg.callOptsBlockNumbers))
+	}
+	if cache.Size() != 0 {
+		t.Fatalf("cache Size() = %d, want 0 — an error return must not leave partial state", cache.Size())
+	}
+	if wm := cache.Watermark(); wm != 0 {
+		t.Fatalf("Watermark() = %d, want 0 — an error return must not advance the watermark", wm)
+	}
+}
+
+// TestBLSPubkeyCache_Backfill_NilClientPreserved pins that the pre-existing
+// nil-client wiring still works after the confirmed-height change: with no client
+// there is no head to compute a confirmed height against, so the read stays
+// unpinned (CallOpts.BlockNumber == nil, i.e. latest).
+func TestBLSPubkeyCache_Backfill_NilClientPreserved(t *testing.T) {
+	reg := &stubBLSRegistry{total: big.NewInt(0)}
+	cache := NewBLSPubkeyCache(nil, common.Address{}, reg, 10)
+
+	if err := cache.Backfill(context.Background()); err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+
+	if len(reg.callOptsBlockNumbers) == 0 {
+		t.Fatal("no registry calls recorded — stub not wired correctly")
+	}
+	if bn := reg.callOptsBlockNumbers[0]; bn != nil {
+		t.Fatalf("CallOpts.BlockNumber = %d with nil client, want nil (latest) — nil-client wiring must not change behavior", bn.Uint64())
+	}
+	if wm := cache.Watermark(); wm != 0 {
+		t.Fatalf("Watermark() = %d, want 0 with nil client and empty registry", wm)
 	}
 }
 
