@@ -2,10 +2,10 @@
 // against an EVM chain, one focused type per concern: Depositor and
 // WithdrawalFinalizer (the vault money path), plus RegistryAdapter,
 // TokenAdapter, FraudAdapter, and FaucetAdapter. Each wraps the relevant
-// generated binding(s) over a caller-supplied *ethclient.Client; write-capable
-// types additionally take a sign.Signer (the registry/token/faucet/fraud
-// adapters take a raw key). The package never dials on its own behalf beyond
-// resolving the chain ID for the transactor.
+// generated binding(s) over a caller-supplied *ethclient.Client. Finalizers
+// distinguish digest authorizers from EVM transaction payers via Transactor;
+// registry/token/faucet/fraud adapters take a raw key. The package never dials
+// on its own behalf beyond resolving the chain ID for the transactor.
 package evm
 
 import (
@@ -13,6 +13,7 @@ import (
 	"crypto/ecdsa"
 	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -23,35 +24,97 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
-// signerTransactOpts builds TransactOpts whose tx signature is produced by a
-// sign.Signer (so KMS keys work), routing through SignEthDigest. Returns the
-// signer's Ethereum address alongside. The caller sets per-tx fields (Value,
-// gas) on the returned opts.
-func signerTransactOpts(ctx context.Context, client *ethclient.Client, s sign.Signer) (*bind.TransactOpts, common.Address, error) {
-	addr, err := sign.EthAddress(s)
+// Transactor owns EVM transaction submission for one payer lane.
+type Transactor interface {
+	// From is the EVM account that pays gas and appears as tx.From.
+	From() common.Address
+
+	// Transact serializes transaction construction, fee/gas setup, broadcast,
+	// and mining for this payer lane. fn receives fresh opts bound to ctx and
+	// signed by From().
+	Transact(ctx context.Context, fees FeeConfig, fn func(opts *bind.TransactOpts) (*gethtypes.Transaction, error)) (*gethtypes.Transaction, error)
+}
+
+type signerTransactor struct {
+	client *ethclient.Client
+	signer sign.Signer
+	from   common.Address
+	mu     sync.Mutex
+}
+
+// NewSignerTransactor builds a Transactor backed by a sign.Signer.
+func NewSignerTransactor(_ context.Context, client *ethclient.Client, payer sign.Signer) (Transactor, error) {
+	return newSignerTransactor(client, payer)
+}
+
+func newSignerTransactor(client *ethclient.Client, payer sign.Signer) (*signerTransactor, error) {
+	addr, err := sign.EthAddress(payer)
 	if err != nil {
-		return nil, common.Address{}, err
+		return nil, err
 	}
-	chainID, err := client.ChainID(ctx)
+	return &signerTransactor{client: client, signer: payer, from: addr}, nil
+}
+
+func (t *signerTransactor) From() common.Address { return t.from }
+
+func (t *signerTransactor) Transact(ctx context.Context, fees FeeConfig, fn func(opts *bind.TransactOpts) (*gethtypes.Transaction, error)) (*gethtypes.Transaction, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	opts, err := t.transactOpts(ctx)
 	if err != nil {
-		return nil, common.Address{}, fmt.Errorf("get chain ID: %w", err)
+		return nil, err
+	}
+	if err := applyFees(ctx, t.client, fees, opts); err != nil {
+		return nil, err
+	}
+	tx, err := fn(opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := waitMined(ctx, t.client, tx); err != nil {
+		return nil, err
+	}
+	return tx, nil
+}
+
+func (t *signerTransactor) transactOpts(ctx context.Context) (*bind.TransactOpts, error) {
+	chainID, err := t.client.ChainID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
 	txSigner := gethtypes.LatestSignerForChainID(chainID)
 	opts := &bind.TransactOpts{
-		From:    addr,
+		From:    t.from,
 		Context: ctx,
 		Signer: func(from common.Address, tx *gethtypes.Transaction) (*gethtypes.Transaction, error) {
-			if from != addr {
+			if from != t.from {
 				return nil, bind.ErrNotAuthorized
 			}
-			sig, err := sign.SignEthDigest(ctx, s, txSigner.Hash(tx).Bytes(), addr)
+			sig, err := sign.SignEthDigest(ctx, t.signer, txSigner.Hash(tx).Bytes(), t.from)
 			if err != nil {
 				return nil, fmt.Errorf("evm: sign tx: %w", err)
 			}
 			return tx.WithSignature(txSigner, sig)
 		},
 	}
-	return opts, addr, nil
+	return opts, nil
+}
+
+// signerTransactOpts builds TransactOpts whose tx signature is produced by a
+// sign.Signer (so KMS keys work), routing through SignEthDigest. Returns the
+// signer's Ethereum address alongside. The caller sets per-tx fields (Value,
+// gas) on the returned opts.
+func signerTransactOpts(ctx context.Context, client *ethclient.Client, s sign.Signer) (*bind.TransactOpts, common.Address, error) {
+	txr, err := newSignerTransactor(client, s)
+	if err != nil {
+		return nil, common.Address{}, err
+	}
+	opts, err := txr.transactOpts(ctx)
+	if err != nil {
+		return nil, common.Address{}, err
+	}
+	return opts, txr.From(), nil
 }
 
 // newTransactor builds a chain-ID-bound keyed transactor for write-capable

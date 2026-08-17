@@ -10,6 +10,7 @@ import (
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/layer-3/clearnet-sdk/pkg/log"
@@ -45,25 +46,31 @@ func fetchLiveOperatorQuorum(ctx context.Context, gov *ConfigGovernor) ([]common
 // Config registry via ConfigGovernor.setConfig, authorised by the operator
 // quorum. It is the config-commit analogue of RotationFinalizer: the off-chain
 // ceremony collects operator-key signatures over the commit digest, and the
-// HRW-elected submitter calls Submit. It owns the node's operator signer and
-// the governor address + chain id supplied at construction.
+// HRW-elected submitter calls Submit. It owns the node's operator authorizer
+// signer, the transaction payer, and the governor address + chain id supplied
+// at construction.
 type ConfigCommitFinalizer struct {
-	client       *ethclient.Client
-	governor     *ConfigGovernor
-	registry     *Config
-	govAddr      common.Address
-	chainID      uint64
-	signer       sign.Signer
-	signerAddr   common.Address
-	fees         FeeConfig
-	logger       log.Logger
-	lookupWindow uint64
+	client         *ethclient.Client
+	governor       *ConfigGovernor
+	registry       *Config
+	govAddr        common.Address
+	chainID        uint64
+	authorizer     sign.Signer
+	authorizerAddr common.Address
+	transactor     Transactor
+	fees           FeeConfig
+	logger         log.Logger
+	lookupWindow   uint64
 }
 
 // NewConfigCommitFinalizer binds the ConfigGovernor at govAddr, resolves the
-// Config registry it writes through, and reads the chain id from client. signer
-// is this node's operator-key identity.
-func NewConfigCommitFinalizer(ctx context.Context, client *ethclient.Client, govAddr common.Address, signer sign.Signer, fees FeeConfig) (*ConfigCommitFinalizer, error) {
+// Config registry it writes through, and reads the chain id from client.
+// operatorSigner signs governance digests; payer submits and pays for the EVM
+// transaction.
+func NewConfigCommitFinalizer(ctx context.Context, client *ethclient.Client, govAddr common.Address, operatorSigner sign.Signer, payer Transactor, fees FeeConfig) (*ConfigCommitFinalizer, error) {
+	if payer == nil {
+		return nil, fmt.Errorf("evm: transactor is required")
+	}
 	gov, err := NewConfigGovernor(govAddr, client)
 	if err != nil {
 		return nil, fmt.Errorf("load config governor: %w", err)
@@ -80,21 +87,22 @@ func NewConfigCommitFinalizer(ctx context.Context, client *ethclient.Client, gov
 	if err != nil {
 		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
-	addr, err := sign.EthAddress(signer)
+	addr, err := sign.EthAddress(operatorSigner)
 	if err != nil {
 		return nil, err
 	}
 	return &ConfigCommitFinalizer{
-		client:       client,
-		governor:     gov,
-		registry:     registry,
-		govAddr:      govAddr,
-		chainID:      chainID.Uint64(),
-		signer:       signer,
-		signerAddr:   addr,
-		fees:         fees,
-		logger:       log.NewNoopLogger(),
-		lookupWindow: defaultConfigLookupWindow,
+		client:         client,
+		governor:       gov,
+		registry:       registry,
+		govAddr:        govAddr,
+		chainID:        chainID.Uint64(),
+		authorizer:     operatorSigner,
+		authorizerAddr: addr,
+		transactor:     payer,
+		fees:           fees,
+		logger:         log.NewNoopLogger(),
+		lookupWindow:   defaultConfigLookupWindow,
 	}, nil
 }
 
@@ -119,7 +127,7 @@ func (f *ConfigCommitFinalizer) SetLookupWindow(blocks uint64) {
 }
 
 // SignerAddress is the operator address this finalizer signs as.
-func (f *ConfigCommitFinalizer) SignerAddress() common.Address { return f.signerAddr }
+func (f *ConfigCommitFinalizer) SignerAddress() common.Address { return f.authorizerAddr }
 
 // evmCommitPacked is the canonical config-commit payload: the registry key, the
 // content checksum, and the expectedEpoch the digest is bound to.
@@ -173,7 +181,7 @@ func (f *ConfigCommitFinalizer) Sign(ctx context.Context, packed []byte) ([]byte
 	if err != nil {
 		return nil, err
 	}
-	return sign.SignEthDigest(ctx, f.signer, digest[:], f.signerAddr)
+	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
 // Submit merges the collected operator signatures against the live operator set
@@ -209,21 +217,17 @@ func (f *ConfigCommitFinalizer) Submit(ctx context.Context, packed []byte, signa
 		return "", err
 	}
 
-	opts, _, err := signerTransactOpts(ctx, f.client, f.signer)
+	tx, err := f.transactor.Transact(ctx, f.fees, func(opts *bind.TransactOpts) (*gethtypes.Transaction, error) {
+		if err := f.estimateGas(ctx, opts, key, checksum, p.ExpectedEpoch, sigs); err != nil {
+			return nil, err
+		}
+		tx, err := f.governor.SetConfig(opts, key, checksum, p.ExpectedEpoch, sigs)
+		if err != nil {
+			return nil, fmt.Errorf("setConfig: %w", err)
+		}
+		return tx, nil
+	})
 	if err != nil {
-		return "", err
-	}
-	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
-		return "", err
-	}
-	if err := f.estimateGas(ctx, opts, key, checksum, p.ExpectedEpoch, sigs); err != nil {
-		return "", err
-	}
-	tx, err := f.governor.SetConfig(opts, key, checksum, p.ExpectedEpoch, sigs)
-	if err != nil {
-		return "", fmt.Errorf("setConfig: %w", err)
-	}
-	if err := waitMined(ctx, f.client, tx); err != nil {
 		return "", err
 	}
 	return tx.Hash().Hex(), nil
@@ -277,7 +281,7 @@ func (f *ConfigCommitFinalizer) estimateGas(ctx context.Context, opts *bind.Tran
 		return fmt.Errorf("pack setConfig calldata: %w", err)
 	}
 	est, err := f.client.EstimateGas(ctx, ethereum.CallMsg{
-		From:      f.signerAddr,
+		From:      f.transactor.From(),
 		To:        &f.govAddr,
 		Data:      data,
 		GasTipCap: opts.GasTipCap,
@@ -334,20 +338,25 @@ func (f *ConfigCommitFinalizer) lookupCommitTxID(ctx context.Context, key [32]by
 // analogue of RotationFinalizer (which rotates the vault signer set) and is the
 // anchor-chain step of an operator handoff (ADR-017 rotation step 3).
 type OperatorRotationFinalizer struct {
-	client       *ethclient.Client
-	governor     *ConfigGovernor
-	govAddr      common.Address
-	chainID      uint64
-	signer       sign.Signer
-	signerAddr   common.Address
-	fees         FeeConfig
-	logger       log.Logger
-	lookupWindow uint64
+	client         *ethclient.Client
+	governor       *ConfigGovernor
+	govAddr        common.Address
+	chainID        uint64
+	authorizer     sign.Signer
+	authorizerAddr common.Address
+	transactor     Transactor
+	fees           FeeConfig
+	logger         log.Logger
+	lookupWindow   uint64
 }
 
 // NewOperatorRotationFinalizer binds the ConfigGovernor at govAddr and reads the
-// chain id from client. signer is this node's operator-key identity.
-func NewOperatorRotationFinalizer(ctx context.Context, client *ethclient.Client, govAddr common.Address, signer sign.Signer, fees FeeConfig) (*OperatorRotationFinalizer, error) {
+// chain id from client. operatorSigner signs governance digests; payer submits
+// and pays for the EVM transaction.
+func NewOperatorRotationFinalizer(ctx context.Context, client *ethclient.Client, govAddr common.Address, operatorSigner sign.Signer, payer Transactor, fees FeeConfig) (*OperatorRotationFinalizer, error) {
+	if payer == nil {
+		return nil, fmt.Errorf("evm: transactor is required")
+	}
 	gov, err := NewConfigGovernor(govAddr, client)
 	if err != nil {
 		return nil, fmt.Errorf("load config governor: %w", err)
@@ -356,20 +365,21 @@ func NewOperatorRotationFinalizer(ctx context.Context, client *ethclient.Client,
 	if err != nil {
 		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
-	addr, err := sign.EthAddress(signer)
+	addr, err := sign.EthAddress(operatorSigner)
 	if err != nil {
 		return nil, err
 	}
 	return &OperatorRotationFinalizer{
-		client:       client,
-		governor:     gov,
-		govAddr:      govAddr,
-		chainID:      chainID.Uint64(),
-		signer:       signer,
-		signerAddr:   addr,
-		fees:         fees,
-		logger:       log.NewNoopLogger(),
-		lookupWindow: defaultConfigLookupWindow,
+		client:         client,
+		governor:       gov,
+		govAddr:        govAddr,
+		chainID:        chainID.Uint64(),
+		authorizer:     operatorSigner,
+		authorizerAddr: addr,
+		transactor:     payer,
+		fees:           fees,
+		logger:         log.NewNoopLogger(),
+		lookupWindow:   defaultConfigLookupWindow,
 	}, nil
 }
 
@@ -451,7 +461,7 @@ func (f *OperatorRotationFinalizer) Sign(ctx context.Context, packed []byte) ([]
 	if err != nil {
 		return nil, err
 	}
-	return sign.SignEthDigest(ctx, f.signer, digest[:], f.signerAddr)
+	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
 // Submit merges the collected signatures against the current operator set and
@@ -489,21 +499,17 @@ func (f *OperatorRotationFinalizer) Submit(ctx context.Context, packed []byte, s
 		return "", err
 	}
 
-	opts, _, err := signerTransactOpts(ctx, f.client, f.signer)
+	tx, err := f.transactor.Transact(ctx, f.fees, func(opts *bind.TransactOpts) (*gethtypes.Transaction, error) {
+		if err := f.estimateGas(ctx, opts, addrs, newThreshold, nonce, sigs); err != nil {
+			return nil, err
+		}
+		tx, err := f.governor.UpdateOperators(opts, addrs, newThreshold, nonce, sigs)
+		if err != nil {
+			return nil, fmt.Errorf("updateOperators: %w", err)
+		}
+		return tx, nil
+	})
 	if err != nil {
-		return "", err
-	}
-	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
-		return "", err
-	}
-	if err := f.estimateGas(ctx, opts, addrs, newThreshold, nonce, sigs); err != nil {
-		return "", err
-	}
-	tx, err := f.governor.UpdateOperators(opts, addrs, newThreshold, nonce, sigs)
-	if err != nil {
-		return "", fmt.Errorf("updateOperators: %w", err)
-	}
-	if err := waitMined(ctx, f.client, tx); err != nil {
 		return "", err
 	}
 	return tx.Hash().Hex(), nil
@@ -557,7 +563,7 @@ func (f *OperatorRotationFinalizer) estimateGas(ctx context.Context, opts *bind.
 		return fmt.Errorf("pack updateOperators calldata: %w", err)
 	}
 	est, err := f.client.EstimateGas(ctx, ethereum.CallMsg{
-		From:      f.signerAddr,
+		From:      f.transactor.From(),
 		To:        &f.govAddr,
 		Data:      data,
 		GasTipCap: opts.GasTipCap,
