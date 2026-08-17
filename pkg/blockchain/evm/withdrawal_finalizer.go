@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
@@ -38,27 +39,32 @@ func (f FeeConfig) gasLimitMultiplier() float64 {
 }
 
 // WithdrawalFinalizer turns an authorized withdrawal into a Custody.execute
-// call. It owns the node's signer (used both to sign the k-of-n digest and to
-// submit the tx) and the vault address + chain id supplied at construction. It
-// implements core.VaultWithdrawalFinalizer.
+// call. It owns the node's authorizer signer (used to sign the k-of-n digest),
+// the transaction payer, and the vault address + chain id supplied at
+// construction. It implements core.VaultWithdrawalFinalizer.
 type WithdrawalFinalizer struct {
-	client     *ethclient.Client
-	custody    *Custody
-	vaultAddr  common.Address
-	chainID    uint64
-	signer     sign.Signer
-	signerAddr common.Address
-	fees       FeeConfig
-	assets     blockchain.AssetResolver
+	client         *ethclient.Client
+	custody        *Custody
+	vaultAddr      common.Address
+	chainID        uint64
+	authorizer     sign.Signer
+	authorizerAddr common.Address
+	transactor     Transactor
+	fees           FeeConfig
+	assets         blockchain.AssetResolver
 }
 
 var _ core.VaultWithdrawalFinalizer = (*WithdrawalFinalizer)(nil)
 
 // NewWithdrawalFinalizer binds the Custody vault at vaultAddr and reads the
-// chain id from client. signer is this node's secp256k1 identity.
-func NewWithdrawalFinalizer(ctx context.Context, client *ethclient.Client, vaultAddr common.Address, signer sign.Signer, fees FeeConfig, assets blockchain.AssetResolver) (*WithdrawalFinalizer, error) {
+// chain id from client. authorizer signs custody digests; payer submits and
+// pays for the EVM transaction.
+func NewWithdrawalFinalizer(ctx context.Context, client *ethclient.Client, vaultAddr common.Address, authorizer sign.Signer, payer Transactor, fees FeeConfig, assets blockchain.AssetResolver) (*WithdrawalFinalizer, error) {
 	if assets == nil {
 		return nil, fmt.Errorf("evm: asset resolver is required")
+	}
+	if payer == nil {
+		return nil, fmt.Errorf("evm: transactor is required")
 	}
 	custody, err := NewCustody(vaultAddr, client)
 	if err != nil {
@@ -68,19 +74,20 @@ func NewWithdrawalFinalizer(ctx context.Context, client *ethclient.Client, vault
 	if err != nil {
 		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
-	addr, err := sign.EthAddress(signer)
+	addr, err := sign.EthAddress(authorizer)
 	if err != nil {
 		return nil, err
 	}
 	return &WithdrawalFinalizer{
-		client:     client,
-		custody:    custody,
-		vaultAddr:  vaultAddr,
-		chainID:    chainID.Uint64(),
-		signer:     signer,
-		signerAddr: addr,
-		fees:       fees,
-		assets:     assets,
+		client:         client,
+		custody:        custody,
+		vaultAddr:      vaultAddr,
+		chainID:        chainID.Uint64(),
+		authorizer:     authorizer,
+		authorizerAddr: addr,
+		transactor:     payer,
+		fees:           fees,
+		assets:         assets,
 	}, nil
 }
 
@@ -133,7 +140,7 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	return sign.SignEthDigest(ctx, f.signer, digest[:], f.signerAddr)
+	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
 // merge filters the collected signatures against the live on-chain signer set,
@@ -183,24 +190,18 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, signatu
 		return "", fmt.Errorf("bad amount %q", p.Amount)
 	}
 
-	opts, _, err := signerTransactOpts(ctx, f.client, f.signer)
-	if err != nil {
-		return "", err
-	}
-	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
-		return "", err
-	}
 	deadline := new(big.Int).SetInt64(p.Deadline)
-	if err := f.estimateGas(ctx, opts, to, asset, amount, wid, deadline, sigs); err != nil {
-		return "", err
-	}
-	tx, err := f.custody.Execute(opts, to, asset, amount, wid, deadline, sigs)
+	tx, err := f.transactor.Transact(ctx, f.fees, func(opts *bind.TransactOpts) (*gethtypes.Transaction, error) {
+		if err := f.estimateGas(ctx, opts, to, asset, amount, wid, deadline, sigs); err != nil {
+			return nil, err
+		}
+		tx, err := f.custody.Execute(opts, to, asset, amount, wid, deadline, sigs)
+		if err != nil {
+			return nil, fmt.Errorf("execute: %w", err)
+		}
+		return tx, nil
+	})
 	if err != nil {
-		return "", fmt.Errorf("execute: %w", err)
-	}
-	// Block until mined so the returned txID corresponds to an executed
-	// withdrawal (and a subsequent VerifyExecution observes it).
-	if err := waitMined(ctx, f.client, tx); err != nil {
 		return "", err
 	}
 	return tx.Hash().Hex(), nil
@@ -335,7 +336,7 @@ func (f *WithdrawalFinalizer) estimateGas(ctx context.Context, opts *bind.Transa
 		return fmt.Errorf("pack execute calldata: %w", err)
 	}
 	est, err := f.client.EstimateGas(ctx, ethereum.CallMsg{
-		From:      f.signerAddr,
+		From:      f.transactor.From(),
 		To:        &f.vaultAddr,
 		Data:      data,
 		GasTipCap: opts.GasTipCap,

@@ -11,6 +11,7 @@ import (
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
@@ -24,23 +25,28 @@ const rotationLookupWindow = uint64(50_000)
 // RotationFinalizer rotates the Custody vault's signer set via updateSigners,
 // authorized by the current (outgoing) k-of-n quorum. It is the rotation
 // analogue of WithdrawalFinalizer and implements core.SignerRotationFinalizer.
-// It owns the node's signer (signs the rotation digest and submits) and the
-// vault address + chain id supplied at construction.
+// It owns the node's authorizer signer (signs the rotation digest), the
+// transaction payer, and the vault address + chain id supplied at construction.
 type RotationFinalizer struct {
-	client     *ethclient.Client
-	custody    *Custody
-	vaultAddr  common.Address
-	chainID    uint64
-	signer     sign.Signer
-	signerAddr common.Address
-	fees       FeeConfig
+	client         *ethclient.Client
+	custody        *Custody
+	vaultAddr      common.Address
+	chainID        uint64
+	authorizer     sign.Signer
+	authorizerAddr common.Address
+	transactor     Transactor
+	fees           FeeConfig
 }
 
 var _ core.SignerRotationFinalizer = (*RotationFinalizer)(nil)
 
 // NewRotationFinalizer binds the Custody vault at vaultAddr and reads the chain
-// id from client. signer is this node's secp256k1 identity.
-func NewRotationFinalizer(ctx context.Context, client *ethclient.Client, vaultAddr common.Address, signer sign.Signer, fees FeeConfig) (*RotationFinalizer, error) {
+// id from client. authorizer signs custody digests; payer submits and pays for
+// the EVM transaction.
+func NewRotationFinalizer(ctx context.Context, client *ethclient.Client, vaultAddr common.Address, authorizer sign.Signer, payer Transactor, fees FeeConfig) (*RotationFinalizer, error) {
+	if payer == nil {
+		return nil, fmt.Errorf("evm: transactor is required")
+	}
 	custody, err := NewCustody(vaultAddr, client)
 	if err != nil {
 		return nil, fmt.Errorf("load custody: %w", err)
@@ -49,18 +55,19 @@ func NewRotationFinalizer(ctx context.Context, client *ethclient.Client, vaultAd
 	if err != nil {
 		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
-	addr, err := sign.EthAddress(signer)
+	addr, err := sign.EthAddress(authorizer)
 	if err != nil {
 		return nil, err
 	}
 	return &RotationFinalizer{
-		client:     client,
-		custody:    custody,
-		vaultAddr:  vaultAddr,
-		chainID:    chainID.Uint64(),
-		signer:     signer,
-		signerAddr: addr,
-		fees:       fees,
+		client:         client,
+		custody:        custody,
+		vaultAddr:      vaultAddr,
+		chainID:        chainID.Uint64(),
+		authorizer:     authorizer,
+		authorizerAddr: addr,
+		transactor:     payer,
+		fees:           fees,
 	}, nil
 }
 
@@ -125,7 +132,7 @@ func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	return sign.SignEthDigest(ctx, f.signer, digest[:], f.signerAddr)
+	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
 // Submit merges the collected signatures against the live (outgoing) signer set
@@ -159,21 +166,18 @@ func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, signature
 		return "", err
 	}
 
-	opts, _, err := signerTransactOpts(ctx, f.client, f.signer)
+	newThreshold := big.NewInt(int64(p.NewThreshold))
+	tx, err := f.transactor.Transact(ctx, f.fees, func(opts *bind.TransactOpts) (*gethtypes.Transaction, error) {
+		if err := f.estimateGas(ctx, opts, addrs, newThreshold, sigs); err != nil {
+			return nil, err
+		}
+		tx, err := f.custody.UpdateSigners(opts, addrs, newThreshold, sigs)
+		if err != nil {
+			return nil, fmt.Errorf("updateSigners: %w", err)
+		}
+		return tx, nil
+	})
 	if err != nil {
-		return "", err
-	}
-	if err := applyFees(ctx, f.client, f.fees, opts); err != nil {
-		return "", err
-	}
-	if err := f.estimateGas(ctx, opts, addrs, big.NewInt(int64(p.NewThreshold)), sigs); err != nil {
-		return "", err
-	}
-	tx, err := f.custody.UpdateSigners(opts, addrs, big.NewInt(int64(p.NewThreshold)), sigs)
-	if err != nil {
-		return "", fmt.Errorf("updateSigners: %w", err)
-	}
-	if err := waitMined(ctx, f.client, tx); err != nil {
 		return "", err
 	}
 	return tx.Hash().Hex(), nil
@@ -220,7 +224,7 @@ func (f *RotationFinalizer) estimateGas(ctx context.Context, opts *bind.Transact
 		return fmt.Errorf("pack updateSigners calldata: %w", err)
 	}
 	est, err := f.client.EstimateGas(ctx, ethereum.CallMsg{
-		From:      f.signerAddr,
+		From:      f.transactor.From(),
 		To:        &f.vaultAddr,
 		Data:      data,
 		GasTipCap: opts.GasTipCap,

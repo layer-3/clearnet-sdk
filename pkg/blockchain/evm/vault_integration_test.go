@@ -111,7 +111,11 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	// ── Withdrawal flow (the quorum runs in-process) ──────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, len(signers))
 	for i, s := range signers {
-		f, err := NewWithdrawalFinalizer(ctx, client, custodyAddr, s, FeeConfig{}, assets)
+		payer, err := NewSignerTransactor(ctx, client, s)
+		if err != nil {
+			t.Fatalf("NewSignerTransactor %d: %v", i, err)
+		}
+		f, err := NewWithdrawalFinalizer(ctx, client, custodyAddr, s, payer, FeeConfig{}, assets)
 		if err != nil {
 			t.Fatalf("NewWithdrawalFinalizer %d: %v", i, err)
 		}
@@ -173,7 +177,11 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 
 	rotators := make([]*RotationFinalizer, len(signers))
 	for i, s := range signers {
-		r, err := NewRotationFinalizer(ctx, client, custodyAddr, s, FeeConfig{})
+		payer, err := NewSignerTransactor(ctx, client, s)
+		if err != nil {
+			t.Fatalf("NewSignerTransactor %d: %v", i, err)
+		}
+		r, err := NewRotationFinalizer(ctx, client, custodyAddr, s, payer, FeeConfig{})
 		if err != nil {
 			t.Fatalf("NewRotationFinalizer %d: %v", i, err)
 		}
