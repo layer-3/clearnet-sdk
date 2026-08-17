@@ -223,8 +223,12 @@ func (c *BLSPubkeyCache) NodeIDForPubkey(pubkey []byte) (core.NodeID, bool) {
 
 // Backfill seeds the cache from the Registry by paginating GetNodeIds +
 // GetNodes (both iterate `_nodeIds` in identical order, so positions match
-// by index). Records the block height at which the snapshot was taken as
-// the watermark so subsequent Watch starts exactly at watermark+1.
+// by index). Records the confirmed block height at which the snapshot was
+// taken as the watermark so subsequent Watch starts exactly at watermark+1.
+//
+// The read is pinned to head-confirmations, NOT latest, and mirrors
+// pollOnce's confirmed-height math exactly, so the two ingestion
+// paths can never disagree about what "confirmed" means.
 //
 // Returns the set of (active + unbonding) nodes whose BLS keys we will need
 // during the unbonding window — slashing evidence against an unbonding node
@@ -235,15 +239,23 @@ func (c *BLSPubkeyCache) Backfill(ctx context.Context) error {
 	}
 	opts := &bind.CallOpts{Context: ctx}
 
-	// Snapshot block height FIRST so we know the floor for Watch — any event
-	// that arrives at a later block is guaranteed not already in the snapshot.
+	// Snapshot the confirmed block height FIRST so we know the floor for
+	// Watch — any event that arrives at a later block is guaranteed not
+	// already in the snapshot.
 	var startBlock uint64
 	if c.client != nil {
-		bn, err := c.client.BlockNumber(ctx)
+		head, err := c.client.BlockNumber(ctx)
 		if err != nil {
 			return fmt.Errorf("bls cache: block number: %w", err)
 		}
-		startBlock = bn
+		// Mirror pollOnce's guard exactly: head < confirmations
+		// means the chain hasn't lived long enough to have a confirmed block
+		// at all (e.g. a just-started devnet).
+		if head < c.confirmations {
+			return fmt.Errorf("bls cache: chain head %d has not reached the required confirmation depth %d yet; retry once the chain has advanced", head, c.confirmations)
+		}
+		startBlock = head - c.confirmations
+		opts.BlockNumber = new(big.Int).SetUint64(startBlock)
 	}
 
 	total, err := c.reg.TotalNodes(opts)
