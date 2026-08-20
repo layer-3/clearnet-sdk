@@ -118,7 +118,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 
 	var wid [32]byte
 	wid[0], wid[31] = 0xB7, 0xC0
-	op := &core.WithdrawalOp{Recipient: miner, AssetURI: "yellow://ynet/asset/custody/btc/0/0", Amount: decimal.NewFromBigInt(big.NewInt(10_000_000), -8)} // 0.1 BTC to the miner addr
+	op := &core.WithdrawalOp{Recipient: miner, AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/btc/0/0", Amount: decimal.NewFromBigInt(big.NewInt(10_000_000), -8)} // 0.1 BTC to the miner addr
 
 	// deadline is accepted but ignored on BTC (no consensus expiry); a
 	// far-future value keeps parity with the other chains' happy-path tests.

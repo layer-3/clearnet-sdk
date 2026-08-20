@@ -364,7 +364,7 @@ func TestGoldens_Preimages(t *testing.T) {
 		// WithdrawalOp
 		t.Run("withdrawal", func(t *testing.T) {
 			op := &WithdrawalOp{
-				AssetURI:      "yellow://ynet/asset/custody/evm/1/0xa0b8000000000000000000000000000000000001",
+				AssetURI:      "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0xa0b8000000000000000000000000000000000001",
 				Amount:        decimal.NewFromBigInt(big.NewInt(10_000_000), 0),
 				Recipient:     "0xRecipient",
 				UserSignature: []byte{0xAA, 0xBB, 0xCC},

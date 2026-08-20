@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	ethcrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/common"
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -27,6 +27,9 @@ const clientTimeout = 10 * time.Second
 type ClientOpts struct {
 	// Signer is a secp256k1 operator key. When set, runs operator auth.
 	Signer sign.Signer
+	// IssuerID is required for operator auth and is bound into the operator
+	// signature.
+	IssuerID common.Address
 	// IdentityKey is the libp2p identity private key. Used for passive auth
 	// when Signer is nil.
 	IdentityKey libp2pcrypto.PrivKey
@@ -70,17 +73,20 @@ func (c *Client) Authenticate(ctx context.Context, h host.Host, pid peer.ID) err
 }
 
 func (c *Client) requestOperator(ctx context.Context, s network.Stream) error {
+	if c.opts.IssuerID == (common.Address{}) {
+		return fmt.Errorf("auth: operator auth requires issuer id")
+	}
 	addr, err := sign.EthAddress(c.opts.Signer)
 	if err != nil {
 		return fmt.Errorf("operator address: %w", err)
 	}
 	return respond(s, func(nonce [32]byte) (p2pproto.AuthResponse, error) {
-		nonceHash := ethcrypto.Keccak256(nonce[:])
+		nonceHash := operatorAuthDigest(nonce, c.opts.IssuerID)
 		sig, err := sign.SignEthDigest(ctx, c.opts.Signer, nonceHash, addr)
 		if err != nil {
 			return p2pproto.AuthResponse{}, fmt.Errorf("sign nonce: %w", err)
 		}
-		return p2pproto.AuthResponse{Signature: sig, Address: addr.Hex()}, nil
+		return p2pproto.AuthResponse{Signature: sig, Address: addr.Hex(), IssuerID: c.opts.IssuerID.Hex()}, nil
 	})
 }
 

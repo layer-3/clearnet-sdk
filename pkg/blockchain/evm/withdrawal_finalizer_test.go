@@ -40,7 +40,7 @@ var _ blockchain.AssetResolver = testAssetResolver{}
 func TestPackedFromOp_RejectsMalformedAddress(t *testing.T) {
 	var wid [32]byte
 	addr := "0x" + strings.Repeat("ab", 20)
-	assetURI := core.AssetURI("yellow://ynet/asset/custody/evm/1/0")
+	assetURI := core.AssetURI("yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0")
 	f := &WithdrawalFinalizer{chainID: 1, assets: testAssetResolver{}}
 
 	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: addr, AssetURI: assetURI, Amount: decimal.NewFromInt(1)}, wid, 0); err != nil {
@@ -49,7 +49,7 @@ func TestPackedFromOp_RejectsMalformedAddress(t *testing.T) {
 	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: "not-an-address", AssetURI: assetURI, Amount: decimal.NewFromInt(1)}, wid, 0); err == nil {
 		t.Error("malformed recipient accepted")
 	}
-	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: addr, AssetURI: "yellow://ynet/asset/custody/evm/1/0xzz", Amount: decimal.NewFromInt(1)}, wid, 0); err == nil {
+	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: addr, AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0xzz", Amount: decimal.NewFromInt(1)}, wid, 0); err == nil {
 		t.Error("malformed asset accepted")
 	}
 }

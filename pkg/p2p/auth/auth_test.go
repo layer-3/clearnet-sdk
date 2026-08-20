@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	libp2p "github.com/libp2p/go-libp2p"
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -14,8 +15,27 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
+
+var testIssuerID = common.HexToAddress("0x0000000000000000000000000000000000001234")
+
+type testSignerSource struct {
+	sets map[common.Address]core.ReceiptSignerSet
+	err  error
+}
+
+func (s testSignerSource) LoadReceiptSigners(_ context.Context, issuerID common.Address) (core.ReceiptSignerSet, error) {
+	if s.err != nil {
+		return core.ReceiptSignerSet{}, s.err
+	}
+	set, ok := s.sets[issuerID]
+	if !ok {
+		return core.ReceiptSignerSet{}, nil
+	}
+	return set, nil
+}
 
 func TestAuth_Operator(t *testing.T) {
 	srv, cli := newPair(t, nil)
@@ -27,13 +47,15 @@ func TestAuth_Operator(t *testing.T) {
 	}
 
 	results := make(chan Result, 1)
-	NewServer(AllowList{strings.ToLower(addr.Hex()): {}}, func(_ network.Conn, r Result) {
+	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerSet{
+		testIssuerID: {Signers: []common.Address{addr}, Threshold: 1},
+	}}, func(_ network.Conn, r Result) {
 		results <- r
 	}, nil).Register(srv)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := NewClient(ClientOpts{Signer: signer}).Authenticate(ctx, cli, srv.ID()); err != nil {
+	if err := NewClient(ClientOpts{Signer: signer, IssuerID: testIssuerID}).Authenticate(ctx, cli, srv.ID()); err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
 
@@ -45,12 +67,15 @@ func TestAuth_Operator(t *testing.T) {
 		if !strings.EqualFold(r.Address, addr.Hex()) {
 			t.Errorf("address = %s, want %s", r.Address, addr.Hex())
 		}
+		if r.IssuerID != testIssuerID.Hex() {
+			t.Errorf("issuer = %s, want %s", r.IssuerID, testIssuerID.Hex())
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("server never reported a successful auth")
 	}
 }
 
-func TestAuth_OperatorRejectedByAllowList(t *testing.T) {
+func TestAuth_OperatorRejectedBySignerSource(t *testing.T) {
 	srv, cli := newPair(t, nil)
 
 	signer := sign.NewKeySignerFromECDSA(mustKey(t))
@@ -59,7 +84,9 @@ func TestAuth_OperatorRejectedByAllowList(t *testing.T) {
 	otherAddr, _ := sign.EthAddress(other)
 
 	results := make(chan Result, 1)
-	NewServer(AllowList{strings.ToLower(otherAddr.Hex()): {}}, func(_ network.Conn, r Result) {
+	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerSet{
+		testIssuerID: {Signers: []common.Address{otherAddr}, Threshold: 1},
+	}}, func(_ network.Conn, r Result) {
 		results <- r
 	}, nil).Register(srv)
 
@@ -67,7 +94,7 @@ func TestAuth_OperatorRejectedByAllowList(t *testing.T) {
 	defer cancel()
 	// The client side returns nil — it does not wait for the server's verdict;
 	// rejection is observed by the server never invoking onAuth.
-	if err := NewClient(ClientOpts{Signer: signer}).Authenticate(ctx, cli, srv.ID()); err != nil {
+	if err := NewClient(ClientOpts{Signer: signer, IssuerID: testIssuerID}).Authenticate(ctx, cli, srv.ID()); err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
 	select {
@@ -75,6 +102,18 @@ func TestAuth_OperatorRejectedByAllowList(t *testing.T) {
 		t.Fatalf("expected rejection, but server authenticated %+v", r)
 	case <-time.After(time.Second):
 		// expected: no callback
+	}
+}
+
+func TestAuth_OperatorRequiresIssuerID(t *testing.T) {
+	srv, cli := newPair(t, nil)
+	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerSet{}}, nil, nil).Register(srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := NewClient(ClientOpts{Signer: sign.NewKeySignerFromECDSA(mustKey(t))}).Authenticate(ctx, cli, srv.ID())
+	if err == nil || !strings.Contains(err.Error(), "requires issuer id") {
+		t.Fatalf("Authenticate = %v, want issuer id error", err)
 	}
 }
 
@@ -109,10 +148,29 @@ func TestAuth_Passive(t *testing.T) {
 	}
 }
 
-func TestParseAllowListCSV(t *testing.T) {
-	a := ParseAllowListCSV("0x1111111111111111111111111111111111111111, garbage ,0x2222222222222222222222222222222222222222")
-	if len(a) != 2 {
-		t.Fatalf("len = %d, want 2 (malformed dropped)", len(a))
+func TestAuth_PassiveRejectedWhenSignerSourceConfigured(t *testing.T) {
+	priv, _, err := libp2pcrypto.GenerateKeyPair(libp2pcrypto.Ed25519, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newHost(t, nil)
+	cli := newHost(t, priv)
+	connect(t, cli, srv)
+
+	results := make(chan Result, 1)
+	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerSet{}}, func(_ network.Conn, r Result) {
+		results <- r
+	}, nil).Register(srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := NewClient(ClientOpts{IdentityKey: priv}).Authenticate(ctx, cli, srv.ID()); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	select {
+	case r := <-results:
+		t.Fatalf("expected rejection, but server authenticated %+v", r)
+	case <-time.After(time.Second):
 	}
 }
 

@@ -3,9 +3,10 @@
 // under `pkg/blockchain/evm/artifacts/`, using go-ethereum's abigen library directly
 // — no bash, no jq, no external abigen binary, no forge build.
 //
-// The vendored `<Type>.abi` (interface) and `<Type>.bin` (deploy bytecode)
+// The vendored `<Type>.abi` files and, for deployable contracts, `<Type>.bin`
 // files are committed: they are the contract surface this package binds, so a
-// contract change shows up as a reviewable diff here. Regeneration is fully
+// contract change shows up as a reviewable diff here. Interface-only artifacts
+// such as `IConfig.abi` intentionally have no bytecode. Regeneration is fully
 // self-contained:
 //
 //	go generate ./pkg/blockchain/evm/...   # or: go run ./pkg/blockchain/evm/abi_refresher
@@ -63,6 +64,8 @@ var groups = []group{
 	{names: []string{"YellowToken"}, out: "yellowtoken_abi.go"},
 	{names: []string{"Config"}, out: "config_abi.go"},
 	{names: []string{"ConfigGovernor"}, out: "config_governor_abi.go"},
+	{names: []string{"ConfigRegistry"}, out: "config_registry_abi.go"},
+	{names: []string{"IConfig"}, out: "iconfig_abi.go"},
 }
 
 func main() {
@@ -103,7 +106,6 @@ func generate(evmDir, artifactsDir string, g group) error {
 		// the 0x prefix nor a trailing newline.
 		bins[i] = strings.TrimPrefix(strings.TrimSpace(string(binHex)), "0x")
 	}
-
 	code, err := abigen.Bind(
 		g.names,
 		abis,

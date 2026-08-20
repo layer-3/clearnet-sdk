@@ -6,7 +6,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -19,16 +18,32 @@ type stubSignerSource struct {
 	signers   []common.Address
 	threshold int
 	loadErr   error
+	issuerID  common.Address
 }
 
-func (s *stubSignerSource) Load(context.Context) ([]common.Address, int, error) {
+func (s *stubSignerSource) LoadReceiptSigners(_ context.Context, issuerID common.Address) (core.ReceiptSignerSet, error) {
 	if s.loadErr != nil {
-		return nil, 0, s.loadErr
+		return core.ReceiptSignerSet{}, s.loadErr
+	}
+	if s.issuerID != (common.Address{}) && s.issuerID != issuerID {
+		return core.ReceiptSignerSet{}, errors.New("wrong issuer")
 	}
 	out := make([]common.Address, len(s.signers))
 	copy(out, s.signers)
-	return out, s.threshold, nil
+	return core.ReceiptSignerSet{Signers: out, Threshold: s.threshold}, nil
 }
+
+type stubWithdrawalIssuerResolver struct {
+	issuerID common.Address
+	err      error
+}
+
+func (r stubWithdrawalIssuerResolver) IssuerIDByWithdrawalID(context.Context, [32]byte) (common.Address, error) {
+	return r.issuerID, r.err
+}
+
+var testIssuerID = common.HexToAddress("0x0000000000000000000000000000000000001234")
+var testOtherIssuerID = common.HexToAddress("0x0000000000000000000000000000000000005678")
 
 func mustGenerateKey(t *testing.T) *ecdsa.PrivateKey {
 	t.Helper()
@@ -61,7 +76,13 @@ func signWith(t *testing.T, r *core.BurnReceipt, keys ...*ecdsa.PrivateKey) {
 	}
 }
 
-func TestReceiptVerifier_RefreshPopulatesCache(t *testing.T) {
+func newTestBurnVerifier(signers []common.Address, threshold int) *ReceiptVerifier {
+	rv := NewReceiptVerifier(nil, stubWithdrawalIssuerResolver{issuerID: testIssuerID})
+	rv.SetSignersForTest(signers, threshold)
+	return rv
+}
+
+func TestReceiptVerifier_LoadsIssuerScopedSigners(t *testing.T) {
 	signers := []common.Address{
 		common.HexToAddress("0x1111111111111111111111111111111111111111"),
 		common.HexToAddress("0x2222222222222222222222222222222222222222"),
@@ -70,19 +91,17 @@ func TestReceiptVerifier_RefreshPopulatesCache(t *testing.T) {
 	rv := NewReceiptVerifier(&stubSignerSource{
 		signers:   signers,
 		threshold: 2,
-	}, 0)
-	if err := rv.Refresh(context.Background()); err != nil {
-		t.Fatalf("Refresh: %v", err)
-	}
-	if got := rv.SignerCount(); got != 3 {
-		t.Fatalf("SignerCount = %d, want 3", got)
-	}
-	if got := rv.Threshold(); got != 2 {
-		t.Fatalf("Threshold = %d, want 2", got)
+		issuerID:  testIssuerID,
+	}, stubWithdrawalIssuerResolver{issuerID: testIssuerID})
+	r := makeReceipt(0x01)
+	r.Signatures = [][]byte{make([]byte, 65), make([]byte, 65)}
+	err := rv.VerifyBurnReceipt(context.Background(), r)
+	if err == nil || !strings.Contains(err.Error(), "insufficient distinct signers") {
+		t.Fatalf("Verify = %v, want signer load through issuer %s", err, testIssuerID.Hex())
 	}
 }
 
-func TestReceiptVerifier_RefreshFailsClosedOnSourceErrors(t *testing.T) {
+func TestReceiptVerifier_LoadFailsClosedOnSourceErrors(t *testing.T) {
 	cases := []struct {
 		name   string
 		source *stubSignerSource
@@ -91,7 +110,7 @@ func TestReceiptVerifier_RefreshFailsClosedOnSourceErrors(t *testing.T) {
 		{
 			name:   "Load error",
 			source: &stubSignerSource{loadErr: errors.New("source down")},
-			want:   "load custody signers",
+			want:   "load receipt signers",
 		},
 		{
 			name: "threshold zero",
@@ -112,40 +131,17 @@ func TestReceiptVerifier_RefreshFailsClosedOnSourceErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rv := NewReceiptVerifier(tc.source, 0)
-			err := rv.Refresh(context.Background())
+			rv := NewReceiptVerifier(tc.source, stubWithdrawalIssuerResolver{issuerID: testIssuerID})
+			r := makeReceipt(0x02)
+			r.Signatures = [][]byte{make([]byte, 65)}
+			err := rv.VerifyBurnReceipt(context.Background(), r)
 			if err == nil {
-				t.Fatal("expected Refresh to fail")
+				t.Fatal("expected Verify to fail")
 			}
 			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("Refresh error = %v, want substring %q", err, tc.want)
+				t.Fatalf("Verify error = %v, want substring %q", err, tc.want)
 			}
 		})
-	}
-}
-
-func TestReceiptVerifier_RefreshAtomicallyReplacesCache(t *testing.T) {
-	first := []common.Address{common.HexToAddress("0xAA")}
-	second := []common.Address{
-		common.HexToAddress("0xBB"),
-		common.HexToAddress("0xCC"),
-	}
-	source := &stubSignerSource{signers: first, threshold: 1}
-	rv := NewReceiptVerifier(source, 0)
-	if err := rv.Refresh(context.Background()); err != nil {
-		t.Fatalf("first refresh: %v", err)
-	}
-
-	source.signers = second
-	source.threshold = 2
-	if err := rv.Refresh(context.Background()); err != nil {
-		t.Fatalf("second refresh: %v", err)
-	}
-	if got := rv.SignerCount(); got != 2 {
-		t.Fatalf("SignerCount after refresh = %d, want 2", got)
-	}
-	if got := rv.Threshold(); got != 2 {
-		t.Fatalf("Threshold after refresh = %d, want 2", got)
 	}
 }
 
@@ -156,45 +152,26 @@ func TestReceiptVerifier_VerifyHappyPath(t *testing.T) {
 		crypto.PubkeyToAddress(keys[1].PublicKey),
 		crypto.PubkeyToAddress(keys[2].PublicKey),
 	}
-	rv := NewReceiptVerifier(nil, 0)
-	rv.SetSignersForTest(addrs, 2)
+	rv := newTestBurnVerifier(addrs, 2)
 
 	r := makeReceipt(0x10)
 	signWith(t, r, keys[0], keys[2])
 
-	if err := rv.VerifyBurnReceipt(r); err != nil {
+	if err := rv.VerifyBurnReceipt(context.Background(), r); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 }
 
 func TestReceiptVerifier_VerifyAcceptsEthereumCanonicalV(t *testing.T) {
 	key := mustGenerateKey(t)
-	rv := NewReceiptVerifier(nil, 0)
-	rv.SetSignersForTest([]common.Address{crypto.PubkeyToAddress(key.PublicKey)}, 1)
+	rv := newTestBurnVerifier([]common.Address{crypto.PubkeyToAddress(key.PublicKey)}, 1)
 
 	r := makeReceipt(0x17)
 	signWith(t, r, key)
 	r.Signatures[0][64] += 27
 
-	if err := rv.VerifyBurnReceipt(r); err != nil {
+	if err := rv.VerifyBurnReceipt(context.Background(), r); err != nil {
 		t.Fatalf("Verify with Ethereum v=27/28: %v", err)
-	}
-}
-
-func TestReceiptVerifier_VerifyFailsClosedOnStaleCache(t *testing.T) {
-	key := mustGenerateKey(t)
-	rv := NewReceiptVerifier(nil, 0)
-	rv.SetSignersForTest([]common.Address{crypto.PubkeyToAddress(key.PublicKey)}, 1)
-	rv.mu.Lock()
-	rv.refreshedAt = time.Now().Add(-time.Hour)
-	rv.maxAge = time.Minute
-	rv.mu.Unlock()
-
-	r := makeReceipt(0x18)
-	signWith(t, r, key)
-	err := rv.VerifyBurnReceipt(r)
-	if err == nil || !strings.Contains(err.Error(), "signer set stale") {
-		t.Fatalf("Verify: want stale signer set error, got %v", err)
 	}
 }
 
@@ -209,8 +186,7 @@ func TestReceiptVerifier_VerifyExitsAsSoonAsThresholdMet(t *testing.T) {
 		keys[i] = mustGenerateKey(t)
 		addrs[i] = crypto.PubkeyToAddress(keys[i].PublicKey)
 	}
-	rv := NewReceiptVerifier(nil, 0)
-	rv.SetSignersForTest(addrs, 3)
+	rv := newTestBurnVerifier(addrs, 3)
 
 	r := makeReceipt(0x11)
 	signWith(t, r, keys[0], keys[1], keys[2])
@@ -219,7 +195,7 @@ func TestReceiptVerifier_VerifyExitsAsSoonAsThresholdMet(t *testing.T) {
 	// short-circuits regardless.
 	r.Signatures = append(r.Signatures, []byte("garbage"), make([]byte, 65))
 
-	if err := rv.VerifyBurnReceipt(r); err != nil {
+	if err := rv.VerifyBurnReceipt(context.Background(), r); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 }
@@ -231,13 +207,12 @@ func TestReceiptVerifier_VerifyRejectsTooFewSignatures(t *testing.T) {
 		crypto.PubkeyToAddress(keys[1].PublicKey),
 		crypto.PubkeyToAddress(keys[2].PublicKey),
 	}
-	rv := NewReceiptVerifier(nil, 0)
-	rv.SetSignersForTest(addrs, 3)
+	rv := newTestBurnVerifier(addrs, 3)
 
 	r := makeReceipt(0x12)
 	signWith(t, r, keys[0], keys[1])
 
-	err := rv.VerifyBurnReceipt(r)
+	err := rv.VerifyBurnReceipt(context.Background(), r)
 	if err == nil || !strings.Contains(err.Error(), "insufficient signatures") {
 		t.Fatalf("Verify: want 'insufficient signatures' error, got %v", err)
 	}
@@ -250,15 +225,14 @@ func TestReceiptVerifier_VerifyRejectsDuplicateSigner(t *testing.T) {
 		crypto.PubkeyToAddress(keys[1].PublicKey),
 		crypto.PubkeyToAddress(keys[2].PublicKey),
 	}
-	rv := NewReceiptVerifier(nil, 0)
-	rv.SetSignersForTest(addrs, 2)
+	rv := newTestBurnVerifier(addrs, 2)
 
 	r := makeReceipt(0x13)
 	// Two valid signatures from the same signer must NOT count as two
 	// distinct contributors.
 	signWith(t, r, keys[0], keys[0])
 
-	err := rv.VerifyBurnReceipt(r)
+	err := rv.VerifyBurnReceipt(context.Background(), r)
 	if err == nil || !strings.Contains(err.Error(), "insufficient distinct signers") {
 		t.Fatalf("Verify: want 'insufficient distinct signers' error, got %v", err)
 	}
@@ -270,13 +244,12 @@ func TestReceiptVerifier_VerifyRejectsNonSigner(t *testing.T) {
 	addrs := []common.Address{
 		crypto.PubkeyToAddress(signerKey.PublicKey),
 	}
-	rv := NewReceiptVerifier(nil, 0)
-	rv.SetSignersForTest(addrs, 1)
+	rv := newTestBurnVerifier(addrs, 1)
 
 	r := makeReceipt(0x14)
 	signWith(t, r, intruderKey)
 
-	err := rv.VerifyBurnReceipt(r)
+	err := rv.VerifyBurnReceipt(context.Background(), r)
 	if err == nil || !strings.Contains(err.Error(), "insufficient distinct signers") {
 		t.Fatalf("Verify: want 'insufficient distinct signers' error, got %v", err)
 	}
@@ -288,12 +261,11 @@ func TestReceiptVerifier_VerifyED25519IsStubAndIgnored(t *testing.T) {
 	// the threshold.
 	signerKey := mustGenerateKey(t)
 	addrs := []common.Address{crypto.PubkeyToAddress(signerKey.PublicKey)}
-	rv := NewReceiptVerifier(nil, 0)
-	rv.SetSignersForTest(addrs, 1)
+	rv := newTestBurnVerifier(addrs, 1)
 
 	r := makeReceipt(0x15)
 	r.Signatures = [][]byte{make([]byte, 64)}
-	err := rv.VerifyBurnReceipt(r)
+	err := rv.VerifyBurnReceipt(context.Background(), r)
 	// Sig count >= threshold so the early-out doesn't trigger; ED25519 is
 	// recognised but ignored, so we end up with zero distinct signers.
 	if err == nil || !strings.Contains(err.Error(), "insufficient distinct signers") {
@@ -301,31 +273,27 @@ func TestReceiptVerifier_VerifyED25519IsStubAndIgnored(t *testing.T) {
 	}
 }
 
-func TestReceiptVerifier_VerifyFailsClosedOnUninitialisedCache(t *testing.T) {
-	rv := NewReceiptVerifier(nil, 0)
+func TestReceiptVerifier_VerifyFailsClosedWithoutSignerSource(t *testing.T) {
+	rv := NewReceiptVerifier(nil, stubWithdrawalIssuerResolver{issuerID: testIssuerID})
 	r := makeReceipt(0x16)
 	r.Signatures = [][]byte{make([]byte, 65)}
-	err := rv.VerifyBurnReceipt(r)
-	if err == nil || !strings.Contains(err.Error(), "signer set not initialised") {
-		t.Fatalf("Verify: want uninitialised error, got %v", err)
+	err := rv.VerifyBurnReceipt(context.Background(), r)
+	if err == nil || !strings.Contains(err.Error(), "no signer source") {
+		t.Fatalf("Verify: want no signer source error, got %v", err)
 	}
 }
 
 func TestReceiptVerifier_VerifyRejectsNilReceipt(t *testing.T) {
-	rv := NewReceiptVerifier(nil, 0)
-	rv.SetSignersForTest([]common.Address{common.HexToAddress("0x01")}, 1)
-	if err := rv.VerifyBurnReceipt(nil); err == nil {
+	rv := newTestBurnVerifier([]common.Address{common.HexToAddress("0x01")}, 1)
+	if err := rv.VerifyBurnReceipt(context.Background(), nil); err == nil {
 		t.Fatal("Verify(nil): want error")
 	}
 }
 
 func TestReceiptVerifier_NilReceiverFailsClosed(t *testing.T) {
 	var rv *ReceiptVerifier
-	if err := rv.VerifyBurnReceipt(makeReceipt(0)); err == nil {
+	if err := rv.VerifyBurnReceipt(context.Background(), makeReceipt(0)); err == nil {
 		t.Fatal("Verify on nil verifier: want error")
-	}
-	if err := rv.Refresh(context.Background()); err == nil {
-		t.Fatal("Refresh on nil verifier: want error")
 	}
 }
 
@@ -368,7 +336,7 @@ func TestMintReceiptDigest_FieldSensitivity(t *testing.T) {
 		return &core.MintReceipt{
 			TxID:     "0xaaa/1",
 			Account:  "yellow://ynet/user/0xabc",
-			AssetURI: "yellow://ynet/asset/custody/evm/1/0xa0b8000000000000000000000000000000000001",
+			AssetURI: core.AssetURI("yellow://ynet/asset/" + testIssuerID.Hex() + "/evm/1/0xa0b8000000000000000000000000000000000001"),
 			Amount:   decimal.NewFromInt(1),
 		}
 	}
@@ -381,7 +349,7 @@ func TestMintReceiptDigest_FieldSensitivity(t *testing.T) {
 		{"TxID", func(r *core.MintReceipt) { r.TxID = "0xaaa/2" }},
 		{"Account", func(r *core.MintReceipt) { r.Account = "yellow://ynet/user/0xabd" }},
 		{"AssetURI", func(r *core.MintReceipt) {
-			r.AssetURI = "yellow://ynet/asset/custody/evm/1/0xa0b8000000000000000000000000000000000002"
+			r.AssetURI = core.AssetURI("yellow://ynet/asset/" + testOtherIssuerID.Hex() + "/evm/1/0xa0b8000000000000000000000000000000000002")
 		}},
 		{"Amount", func(r *core.MintReceipt) { r.Amount = decimal.NewFromInt(2) }},
 	}

@@ -30,6 +30,7 @@ const maxAuthEnvelope = 64 << 10 // 64 KiB
 // libp2p identity key. It is part of the wire contract — both sides must agree
 // on these exact bytes.
 var passiveAuthDomain = []byte("ynp/libp2p-passive-auth/v1")
+var operatorAuthDomain = []byte("ynp/operator-auth/v2")
 
 // Role is the outcome class of a successful handshake.
 type Role uint8
@@ -56,7 +57,10 @@ func (r Role) String() string {
 type Result struct {
 	// Address is the recovered 0x-prefixed operator address; empty for passive.
 	Address string
-	Role    Role
+	// IssuerID is the ConfigRegistry issuer authenticated for operator auth;
+	// empty for passive.
+	IssuerID string
+	Role     Role
 }
 
 func passiveAuthMessage(nonce [32]byte) []byte {
