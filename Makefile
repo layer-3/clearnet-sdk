@@ -48,7 +48,7 @@ ts-deps:
 # Blockchain flow tests against the devnet. Go tests cover deposit + withdrawal
 # per chain; the TS suite covers EVM, Solana, XRPL, and Bitcoin deposits. See devnet/README.md.
 integration: ts-deps
-	go test -tags integration ./pkg/blockchain/... -v
+	go test -tags integration ./pkg/blockchain/... ./internal/integration -v
 	npm --prefix sdk/ts run test:integration:evm
 	npm --prefix sdk/ts run test:integration:sol
 	npm --prefix sdk/ts run test:integration:xrpl

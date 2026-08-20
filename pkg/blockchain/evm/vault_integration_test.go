@@ -126,7 +126,7 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	withdrawalID[0], withdrawalID[31] = 0x11, 0x22
 	op := &core.WithdrawalOp{
 		Recipient: signerAddrs[0].Hex(),
-		AssetURI:  "yellow://ynet/asset/custody/evm/31337/0",
+		AssetURI:  "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/31337/0",
 		Amount:    decimal.NewFromBigInt(big.NewInt(400_000_000_000), -18), // < deposited
 	}
 

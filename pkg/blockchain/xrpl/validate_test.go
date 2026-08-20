@@ -40,7 +40,7 @@ func TestValidateCanonical_FlagsRejected(t *testing.T) {
 	assets := NewAssetResolver(AssetResolverConfig{})
 	op := &core.WithdrawalOp{
 		Recipient: "rDeST1111111111111111111111111111",
-		AssetURI:  "yellow://ynet/asset/custody/xrpl/0/0",
+		AssetURI:  "yellow://ynet/asset/0x0000000000000000000000000000000000001234/xrpl/0/0",
 		Amount:    decimal.NewFromInt(1),
 	}
 	amt, err := BuildAmount(ctx, assets, op)
@@ -95,7 +95,7 @@ func TestValidateCanonical_LLSBand(t *testing.T) {
 	assets := NewAssetResolver(AssetResolverConfig{})
 	op := &core.WithdrawalOp{
 		Recipient: "rDeST1111111111111111111111111111",
-		AssetURI:  "yellow://ynet/asset/custody/xrpl/0/0",
+		AssetURI:  "yellow://ynet/asset/0x0000000000000000000000000000000000001234/xrpl/0/0",
 		Amount:    decimal.NewFromInt(1),
 	}
 	amt, err := BuildAmount(ctx, assets, op)

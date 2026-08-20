@@ -3,9 +3,10 @@
 // under `pkg/blockchain/evm/artifacts/`, using go-ethereum's abigen library directly
 // — no bash, no jq, no external abigen binary, no forge build.
 //
-// The vendored `<Type>.abi` (interface) and `<Type>.bin` (deploy bytecode)
+// The vendored `<Type>.abi` files and, for deployable contracts, `<Type>.bin`
 // files are committed: they are the contract surface this package binds, so a
-// contract change shows up as a reviewable diff here. Regeneration is fully
+// contract change shows up as a reviewable diff here. Interface-only artifacts
+// such as `IConfig.abi` intentionally have no bytecode. Regeneration is fully
 // self-contained:
 //
 //	go generate ./pkg/blockchain/evm/...   # or: go run ./pkg/blockchain/evm/abi_refresher
@@ -17,10 +18,11 @@
 //	jq -r '.bytecode.object' clearnet/contracts/evm/out/Custody.sol/Custody.json > artifacts/Custody.bin
 //
 // For each contract abigen.Bind emits the Caller/Transactor/Filterer +
-// Deploy tuple into `<out>` under `package evm`. Bytecode is kept so custody
-// (and devnet deploy paths) can deploy via the generated `Deploy*` helpers;
-// this package itself only calls/reads. Paths are resolved relative to this
-// source file, so the working directory does not matter.
+// Deploy tuple into `<out>` under `package evm`. Bytecode is kept for deployable
+// contracts so custody (and devnet deploy paths) can deploy via the generated
+// `Deploy*` helpers; interface-only bindings have empty deploy bytecode and are
+// used only for calls/filters. Paths are resolved relative to this source file,
+// so the working directory does not matter.
 package main
 
 import (
@@ -44,20 +46,23 @@ const artifactsSubdir = "artifacts"
 // `<name>.abi` / `<name>.bin` basename and the abigen --type; out is the
 // generated file written into the evm package.
 type contract struct {
-	name string
-	out  string
+	name          string
+	out           string
+	interfaceOnly bool
 }
 
 var contracts = []contract{
-	{"Slasher", "adjudicator_abi.go"},
-	{"Registry", "registry_abi.go"},
-	{"MockERC20", "mockerc20_abi.go"},
-	{"Custody", "custody_abi.go"},
-	{"NodeID", "nodeid_abi.go"},
-	{"Faucet", "faucet_abi.go"},
-	{"YellowToken", "yellowtoken_abi.go"},
-	{"Config", "config_abi.go"},
-	{"ConfigGovernor", "config_governor_abi.go"},
+	{"Slasher", "adjudicator_abi.go", false},
+	{"Registry", "registry_abi.go", false},
+	{"MockERC20", "mockerc20_abi.go", false},
+	{"Custody", "custody_abi.go", false},
+	{"NodeID", "nodeid_abi.go", false},
+	{"Faucet", "faucet_abi.go", false},
+	{"YellowToken", "yellowtoken_abi.go", false},
+	{"Config", "config_abi.go", false},
+	{"ConfigGovernor", "config_governor_abi.go", false},
+	{"ConfigRegistry", "config_registry_abi.go", false},
+	{"IConfig", "iconfig_abi.go", true},
 }
 
 func main() {
@@ -78,9 +83,12 @@ func generate(evmDir, artifactsDir string, c contract) error {
 	if err != nil {
 		return fmt.Errorf("read abi: %w", err)
 	}
-	binHex, err := os.ReadFile(filepath.Join(artifactsDir, c.name+".bin"))
-	if err != nil {
-		return fmt.Errorf("read bin: %w", err)
+	var binHex []byte
+	if !c.interfaceOnly {
+		binHex, err = os.ReadFile(filepath.Join(artifactsDir, c.name+".bin"))
+		if err != nil {
+			return fmt.Errorf("read bin: %w", err)
+		}
 	}
 	// abigen wants the deploy bytecode as a bare hex string with neither the
 	// 0x prefix nor a trailing newline.

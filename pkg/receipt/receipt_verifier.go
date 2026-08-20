@@ -6,8 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"sync"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -15,31 +13,14 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/eip712"
 )
 
-// SignerSource supplies the custody signer set and threshold that the
-// receipt verifier checks signatures against. It is chain-agnostic: a node
-// can serve receipts produced by custody systems on any L1 as long as some
-// SignerSource implementation knows the active signer set.
-//
-// Implementations available today:
-//   - StaticSignerSource — manifest-driven; operator-managed list.
-//
-// Planned: a Registry-backed source that reads a single canonical signer
-// directory from the on-chain Registry once that contract grows the right
-// method. The interface here is the seam that lets that swap land
-// without touching the verifier or its callers. See the ADR-005
-// 2026-05-12 receipt-model amendment.
-type SignerSource interface {
-	// Load returns the current signer set and threshold. Implementations
-	// may be cached or pull from a remote source; the verifier calls Load
-	// at startup and on a periodic ticker.
-	Load(ctx context.Context) (signers []common.Address, threshold int, err error)
+// WithdrawalIssuerResolver maps a withdrawal id to the ConfigRegistry issuer
+// whose receipt signers authorize the burn receipt.
+type WithdrawalIssuerResolver interface {
+	IssuerIDByWithdrawalID(ctx context.Context, withdrawalID [32]byte) (common.Address, error)
 }
 
-const defaultReceiptVerifierMaxAge = 15 * time.Minute
-
-// ReceiptVerifier validates MintReceipts and BurnReceipts against a
-// SignerSource. It caches signers and threshold and refreshes them
-// periodically so verification is a fast in-memory check.
+// ReceiptVerifier validates MintReceipts and BurnReceipts against the current
+// issuer-scoped receipt signer set.
 //
 // Verification dispatches on signature length:
 //   - 65 bytes → ECDSA secp256k1 (EVM custody chains; ADR-005 §11.1).
@@ -50,56 +31,12 @@ const defaultReceiptVerifierMaxAge = 15 * time.Minute
 // A signer's contribution is counted at most once across the receipt's
 // signatures, so a duplicated signature does not satisfy the threshold.
 type ReceiptVerifier struct {
-	source SignerSource
-
-	mu        sync.RWMutex
-	signers   map[common.Address]struct{}
-	threshold int
-	// refreshedAt/maxAge bound how long a node may trust a cached signer set
-	// after refresh failures. Signer rotation must fail closed, not accept an
-	// old quorum forever when the source is unreachable.
-	refreshedAt time.Time
-	maxAge      time.Duration
+	source            core.ReceiptSignerSource
+	withdrawalIssuers WithdrawalIssuerResolver
 }
 
-// NewReceiptVerifier returns a verifier backed by the given SignerSource.
-// Refresh must be called before either Verify* method; production callers
-// do this at startup and on a periodic ticker (see RunReceiptVerifierRefresh).
-// maxAge bounds cache staleness; non-positive falls back to the package
-// default (15 minutes).
-func NewReceiptVerifier(source SignerSource, maxAge time.Duration) *ReceiptVerifier {
-	if maxAge <= 0 {
-		maxAge = defaultReceiptVerifierMaxAge
-	}
-	return &ReceiptVerifier{source: source, maxAge: maxAge}
-}
-
-// Refresh reads the current signer set and threshold from the SignerSource
-// and replaces the cached view atomically.
-func (rv *ReceiptVerifier) Refresh(ctx context.Context) error {
-	if rv == nil {
-		return errors.New("receipt verifier not configured")
-	}
-	if rv.source == nil {
-		return errors.New("receipt verifier has no signer source")
-	}
-	signers, threshold, err := rv.source.Load(ctx)
-	if err != nil {
-		return fmt.Errorf("load custody signers: %w", err)
-	}
-	if threshold <= 0 || threshold > len(signers) {
-		return fmt.Errorf("custody threshold = %d out of range for %d signers", threshold, len(signers))
-	}
-	set := make(map[common.Address]struct{}, len(signers))
-	for _, s := range signers {
-		set[s] = struct{}{}
-	}
-	rv.mu.Lock()
-	rv.signers = set
-	rv.threshold = threshold
-	rv.refreshedAt = time.Now()
-	rv.mu.Unlock()
-	return nil
+func NewReceiptVerifier(source core.ReceiptSignerSource, withdrawalIssuers WithdrawalIssuerResolver) *ReceiptVerifier {
+	return &ReceiptVerifier{source: source, withdrawalIssuers: withdrawalIssuers}
 }
 
 // SetSignersForTest seeds the cache from an explicit signer list. Tests use
@@ -108,64 +45,67 @@ func (rv *ReceiptVerifier) SetSignersForTest(signers []common.Address, threshold
 	if rv == nil {
 		return
 	}
-	set := make(map[common.Address]struct{}, len(signers))
-	for _, s := range signers {
-		set[s] = struct{}{}
-	}
-	rv.mu.Lock()
-	rv.signers = set
-	rv.threshold = threshold
-	rv.refreshedAt = time.Now()
-	rv.mu.Unlock()
+	src, _ := NewStaticSignerSource(signers, threshold)
+	rv.source = src
 }
 
 // VerifyBurnReceipt checks that the receipt carries at least `threshold`
 // distinct valid signatures from the cached signer set over BurnReceiptDigest.
-func (rv *ReceiptVerifier) VerifyBurnReceipt(v *core.BurnReceipt) error {
+func (rv *ReceiptVerifier) VerifyBurnReceipt(ctx context.Context, v *core.BurnReceipt) error {
 	if v == nil {
 		return errors.New("nil burn receipt")
 	}
-	return rv.verifySignatures(BurnReceiptDigest(v), v.Signatures)
+	if rv == nil || rv.withdrawalIssuers == nil {
+		return errors.New("receipt verifier has no withdrawal issuer resolver")
+	}
+	issuerID, err := rv.withdrawalIssuers.IssuerIDByWithdrawalID(ctx, v.WithdrawalID)
+	if err != nil {
+		return fmt.Errorf("resolve withdrawal issuer: %w", err)
+	}
+	return rv.verifySignatures(ctx, issuerID, BurnReceiptDigest(v), v.Signatures)
 }
 
 // VerifyMintReceipt checks that the receipt carries at least `threshold`
 // distinct valid signatures from the cached signer set over MintReceiptDigest.
-func (rv *ReceiptVerifier) VerifyMintReceipt(v *core.MintReceipt) error {
+func (rv *ReceiptVerifier) VerifyMintReceipt(ctx context.Context, v *core.MintReceipt) error {
 	if v == nil {
 		return errors.New("nil mint receipt")
 	}
 	if v.Amount.Sign() <= 0 {
 		return errors.New("mint receipt amount must be positive")
 	}
-	return rv.verifySignatures(MintReceiptDigest(v), v.Signatures)
+	issuerID, err := core.IssuerIDFromAssetURI(v.AssetURI)
+	if err != nil {
+		return fmt.Errorf("mint receipt issuer: %w", err)
+	}
+	return rv.verifySignatures(ctx, issuerID, MintReceiptDigest(v), v.Signatures)
 }
 
 // verifySignatures is the shared signature-quorum check used by both receipt
 // kinds. It enforces the staleness window, the count floor, and distinct-signer
 // quorum.
-func (rv *ReceiptVerifier) verifySignatures(digest []byte, sigs [][]byte) error {
+func (rv *ReceiptVerifier) verifySignatures(ctx context.Context, issuerID common.Address, digest []byte, sigs [][]byte) error {
 	if rv == nil {
 		return errors.New("receipt verifier not configured")
 	}
-	rv.mu.RLock()
-	signers := rv.signers
-	threshold := rv.threshold
-	refreshedAt := rv.refreshedAt
-	maxAge := rv.maxAge
-	rv.mu.RUnlock()
-	if threshold <= 0 || len(signers) == 0 {
-		return errors.New("receipt verifier signer set not initialised")
+	if rv.source == nil {
+		return errors.New("receipt verifier has no signer source")
 	}
-	if maxAge > 0 {
-		age := time.Since(refreshedAt)
-		if refreshedAt.IsZero() || age > maxAge {
-			return fmt.Errorf("receipt verifier signer set stale: age %s > %s", age, maxAge)
-		}
+	set, err := rv.source.LoadReceiptSigners(ctx, issuerID)
+	if err != nil {
+		return fmt.Errorf("load receipt signers: %w", err)
 	}
-	if len(sigs) < threshold {
-		return fmt.Errorf("insufficient signatures: %d < %d", len(sigs), threshold)
+	if set.Threshold <= 0 || set.Threshold > len(set.Signers) {
+		return fmt.Errorf("receipt threshold = %d out of range for %d signers", set.Threshold, len(set.Signers))
 	}
-	seen := make(map[common.Address]struct{}, threshold)
+	signers := make(map[common.Address]struct{}, len(set.Signers))
+	for _, s := range set.Signers {
+		signers[s] = struct{}{}
+	}
+	if len(sigs) < set.Threshold {
+		return fmt.Errorf("insufficient signatures: %d < %d", len(sigs), set.Threshold)
+	}
+	seen := make(map[common.Address]struct{}, set.Threshold)
 	for _, sig := range sigs {
 		addr, ok, err := recoverReceiptSigner(digest, sig)
 		if err != nil {
@@ -181,11 +121,11 @@ func (rv *ReceiptVerifier) verifySignatures(digest []byte, sigs [][]byte) error 
 			continue
 		}
 		seen[addr] = struct{}{}
-		if len(seen) >= threshold {
+		if len(seen) >= set.Threshold {
 			return nil
 		}
 	}
-	return fmt.Errorf("insufficient distinct signers: %d/%d", len(seen), threshold)
+	return fmt.Errorf("insufficient distinct signers: %d/%d", len(seen), set.Threshold)
 }
 
 // recoverReceiptSigner dispatches signature verification by length and
@@ -274,44 +214,4 @@ func MintReceiptDigest(v *core.MintReceipt) []byte {
 	buf = append(buf, u32[:]...)
 	buf = append(buf, amountBytes...)
 	return crypto.Keccak256(buf)
-}
-
-// SignerCount reports the cached signer-set size for diagnostics.
-func (rv *ReceiptVerifier) SignerCount() int {
-	if rv == nil {
-		return 0
-	}
-	rv.mu.RLock()
-	defer rv.mu.RUnlock()
-	return len(rv.signers)
-}
-
-// Threshold reports the cached signer threshold for diagnostics.
-func (rv *ReceiptVerifier) Threshold() int {
-	if rv == nil {
-		return 0
-	}
-	rv.mu.RLock()
-	defer rv.mu.RUnlock()
-	return rv.threshold
-}
-
-// RunReceiptVerifierRefresh periodically refreshes the verifier's cached
-// signer set. It returns when ctx is cancelled.
-func RunReceiptVerifierRefresh(ctx context.Context, rv *ReceiptVerifier, interval time.Duration, onError func(error)) {
-	if rv == nil || interval <= 0 {
-		return
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if err := rv.Refresh(ctx); err != nil && onError != nil {
-				onError(err)
-			}
-		}
-	}
 }
