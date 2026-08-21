@@ -30,7 +30,7 @@ const maxAuthEnvelope = 64 << 10 // 64 KiB
 // libp2p identity key. It is part of the wire contract — both sides must agree
 // on these exact bytes.
 var passiveAuthDomain = []byte("ynp/libp2p-passive-auth/v1")
-var operatorAuthDomain = []byte("ynp/operator-auth/v2")
+var operatorAuthDomain = []byte("ynp/operator-auth/v1")
 
 // Role is the outcome class of a successful handshake.
 type Role uint8
