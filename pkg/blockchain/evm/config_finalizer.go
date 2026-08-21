@@ -409,7 +409,7 @@ func (f *ConfigRegistryCommitFinalizer) Submit(ctx context.Context, packed []byt
 	if err != nil {
 		return "", err
 	}
-	if txID, done, err := f.VerifyCommit(ctx, key, checksum, p.Op); err != nil {
+	if txID, done, err := f.verifyCommit(ctx, key, checksum, p.Op); err != nil {
 		return "", err
 	} else if done {
 		return txID, nil
@@ -458,7 +458,15 @@ func (f *ConfigRegistryCommitFinalizer) Submit(ctx context.Context, packed []byt
 	return tx.Hash().Hex(), nil
 }
 
-func (f *ConfigRegistryCommitFinalizer) VerifyCommit(ctx context.Context, key [32]byte, checksum [32]byte, op string) (string, bool, error) {
+func (f *ConfigRegistryCommitFinalizer) VerifyCommit(ctx context.Context, key [32]byte, checksum [32]byte) (string, bool, error) {
+	return f.verifyCommit(ctx, key, checksum, configRegistryOpSetConfig)
+}
+
+func (f *ConfigRegistryCommitFinalizer) VerifyCommitWithData(ctx context.Context, key [32]byte, data []byte) (string, bool, error) {
+	return f.verifyCommit(ctx, key, crypto.Keccak256Hash(data), configRegistryOpSetConfigWithData)
+}
+
+func (f *ConfigRegistryCommitFinalizer) verifyCommit(ctx context.Context, key [32]byte, checksum [32]byte, op string) (string, bool, error) {
 	epoch, err := f.config.ConfigEpoch(&bind.CallOpts{Context: ctx}, key)
 	if err != nil {
 		return "", false, fmt.Errorf("read config epoch: %w", err)

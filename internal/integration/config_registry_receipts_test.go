@@ -223,12 +223,28 @@ func verifyConfigCommitIdempotency(ctx context.Context, t *testing.T, client *et
 	if got := countConfigWithDataCommitted(ctx, t, client, registry, issuer.id, repairKey, repairChecksum); got != 0 {
 		t.Fatalf("checksum-only commit emitted ConfigWithDataCommitted: got %d", got)
 	}
+	verifier := makeCommitFinalizers(ctx, t, client, registryAddr, payer, issuer)[0]
+	if txID, done, err := verifier.VerifyCommit(ctx, repairKey, repairChecksum); err != nil {
+		t.Fatalf("VerifyCommit after checksum-only write: %v", err)
+	} else if !done || txID != checksumTx {
+		t.Fatalf("VerifyCommit after checksum-only write = txID %q done %v, want txID %q done true", txID, done, checksumTx)
+	}
+	if txID, done, err := verifier.VerifyCommitWithData(ctx, repairKey, repairData); err != nil {
+		t.Fatalf("VerifyCommitWithData after checksum-only write: %v", err)
+	} else if done || txID != "" {
+		t.Fatalf("VerifyCommitWithData after checksum-only write = txID %q done %v, want empty txID done false", txID, done)
+	}
 	repairTx := writeConfigData(ctx, t, client, registryAddr, payer, issuer, repairKey, repairData)
 	if repairTx == "" || repairTx == checksumTx {
 		t.Fatalf("setConfigWithData repair did not submit a new tx: checksum=%q repair=%q", checksumTx, repairTx)
 	}
 	if got := countConfigWithDataCommitted(ctx, t, client, registry, issuer.id, repairKey, repairChecksum); got != 1 {
 		t.Fatalf("ConfigWithDataCommitted repair count = %d, want 1", got)
+	}
+	if txID, done, err := verifier.VerifyCommitWithData(ctx, repairKey, repairData); err != nil {
+		t.Fatalf("VerifyCommitWithData after repair write: %v", err)
+	} else if !done || txID != repairTx {
+		t.Fatalf("VerifyCommitWithData after repair write = txID %q done %v, want txID %q done true", txID, done, repairTx)
 	}
 
 	nonceBeforeSkip := readIssuerNonce(ctx, t, registry, issuer.id)
@@ -249,6 +265,11 @@ func verifyConfigCommitIdempotency(ctx context.Context, t *testing.T, client *et
 	firstChecksumTx := writeConfigChecksum(ctx, t, client, registryAddr, payer, issuer, checksumKey, checksumOnly)
 	if got := countConfigCommitted(ctx, t, client, registry, issuer.id, checksumKey, checksumOnly); got != 1 {
 		t.Fatalf("ConfigCommitted count after first checksum write = %d, want 1", got)
+	}
+	if txID, done, err := verifier.VerifyCommit(ctx, checksumKey, checksumOnly); err != nil {
+		t.Fatalf("VerifyCommit after first checksum write: %v", err)
+	} else if !done || txID != firstChecksumTx {
+		t.Fatalf("VerifyCommit after first checksum write = txID %q done %v, want txID %q done true", txID, done, firstChecksumTx)
 	}
 	nonceBeforeChecksumSkip := readIssuerNonce(ctx, t, registry, issuer.id)
 	secondChecksumTx := writeConfigChecksum(ctx, t, client, registryAddr, payer, issuer, checksumKey, checksumOnly)
