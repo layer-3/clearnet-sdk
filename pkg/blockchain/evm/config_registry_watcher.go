@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math/big"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
@@ -37,6 +39,7 @@ type ConfigRegistryCursorSource interface {
 type ConfigRegistryWatcherReader interface {
 	FilterConfigCommittedEvents(ctx context.Context, from, to uint64) ([]*ConfigRegistryConfigCommitted, error)
 	FilterConfigWithDataCommittedEvents(ctx context.Context, from, to uint64) ([]*ConfigRegistryConfigWithDataCommitted, error)
+	TransactionLogs(ctx context.Context, txHash common.Hash) ([]gethtypes.Log, error)
 }
 
 type blockNumberReader interface {
@@ -71,7 +74,7 @@ func NewConfigRegistryWatcher(client *ethclient.Client, registryAddr common.Addr
 	if registry == nil {
 		return nil, fmt.Errorf("config registry watcher: nil registry")
 	}
-	return newConfigRegistryWatcher(client, registryAddr, configRegistryBindingReader{registry: registry}, confirmations, handler)
+	return newConfigRegistryWatcher(client, registryAddr, configRegistryBindingReader{registry: registry, receipts: client}, confirmations, handler)
 }
 
 func newConfigRegistryWatcher(client blockNumberReader, registryAddr common.Address, registry ConfigRegistryWatcherReader, confirmations uint64, handler ConfigRegistryEventHandler) (*ConfigRegistryWatcher, error) {
@@ -244,6 +247,9 @@ func (w *ConfigRegistryWatcher) pollOnce(ctx context.Context) error {
 		if hasCursor && ev.BlockNumber == cur.BlockNumber && ev.LogIndex <= cur.LogIndex {
 			continue
 		}
+		if err := w.populateConfigEpoch(ctx, &ev); err != nil {
+			return err
+		}
 		if err := w.handler.HandleConfigRegistryEvent(ctx, ev); err != nil {
 			return fmt.Errorf("handle config registry event: %w", err)
 		}
@@ -312,8 +318,98 @@ func (w *ConfigRegistryWatcher) fetchEvents(ctx context.Context, from, to uint64
 	return out, nil
 }
 
+func (w *ConfigRegistryWatcher) populateConfigEpoch(ctx context.Context, ev *core.ConfigRegistryEvent) error {
+	if ev == nil {
+		return nil
+	}
+	var data []byte
+	if ev.HasData {
+		data = ev.Data
+	}
+	epoch, err := w.resolveConfigEpoch(ctx, ev.IssuerID, ev.Key, ev.Checksum, data, gethtypes.Log{
+		BlockNumber: ev.BlockNumber,
+		TxHash:      ev.TxHash,
+		Index:       ev.LogIndex,
+	})
+	if err != nil {
+		return err
+	}
+	ev.Epoch = epoch
+	return nil
+}
+
+func (w *ConfigRegistryWatcher) resolveConfigEpoch(ctx context.Context, issuerID common.Address, key [32]byte, checksum [32]byte, data []byte, registryLog gethtypes.Log) (uint64, error) {
+	logs, err := w.registry.TransactionLogs(ctx, registryLog.TxHash)
+	if err != nil {
+		return 0, fmt.Errorf("load tx logs %s: %w", registryLog.TxHash.Hex(), err)
+	}
+	parser, err := NewIConfigFilterer(issuerID, nil)
+	if err != nil {
+		return 0, fmt.Errorf("load config event parser: %w", err)
+	}
+	meta, err := IConfigMetaData.GetAbi()
+	if err != nil {
+		return 0, fmt.Errorf("parse IConfig ABI: %w", err)
+	}
+	var eventID common.Hash
+	if data == nil {
+		eventID = meta.Events["ConfigSet"].ID
+	} else {
+		eventID = meta.Events["ConfigSetWithData"].ID
+	}
+
+	var (
+		epoch uint64
+		found bool
+		best  uint
+	)
+	for _, raw := range logs {
+		if raw.Address != issuerID || raw.TxHash != registryLog.TxHash || raw.Index >= registryLog.Index || len(raw.Topics) == 0 || raw.Topics[0] != eventID {
+			continue
+		}
+		if data == nil {
+			ev, err := parser.ParseConfigSet(raw)
+			if err != nil {
+				return 0, fmt.Errorf("parse ConfigSet: %w", err)
+			}
+			if ev.Key != key || ev.Checksum != checksum {
+				continue
+			}
+			if !found || raw.Index > best {
+				epoch, found, best = ev.Epoch, true, raw.Index
+			}
+			continue
+		}
+
+		ev, err := parser.ParseConfigSetWithData(raw)
+		if err != nil {
+			return 0, fmt.Errorf("parse ConfigSetWithData: %w", err)
+		}
+		if ev.Key != key || ev.Checksum != checksum || !bytes.Equal(ev.Data, data) {
+			continue
+		}
+		if !found || raw.Index > best {
+			epoch, found, best = ev.Epoch, true, raw.Index
+		}
+	}
+	if !found {
+		event := "ConfigSet"
+		if data != nil {
+			event = "ConfigSetWithData"
+		}
+		return 0, fmt.Errorf("missing matching %s for registry event: issuer=%s key=0x%s checksum=0x%s tx=%s log=%d",
+			event, issuerID.Hex(), common.Bytes2Hex(key[:]), common.Bytes2Hex(checksum[:]), registryLog.TxHash.Hex(), registryLog.Index)
+	}
+	return epoch, nil
+}
+
 type configRegistryBindingReader struct {
 	registry *ConfigRegistry
+	receipts transactionReceiptReader
+}
+
+type transactionReceiptReader interface {
+	TransactionReceipt(ctx context.Context, txHash common.Hash) (*gethtypes.Receipt, error)
 }
 
 func (r configRegistryBindingReader) FilterConfigCommittedEvents(ctx context.Context, from, to uint64) ([]*ConfigRegistryConfigCommitted, error) {
@@ -344,6 +440,23 @@ func (r configRegistryBindingReader) FilterConfigWithDataCommittedEvents(ctx con
 	}
 	if err := it.Error(); err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+func (r configRegistryBindingReader) TransactionLogs(ctx context.Context, txHash common.Hash) ([]gethtypes.Log, error) {
+	if r.receipts == nil {
+		return nil, fmt.Errorf("config registry watcher: nil receipt reader")
+	}
+	receipt, err := r.receipts.TransactionReceipt(ctx, txHash)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]gethtypes.Log, 0, len(receipt.Logs))
+	for _, log := range receipt.Logs {
+		if log != nil {
+			out = append(out, *log)
+		}
 	}
 	return out, nil
 }

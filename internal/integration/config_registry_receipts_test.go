@@ -89,8 +89,12 @@ func TestIntegration_ConfigRegistryReceipts(t *testing.T) {
 
 	writeSignerPayload(ctx, t, client, registryAddr, deployer, issuer1, issuer1.addrs, issuer1.threshold)
 	writeSignerPayload(ctx, t, client, registryAddr, deployer, issuer2, issuer2.addrs, issuer2.threshold)
-	waitForSignerEvent(ctx, t, store, registryAddr, issuer1.id, issuer1.threshold)
-	waitForSignerEvent(ctx, t, store, registryAddr, issuer2.id, issuer2.threshold)
+	if ev := waitForSignerEvent(ctx, t, store, registryAddr, issuer1.id, issuer1.threshold); ev.Epoch != 1 {
+		t.Fatalf("issuer1 initial signer epoch = %d, want 1", ev.Epoch)
+	}
+	if ev := waitForSignerEvent(ctx, t, store, registryAddr, issuer2.id, issuer2.threshold); ev.Epoch != 1 {
+		t.Fatalf("issuer2 initial signer epoch = %d, want 1", ev.Epoch)
+	}
 
 	src, err := receipt.NewRegistrySignerSource(registryAddr, store)
 	if err != nil {
@@ -341,12 +345,16 @@ func verifyFilteredKeyAdvancesCursor(ctx context.Context, t *testing.T, client *
 func verifyMalformedPayloadRecovery(ctx context.Context, t *testing.T, client *ethclient.Client, registry common.Address, payer sign.Signer, store *configEventStore, src *receipt.RegistrySignerSource, issuer issuerFixture) {
 	t.Helper()
 	writeConfigData(ctx, t, client, registry, payer, issuer, receipt.ConfigRegistrySignersKey, []byte("not-json"))
-	waitForRawSignerEvent(ctx, t, store, registry, issuer.id, []byte("not-json"))
+	if ev := waitForRawSignerEvent(ctx, t, store, registry, issuer.id, []byte("not-json")); ev.Epoch != 2 {
+		t.Fatalf("malformed signer payload epoch = %d, want 2", ev.Epoch)
+	}
 	if _, err := src.LoadReceiptSigners(ctx, issuer.id); err == nil {
 		t.Fatal("malformed signer payload loaded successfully")
 	}
 	writeSignerPayload(ctx, t, client, registry, payer, issuer, issuer.addrs, issuer.threshold)
-	waitForSignerEvent(ctx, t, store, registry, issuer.id, issuer.threshold)
+	if ev := waitForSignerEvent(ctx, t, store, registry, issuer.id, issuer.threshold); ev.Epoch != 3 {
+		t.Fatalf("recovered signer payload epoch = %d, want 3", ev.Epoch)
+	}
 	if _, err := src.LoadReceiptSigners(ctx, issuer.id); err != nil {
 		t.Fatalf("valid signer payload did not recover source: %v", err)
 	}
@@ -368,7 +376,9 @@ func verifySignerPayloadOverwrite(ctx context.Context, t *testing.T, client *eth
 	next := makeIssuerKeys(t, 7)
 	nextThreshold := 4
 	writeSignerPayload(ctx, t, client, registry, payer, issuer, next.addrs, nextThreshold)
-	waitForSignerEvent(ctx, t, store, registry, issuer.id, nextThreshold)
+	if ev := waitForSignerEvent(ctx, t, store, registry, issuer.id, nextThreshold); ev.Epoch != 4 {
+		t.Fatalf("overwritten signer payload epoch = %d, want 4", ev.Epoch)
+	}
 
 	if err := verifier.VerifyMintReceipt(ctx, oldMint); err == nil {
 		t.Fatal("old signer set still verified after KEY_SIGNERS overwrite")
@@ -422,6 +432,9 @@ func verifyWatcherResumeFromCursor(ctx context.Context, t *testing.T, client *et
 	next := makeIssuerKeys(t, len(issuer.addrs))
 	writeSignerPayload(ctx, t, client, registryAddr, payer, issuer, next.addrs, issuer.threshold)
 	waitForSignerEventWrites(ctx, t, store, registryAddr, issuer.id, before+1)
+	if ev := waitForSignerEvent(ctx, t, store, registryAddr, issuer.id, issuer.threshold); ev.Epoch != 2 {
+		t.Fatalf("post-resume signer payload epoch = %d, want 2", ev.Epoch)
+	}
 	if got := store.eventWriteCount(registryAddr, issuer.id, receipt.ConfigRegistrySignersKey); got != before+1 {
 		t.Fatalf("resume watcher replayed old signer events: got writes %d want %d", got, before+1)
 	}
@@ -538,7 +551,7 @@ func makeTransactor(ctx context.Context, t *testing.T, client *ethclient.Client,
 	return txr
 }
 
-func waitForSignerEvent(ctx context.Context, t *testing.T, store *configEventStore, registry common.Address, issuer common.Address, threshold int) {
+func waitForSignerEvent(ctx context.Context, t *testing.T, store *configEventStore, registry common.Address, issuer common.Address, threshold int) core.ConfigRegistryEvent {
 	t.Helper()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -553,7 +566,7 @@ func waitForSignerEvent(ctx context.Context, t *testing.T, store *configEventSto
 				t.Fatalf("parse signer event payload: %v", err)
 			}
 			if len(set.Signers) > 0 && set.Threshold == threshold {
-				return
+				return ev
 			}
 		}
 		select {
@@ -564,7 +577,7 @@ func waitForSignerEvent(ctx context.Context, t *testing.T, store *configEventSto
 	}
 }
 
-func waitForRawSignerEvent(ctx context.Context, t *testing.T, store *configEventStore, registry common.Address, issuer common.Address, data []byte) {
+func waitForRawSignerEvent(ctx context.Context, t *testing.T, store *configEventStore, registry common.Address, issuer common.Address, data []byte) core.ConfigRegistryEvent {
 	t.Helper()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -574,7 +587,7 @@ func waitForRawSignerEvent(ctx context.Context, t *testing.T, store *configEvent
 			t.Fatalf("latest event: %v", err)
 		}
 		if ok && bytes.Equal(ev.Data, data) {
-			return
+			return ev
 		}
 		select {
 		case <-ctx.Done():
