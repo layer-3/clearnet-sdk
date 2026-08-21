@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
+	"math/big"
 	"os"
 	"sort"
 	"sync"
@@ -57,6 +58,7 @@ func TestIntegration_ConfigRegistryReceipts(t *testing.T) {
 	issuer2Keys := makeIssuerKeys(t, 4)
 	issuer1 := registerIssuer(ctx, t, client, registryAddr, deployer, issuer1Keys, 5)
 	issuer2 := registerIssuer(ctx, t, client, registryAddr, deployer, issuer2Keys, 3)
+	verifyConfigCommitIdempotency(ctx, t, client, registryAddr, registry, deployer, issuer1)
 
 	store := newConfigEventStore()
 	forwarder, err := evm.NewConfigRegistryEventForwarder(
@@ -179,6 +181,82 @@ func writeConfigData(ctx context.Context, t *testing.T, client *ethclient.Client
 		t.Fatalf("commit submit: %v", err)
 	}
 	return txID
+}
+
+func writeConfigChecksum(ctx context.Context, t *testing.T, client *ethclient.Client, registry common.Address, payer sign.Signer, issuer issuerFixture, key [32]byte, checksum [32]byte) string {
+	t.Helper()
+	finalizers := makeCommitFinalizers(ctx, t, client, registry, payer, issuer)
+	packed, err := finalizers[0].Pack(ctx, key, checksum)
+	if err != nil {
+		t.Fatalf("checksum commit pack: %v", err)
+	}
+	sigs := make([][]byte, 0, len(finalizers))
+	for i, f := range finalizers {
+		if err := f.Validate(ctx, packed, key, checksum); err != nil {
+			t.Fatalf("checksum commit validate[%d]: %v", i, err)
+		}
+		sig, err := f.Sign(ctx, packed)
+		if err != nil {
+			t.Fatalf("checksum commit sign[%d]: %v", i, err)
+		}
+		sigs = append(sigs, sig)
+	}
+	txID, err := finalizers[0].Submit(ctx, packed, sigs)
+	if err != nil {
+		t.Fatalf("checksum commit submit: %v", err)
+	}
+	return txID
+}
+
+func verifyConfigCommitIdempotency(ctx context.Context, t *testing.T, client *ethclient.Client, registryAddr common.Address, registry *evm.ConfigRegistry, payer sign.Signer, issuer issuerFixture) {
+	t.Helper()
+	var repairKey [32]byte
+	repairKey[31] = 0xD1
+	repairData := []byte("payload initially missing")
+	repairChecksum := crypto.Keccak256Hash(repairData)
+
+	checksumTx := writeConfigChecksum(ctx, t, client, registryAddr, payer, issuer, repairKey, repairChecksum)
+	if got := countConfigWithDataCommitted(ctx, t, client, registry, issuer.id, repairKey, repairChecksum); got != 0 {
+		t.Fatalf("checksum-only commit emitted ConfigWithDataCommitted: got %d", got)
+	}
+	repairTx := writeConfigData(ctx, t, client, registryAddr, payer, issuer, repairKey, repairData)
+	if repairTx == "" || repairTx == checksumTx {
+		t.Fatalf("setConfigWithData repair did not submit a new tx: checksum=%q repair=%q", checksumTx, repairTx)
+	}
+	if got := countConfigWithDataCommitted(ctx, t, client, registry, issuer.id, repairKey, repairChecksum); got != 1 {
+		t.Fatalf("ConfigWithDataCommitted repair count = %d, want 1", got)
+	}
+
+	nonceBeforeSkip := readIssuerNonce(ctx, t, registry, issuer.id)
+	skipTx := writeConfigData(ctx, t, client, registryAddr, payer, issuer, repairKey, repairData)
+	if skipTx != repairTx {
+		t.Fatalf("setConfigWithData idempotent tx = %q, want original repair tx %q", skipTx, repairTx)
+	}
+	if nonceAfterSkip := readIssuerNonce(ctx, t, registry, issuer.id); nonceAfterSkip.Cmp(nonceBeforeSkip) != 0 {
+		t.Fatalf("setConfigWithData idempotent skip changed nonce: before=%s after=%s", nonceBeforeSkip, nonceAfterSkip)
+	}
+	if got := countConfigWithDataCommitted(ctx, t, client, registry, issuer.id, repairKey, repairChecksum); got != 1 {
+		t.Fatalf("ConfigWithDataCommitted idempotent count = %d, want 1", got)
+	}
+
+	var checksumKey [32]byte
+	checksumKey[31] = 0xD2
+	checksumOnly := crypto.Keccak256Hash([]byte("checksum-only idempotency"))
+	firstChecksumTx := writeConfigChecksum(ctx, t, client, registryAddr, payer, issuer, checksumKey, checksumOnly)
+	if got := countConfigCommitted(ctx, t, client, registry, issuer.id, checksumKey, checksumOnly); got != 1 {
+		t.Fatalf("ConfigCommitted count after first checksum write = %d, want 1", got)
+	}
+	nonceBeforeChecksumSkip := readIssuerNonce(ctx, t, registry, issuer.id)
+	secondChecksumTx := writeConfigChecksum(ctx, t, client, registryAddr, payer, issuer, checksumKey, checksumOnly)
+	if secondChecksumTx != firstChecksumTx {
+		t.Fatalf("setConfig idempotent tx = %q, want original tx %q", secondChecksumTx, firstChecksumTx)
+	}
+	if nonceAfterChecksumSkip := readIssuerNonce(ctx, t, registry, issuer.id); nonceAfterChecksumSkip.Cmp(nonceBeforeChecksumSkip) != 0 {
+		t.Fatalf("setConfig idempotent skip changed nonce: before=%s after=%s", nonceBeforeChecksumSkip, nonceAfterChecksumSkip)
+	}
+	if got := countConfigCommitted(ctx, t, client, registry, issuer.id, checksumKey, checksumOnly); got != 1 {
+		t.Fatalf("ConfigCommitted count after idempotent checksum write = %d, want 1", got)
+	}
 }
 
 func verifyIssuerReceipts(ctx context.Context, t *testing.T, verifier *receipt.ReceiptVerifier, resolver withdrawalIssuerMap, issuer issuerFixture, other issuerFixture) {
@@ -540,6 +618,61 @@ func waitForSignerEventWrites(ctx context.Context, t *testing.T, store *configEv
 		case <-ticker.C:
 		}
 	}
+}
+
+func countConfigCommitted(ctx context.Context, t *testing.T, client *ethclient.Client, registry *evm.ConfigRegistry, issuer common.Address, key [32]byte, checksum [32]byte) int {
+	t.Helper()
+	head, err := client.BlockNumber(ctx)
+	if err != nil {
+		t.Fatalf("block number: %v", err)
+	}
+	it, err := registry.FilterConfigCommitted(&bind.FilterOpts{Context: ctx, Start: 0, End: &head}, []common.Address{issuer}, [][32]byte{key})
+	if err != nil {
+		t.Fatalf("filter ConfigCommitted: %v", err)
+	}
+	defer it.Close()
+	var count int
+	for it.Next() {
+		if it.Event.Checksum == checksum {
+			count++
+		}
+	}
+	if err := it.Error(); err != nil {
+		t.Fatalf("iterate ConfigCommitted: %v", err)
+	}
+	return count
+}
+
+func countConfigWithDataCommitted(ctx context.Context, t *testing.T, client *ethclient.Client, registry *evm.ConfigRegistry, issuer common.Address, key [32]byte, checksum [32]byte) int {
+	t.Helper()
+	head, err := client.BlockNumber(ctx)
+	if err != nil {
+		t.Fatalf("block number: %v", err)
+	}
+	it, err := registry.FilterConfigWithDataCommitted(&bind.FilterOpts{Context: ctx, Start: 0, End: &head}, []common.Address{issuer}, [][32]byte{key})
+	if err != nil {
+		t.Fatalf("filter ConfigWithDataCommitted: %v", err)
+	}
+	defer it.Close()
+	var count int
+	for it.Next() {
+		if it.Event.Checksum == checksum {
+			count++
+		}
+	}
+	if err := it.Error(); err != nil {
+		t.Fatalf("iterate ConfigWithDataCommitted: %v", err)
+	}
+	return count
+}
+
+func readIssuerNonce(ctx context.Context, t *testing.T, registry *evm.ConfigRegistry, issuer common.Address) *big.Int {
+	t.Helper()
+	nonce, err := registry.Nonce(&bind.CallOpts{Context: ctx}, issuer)
+	if err != nil {
+		t.Fatalf("read issuer nonce: %v", err)
+	}
+	return new(big.Int).Set(nonce)
 }
 
 func makeIssuerKeys(t *testing.T, n int) issuerKeys {
