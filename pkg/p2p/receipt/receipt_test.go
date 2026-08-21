@@ -70,7 +70,7 @@ func TestReceipt_MintRejected(t *testing.T) {
 	}, nil).Register(srv)
 
 	ack, err := NewClient(cli, srv.ID(), nil).SendMintReceipt(ctx, &core.MintReceipt{
-		TxID: "tx/1", Account: "yellow://x", AssetURI: "yellow://ynet/asset/custody/evm/1/0x0", Amount: decimal.NewFromInt(5),
+		TxID: "tx/1", Account: "yellow://x", AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0x0", Amount: decimal.NewFromInt(5),
 	})
 	if err != nil {
 		t.Fatalf("SendMintReceipt: %v", err)

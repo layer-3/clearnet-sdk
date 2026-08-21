@@ -3,9 +3,11 @@ package core
 import (
 	"fmt"
 	"strings"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
-const DefaultIssuer = "custody"
+const DefaultIssuer = "0x0000000000000000000000000000000000000000"
 
 // AssetURI identifies an issuer-defined asset in protocol payloads.
 //
@@ -23,13 +25,17 @@ type AssetURIParts struct {
 //
 //	yellow://ynet/asset/<issuer>/<asset-id>
 //
-// If issuer is empty, DefaultIssuer is used. The issuer is lowercased; the
+// If issuer is empty, DefaultIssuer is used. The issuer must be a valid EVM
+// address; it is normalized to its canonical 0x-prefixed hex form. The
 // issuer-owned asset id is preserved as supplied.
 func NewAssetURI(issuer, assetID string) (AssetURI, error) {
 	if issuer == "" {
 		issuer = DefaultIssuer
 	}
-	issuer = strings.ToLower(issuer)
+	if !common.IsHexAddress(issuer) {
+		return "", fmt.Errorf("asset URI issuer must be an EVM address: %q", issuer)
+	}
+	issuer = strings.ToLower(common.HexToAddress(issuer).Hex())
 	uri := AssetURI(URIScheme + "://" + DefaultNetwork + "/asset/" + issuer + "/" + assetID)
 	if err := ValidateAssetURI(uri); err != nil {
 		return "", err
@@ -77,7 +83,7 @@ func ValidateAssetURI(uri AssetURI) error {
 		return fmt.Errorf("asset URI path must be issuer/asset-id: %q", raw)
 	}
 	if !isValidAssetIssuer(parts[0]) {
-		return fmt.Errorf("asset URI issuer must contain only lowercase letters, numbers, and dashes: %q", parts[0])
+		return fmt.Errorf("asset URI issuer must be an EVM address: %q", parts[0])
 	}
 	if containsSpace(parts[1]) {
 		return fmt.Errorf("asset URI asset id must not contain spaces: %q", parts[1])
@@ -86,22 +92,19 @@ func ValidateAssetURI(uri AssetURI) error {
 }
 
 func isValidAssetIssuer(s string) bool {
-	if s == "" {
-		return false
+	return common.IsHexAddress(s)
+}
+
+// IssuerIDFromAssetURI returns the ConfigRegistry issuer id encoded in uri.
+func IssuerIDFromAssetURI(uri AssetURI) (common.Address, error) {
+	parts, err := ParseAssetURI(uri)
+	if err != nil {
+		return common.Address{}, err
 	}
-	for _, c := range s {
-		if c >= 'a' && c <= 'z' {
-			continue
-		}
-		if c >= '0' && c <= '9' {
-			continue
-		}
-		if c == '-' {
-			continue
-		}
-		return false
+	if !common.IsHexAddress(parts.Issuer) {
+		return common.Address{}, fmt.Errorf("asset URI issuer must be an EVM address: %q", parts.Issuer)
 	}
-	return true
+	return common.HexToAddress(parts.Issuer), nil
 }
 
 func containsSpace(s string) bool {

@@ -28,7 +28,7 @@ func TestComputeVaultWithdrawalID_FieldSensitivity(t *testing.T) {
 		{"BlockHash", func(in *withdrawalIDInput) { in.blockHash[0] ^= 0xff }},
 		{"EntryIndex", func(in *withdrawalIDInput) { in.entryIndex++ }},
 		{"AssetURI", func(in *withdrawalIDInput) {
-			in.assetURI = "yellow://ynet/asset/custody/evm/1/0xa0b8000000000000000000000000000000000002"
+			in.assetURI = "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0xa0b8000000000000000000000000000000000002"
 		}},
 		{"Amount", func(in *withdrawalIDInput) { in.amount = decimal.NewFromInt(2) }},
 		{"Recipient", func(in *withdrawalIDInput) { in.recipient = "rRecipient2" }},
@@ -48,11 +48,11 @@ func TestComputeVaultWithdrawalID_FieldSensitivity(t *testing.T) {
 
 func TestComputeVaultWithdrawalID_NoVariableFieldBoundaryCollision(t *testing.T) {
 	inA := withdrawalIDInputFixture()
-	inA.assetURI = "yellow://ynet/asset/custody/a"
+	inA.assetURI = "yellow://ynet/asset/0x0000000000000000000000000000000000001234/a"
 	inA.recipient = "bc"
 
 	inB := withdrawalIDInputFixture()
-	inB.assetURI = "yellow://ynet/asset/custody/ab"
+	inB.assetURI = "yellow://ynet/asset/0x0000000000000000000000000000000000001234/ab"
 	inB.recipient = "c"
 
 	a := computeWithdrawalIDFromFixture(inA)
@@ -77,7 +77,7 @@ func withdrawalIDInputFixture() withdrawalIDInput {
 		accountID:  [32]byte{0x11},
 		blockHash:  [32]byte{0x22},
 		entryIndex: 7,
-		assetURI:   "yellow://ynet/asset/custody/evm/1/0xa0b8000000000000000000000000000000000001",
+		assetURI:   "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0xa0b8000000000000000000000000000000000001",
 		amount:     decimal.NewFromInt(1),
 		recipient:  "rRecipient",
 		nonce:      42,

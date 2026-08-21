@@ -1,14 +1,17 @@
 # EVM contract artifacts
 
 Vendored **ABI + deploy bytecode** for the EVM contracts this package binds —
-`<Contract>.abi` (interface JSON) and `<Contract>.bin` (deploy bytecode hex).
-They are the source of truth for the generated `../*_abi.go` bindings: the
-`abi_refresher` command reads these files and emits the bindings, so binding
-regeneration needs **no Solidity source, no forge, no jq** in this repo.
+`<Contract>.abi` (interface JSON) and, for deployable contracts,
+`<Contract>.bin` (deploy bytecode hex). Interface-only bindings such as
+`IConfig.abi` intentionally do not have a `.bin` file. These artifacts are the
+source of truth for the generated `../*_abi.go` bindings: the `abi_refresher`
+command reads them and emits the bindings, so binding regeneration needs
+**no Solidity source, no forge, no jq** in this repo.
 
 The `.abi` is the contract's wire interface — a change here is a reviewable
-diff. The `.bin` is kept so `Deploy*` helpers work (clearnet's devnet/tests and
-the integration tests deploy `Custody`); this package itself only calls/reads.
+diff. The `.bin` is kept where deployment helpers are needed (clearnet's
+devnet/tests and integration tests deploy contracts such as `Custody` and
+`ConfigRegistry`); interface-only bindings are call/filter surfaces.
 
 ## Regenerate the bindings (common case)
 

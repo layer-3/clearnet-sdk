@@ -37,11 +37,12 @@ func TestWireGoldens(t *testing.T) {
 				err := (&AuthResponse{
 					Signature: []byte{0xde, 0xad, 0xbe, 0xef},
 					Address:   "0x" + strings.Repeat("1", 40),
+					IssuerID:  "0x" + strings.Repeat("2", 40),
 				}).MarshalCBOR(&buf)
 				return buf.Bytes(), err
 			},
-			// 82 = array(2); 44 deadbeef = bstr len 4; 782a = tstr len 42; 3078 = "0x"; then 40×'1'.
-			wantHex: "8244deadbeef782a3078" + strings.Repeat("31", 40),
+			// 83 = array(3); 44 deadbeef = bstr len 4; 782a = tstr len 42; then address and issuer id.
+			wantHex: "8344deadbeef782a3078" + strings.Repeat("31", 40) + "782a3078" + strings.Repeat("32", 40),
 		},
 		{
 			name: "ReceiptAck true/ok",
@@ -98,7 +99,7 @@ func TestWireRoundTrip(t *testing.T) {
 	})
 
 	t.Run("AuthResponse", func(t *testing.T) {
-		in := &AuthResponse{Signature: bytes.Repeat([]byte{0x7}, 65), Address: "0xDeadBeef"}
+		in := &AuthResponse{Signature: bytes.Repeat([]byte{0x7}, 65), Address: "0xDeadBeef", IssuerID: "0xIssuer"}
 		var buf bytes.Buffer
 		if err := in.MarshalCBOR(&buf); err != nil {
 			t.Fatal(err)
@@ -107,7 +108,7 @@ func TestWireRoundTrip(t *testing.T) {
 		if err := out.UnmarshalCBOR(&buf); err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(out.Signature, in.Signature) || out.Address != in.Address {
+		if !bytes.Equal(out.Signature, in.Signature) || out.Address != in.Address || out.IssuerID != in.IssuerID {
 			t.Errorf("round-trip mismatch: %+v", out)
 		}
 	})

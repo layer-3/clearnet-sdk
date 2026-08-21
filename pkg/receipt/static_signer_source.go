@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
 
 // StaticSignerSource returns a fixed signer set and threshold supplied at
@@ -44,8 +46,8 @@ func NewStaticSignerSource(signers []common.Address, threshold int) (*StaticSign
 
 // Load returns the configured signers and threshold. The slice is copied
 // so callers can mutate it without affecting the source.
-func (s *StaticSignerSource) Load(_ context.Context) ([]common.Address, int, error) {
+func (s *StaticSignerSource) LoadReceiptSigners(_ context.Context, _ common.Address) (core.ReceiptSignerSet, error) {
 	out := make([]common.Address, len(s.signers))
 	copy(out, s.signers)
-	return out, s.threshold, nil
+	return core.ReceiptSignerSet{Signers: out, Threshold: s.threshold}, nil
 }

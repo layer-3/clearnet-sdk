@@ -10,150 +10,127 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+
+	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
 
-// ChecksumSource yields the latest confirmed content checksum for a registry
-// key. The EVM ConfigWatcher satisfies it via LatestChecksum; the interface
-// keeps this package decoupled from the blockchain bindings.
-type ChecksumSource interface {
-	LatestChecksum(key [32]byte) (checksum [32]byte, ok bool)
+var ConfigRegistrySignersKey = [32]byte(crypto.Keccak256Hash([]byte("clearnet/issuer-receipt-signers")))
+
+// ConfigRegistryEventReader is the read side of the config event store used by
+// RegistrySignerSource. The EVM event forwarder defines the write side; an
+// integrator store can implement both.
+type ConfigRegistryEventReader interface {
+	LatestConfigRegistryEvent(ctx context.Context, registry common.Address, issuerID common.Address, key [32]byte) (core.ConfigRegistryEvent, bool, error)
 }
 
-// PayloadStore resolves a content checksum to the bytes whose keccak256 equals
-// it. For custody this is the local seeded config_versions store; for an
-// external verifier it is wherever the published payload is mirrored. The
-// RegistrySignerSource re-verifies the checksum, so a wrong or tampered store
-// cannot inject an unauthorised signer set.
-type PayloadStore interface {
-	Payload(ctx context.Context, checksum [32]byte) ([]byte, error)
-}
-
-// RegistrySignerSource is the on-chain-anchored SignerSource (ADR-017): the
-// authoritative signer set is whatever payload hashes to the checksum the
-// registry has committed under KEY_SIGNERS. It composes a ChecksumSource (the
-// confirmed on-chain checksum) with a PayloadStore (the content-addressed
-// bytes), verifies keccak256(payload) == checksum, and decodes (signers,
-// threshold). It implements SignerSource, so swapping it in for
-// StaticSignerSource needs no verifier-side change.
+// RegistrySignerSource resolves issuer receipt signers from the latest
+// ConfigRegistry KEY_SIGNERS payload event.
 type RegistrySignerSource struct {
-	key       [32]byte
-	checksums ChecksumSource
-	store     PayloadStore
+	registry common.Address
+	events   ConfigRegistryEventReader
 }
 
-var _ SignerSource = (*RegistrySignerSource)(nil)
+var _ core.ReceiptSignerSource = (*RegistrySignerSource)(nil)
 
-// NewRegistrySignerSource binds a source to the KEY_SIGNERS registry key.
-func NewRegistrySignerSource(key [32]byte, checksums ChecksumSource, store PayloadStore) (*RegistrySignerSource, error) {
-	if checksums == nil {
-		return nil, fmt.Errorf("registry signer source: nil checksum source")
+func NewRegistrySignerSource(registry common.Address, events ConfigRegistryEventReader) (*RegistrySignerSource, error) {
+	if events == nil {
+		return nil, fmt.Errorf("registry signer source: nil event reader")
 	}
-	if store == nil {
-		return nil, fmt.Errorf("registry signer source: nil payload store")
-	}
-	return &RegistrySignerSource{key: key, checksums: checksums, store: store}, nil
+	return &RegistrySignerSource{registry: registry, events: events}, nil
 }
 
-// Load resolves the current KEY_SIGNERS checksum, fetches and verifies the
-// matching payload, and returns the decoded signer set and threshold. It errors
-// (rather than returning a stale set) if no checksum is confirmed yet or the
-// payload is missing — the verifier keeps its last good set until a refresh
-// succeeds.
-func (s *RegistrySignerSource) Load(ctx context.Context) ([]common.Address, int, error) {
-	checksum, ok := s.checksums.LatestChecksum(s.key)
-	if !ok {
-		return nil, 0, fmt.Errorf("registry signer source: no confirmed checksum for key")
-	}
-	payload, err := s.store.Payload(ctx, checksum)
+func (s *RegistrySignerSource) LoadReceiptSigners(ctx context.Context, issuerID common.Address) (core.ReceiptSignerSet, error) {
+	ev, ok, err := s.events.LatestConfigRegistryEvent(ctx, s.registry, issuerID, ConfigRegistrySignersKey)
 	if err != nil {
-		return nil, 0, fmt.Errorf("registry signer source: load payload: %w", err)
+		return core.ReceiptSignerSet{}, fmt.Errorf("registry signer source: load event: %w", err)
 	}
-	var got [32]byte
-	copy(got[:], crypto.Keccak256(payload))
-	if got != checksum {
-		return nil, 0, fmt.Errorf("registry signer source: payload checksum %s != on-chain %s",
-			"0x"+common.Bytes2Hex(got[:]), "0x"+common.Bytes2Hex(checksum[:]))
+	if !ok {
+		return core.ReceiptSignerSet{}, fmt.Errorf("registry signer source: no signer payload for issuer %s", issuerID.Hex())
 	}
-	return ParseSignerPayload(payload)
+	if ev.Registry != s.registry {
+		return core.ReceiptSignerSet{}, fmt.Errorf("registry signer source: event registry %s != %s", ev.Registry.Hex(), s.registry.Hex())
+	}
+	if ev.IssuerID != issuerID {
+		return core.ReceiptSignerSet{}, fmt.Errorf("registry signer source: event issuer %s != %s", ev.IssuerID.Hex(), issuerID.Hex())
+	}
+	if ev.Key != ConfigRegistrySignersKey {
+		return core.ReceiptSignerSet{}, fmt.Errorf("registry signer source: unexpected key 0x%s", common.Bytes2Hex(ev.Key[:]))
+	}
+	if !ev.HasData {
+		return core.ReceiptSignerSet{}, fmt.Errorf("registry signer source: signer event has no data")
+	}
+	if crypto.Keccak256Hash(ev.Data) != ev.Checksum {
+		return core.ReceiptSignerSet{}, fmt.Errorf("registry signer source: payload checksum mismatch")
+	}
+	return ParseSignerPayload(ev.Data)
 }
 
-// SignerPayloadVersion is bumped whenever the canonical signer-payload wire
-// format changes in a way that would alter the checksum for an unchanged signer
-// intent. It is part of the hashed payload, so a version skew between the
-// producer (custody) and a consumer surfaces as a checksum mismatch rather than
-// a silent disagreement.
 const SignerPayloadVersion uint32 = 1
 
-// signerPayload is the canonical, content-addressed projection of the custody
-// receipt signer set published under the registry's KEY_SIGNERS (ADR-017). The
-// threshold travels inside the payload — there is no separate registry entry.
-// Both custody (which seeds + commits it) and the receipt verifier (which reads
-// it via RegistrySignerSource) marshal/parse through this one definition, so the
-// wire format has a single source of truth.
 type signerPayload struct {
 	Version   uint32   `json:"v"`
 	Threshold int      `json:"threshold"`
 	Signers   []string `json:"signers"` // ascending, lowercase 0x hex
 }
 
-// MarshalSignerPayload returns the deterministic byte encoding of (signers,
-// threshold): JSON with stable field order, signers deduplicated, lowercased,
-// and sorted ascending, so two callers agreeing on intent produce byte-identical
-// output (and therefore an identical keccak256 checksum).
 func MarshalSignerPayload(signers []common.Address, threshold int) ([]byte, error) {
-	if len(signers) == 0 {
+	return MarshalReceiptSignerPayload(core.ReceiptSignerSet{Signers: signers, Threshold: threshold})
+}
+
+// MarshalReceiptSignerPayload returns the deterministic byte encoding of a
+// receipt signer set for ConfigRegistrySignersKey.
+func MarshalReceiptSignerPayload(set core.ReceiptSignerSet) ([]byte, error) {
+	if len(set.Signers) == 0 {
 		return nil, fmt.Errorf("signer payload: empty signer set")
 	}
-	if threshold <= 0 || threshold > len(signers) {
-		return nil, fmt.Errorf("signer payload: threshold %d out of range for %d signers", threshold, len(signers))
+	if set.Threshold <= 0 || set.Threshold > len(set.Signers) {
+		return nil, fmt.Errorf("signer payload: threshold %d out of range for %d signers", set.Threshold, len(set.Signers))
 	}
-	seen := make(map[common.Address]struct{}, len(signers))
-	hexes := make([]string, 0, len(signers))
-	for _, s := range signers {
+	seen := make(map[common.Address]struct{}, len(set.Signers))
+	hexes := make([]string, 0, len(set.Signers))
+	for _, s := range set.Signers {
 		if _, dup := seen[s]; dup {
 			return nil, fmt.Errorf("signer payload: duplicate signer %s", s.Hex())
+		}
+		if s == (common.Address{}) {
+			return nil, fmt.Errorf("signer payload: zero address is not a valid signer")
 		}
 		seen[s] = struct{}{}
 		hexes = append(hexes, strings.ToLower(s.Hex()))
 	}
 	sort.Strings(hexes)
-	return json.Marshal(signerPayload{Version: SignerPayloadVersion, Threshold: threshold, Signers: hexes})
+	return json.Marshal(signerPayload{Version: SignerPayloadVersion, Threshold: set.Threshold, Signers: hexes})
 }
 
-// ParseSignerPayload decodes bytes produced by MarshalSignerPayload back into a
-// signer set and threshold, validating the version, the addresses, ascending
-// order, and the threshold bound.
-func ParseSignerPayload(b []byte) ([]common.Address, int, error) {
+func ParseSignerPayload(b []byte) (core.ReceiptSignerSet, error) {
 	var p signerPayload
 	if err := json.Unmarshal(b, &p); err != nil {
-		return nil, 0, fmt.Errorf("signer payload: decode: %w", err)
+		return core.ReceiptSignerSet{}, fmt.Errorf("signer payload: decode: %w", err)
 	}
 	if p.Version != SignerPayloadVersion {
-		return nil, 0, fmt.Errorf("signer payload: unsupported version %d (want %d)", p.Version, SignerPayloadVersion)
+		return core.ReceiptSignerSet{}, fmt.Errorf("signer payload: unsupported version %d (want %d)", p.Version, SignerPayloadVersion)
 	}
 	if len(p.Signers) == 0 {
-		return nil, 0, fmt.Errorf("signer payload: empty signer set")
+		return core.ReceiptSignerSet{}, fmt.Errorf("signer payload: empty signer set")
 	}
 	out := make([]common.Address, 0, len(p.Signers))
 	var last []byte
 	for _, s := range p.Signers {
 		if !common.IsHexAddress(s) {
-			return nil, 0, fmt.Errorf("signer payload: %q is not a hex address", s)
+			return core.ReceiptSignerSet{}, fmt.Errorf("signer payload: %q is not a hex address", s)
 		}
 		a := common.HexToAddress(s)
 		if a == (common.Address{}) {
-			// ConfigGovernor rejects the zero operator on-chain, but ParseSignerPayload
-			// is reachable from any PayloadStore where that guard is out of scope.
-			return nil, 0, fmt.Errorf("signer payload: zero address is not a valid signer")
+			return core.ReceiptSignerSet{}, fmt.Errorf("signer payload: zero address is not a valid signer")
 		}
 		if last != nil && bytes.Compare(a[:], last) <= 0 {
-			return nil, 0, fmt.Errorf("signer payload: signers not strictly ascending at %s", s)
+			return core.ReceiptSignerSet{}, fmt.Errorf("signer payload: signers not strictly ascending at %s", s)
 		}
 		last = a[:]
 		out = append(out, a)
 	}
 	if p.Threshold <= 0 || p.Threshold > len(out) {
-		return nil, 0, fmt.Errorf("signer payload: threshold %d out of range for %d signers", p.Threshold, len(out))
+		return core.ReceiptSignerSet{}, fmt.Errorf("signer payload: threshold %d out of range for %d signers", p.Threshold, len(out))
 	}
-	return out, p.Threshold, nil
+	return core.ReceiptSignerSet{Signers: out, Threshold: p.Threshold}, nil
 }
