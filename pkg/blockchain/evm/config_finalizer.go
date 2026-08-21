@@ -473,7 +473,18 @@ func (f *ConfigRegistryCommitFinalizer) VerifyCommit(ctx context.Context, key [3
 	if latest != checksum {
 		return "", false, nil
 	}
-	return f.lookupCommitTxID(ctx, key, checksum, op), true, nil
+	switch op {
+	case configRegistryOpSetConfig:
+		return f.lookupCommitTxID(ctx, key, checksum, op), true, nil
+	case configRegistryOpSetConfigWithData:
+		txID := f.lookupCommitTxID(ctx, key, checksum, op)
+		if txID == "" {
+			return "", false, nil
+		}
+		return txID, true, nil
+	default:
+		return "", false, fmt.Errorf("unsupported config registry op %q", op)
+	}
 }
 
 func (f *ConfigRegistryCommitFinalizer) validatePackedNonce(ctx context.Context, got string) error {
