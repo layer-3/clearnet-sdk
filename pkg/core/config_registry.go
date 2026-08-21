@@ -17,6 +17,7 @@ type ConfigRegistryEvent struct {
 	Checksum [32]byte
 	Data     []byte
 	HasData  bool
+	Epoch    uint64
 	NewNonce *big.Int
 
 	BlockNumber uint64
