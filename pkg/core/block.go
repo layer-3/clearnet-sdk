@@ -11,6 +11,11 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 )
 
+// MaxClusterSize is the protocol upper bound on a block's signing cluster.
+// The attestation bitmask has 256 bits, so larger clusters cannot bind every
+// validator to the aggregate signature.
+const MaxClusterSize = 256
+
 // BlockHeader is the signing-preimage projection of a sealed Block
 // (docs/specs/protocol/data-structures.md §5.3). It pulls out the fields the
 // BLS signature actually commits to — the six-tuple that becomes the

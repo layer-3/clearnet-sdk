@@ -10,6 +10,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
@@ -59,6 +60,16 @@ func makePubkey(seed byte) []byte {
 		pk[i] = seed ^ byte(i)
 	}
 	return pk
+}
+
+func TestNewBlockVerifier_NilLoggerUsesNoop(t *testing.T) {
+	v, err := NewBlockVerifier(new(ethclient.Client), common.HexToAddress("0x1"), 0, nil)
+	if err != nil {
+		t.Fatalf("NewBlockVerifier: %v", err)
+	}
+	if _, ok := v.logger.(log.NoopLogger); !ok {
+		t.Fatalf("logger type = %T, want log.NoopLogger", v.logger)
+	}
 }
 
 // TestAuthorizeValidators_RegisteredPubkeyAccepted is the canonical

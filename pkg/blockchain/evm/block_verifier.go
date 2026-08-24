@@ -47,6 +47,9 @@ func NewBlockVerifier(client *ethclient.Client, registryAddr common.Address, con
 	if registryAddr == (common.Address{}) {
 		return nil, errors.New("bls: registry address required")
 	}
+	if logger == nil {
+		logger = log.NewNoopLogger()
+	}
 	reg, err := NewClearnetRegistry(registryAddr, client)
 	if err != nil {
 		return nil, fmt.Errorf("bls: bind registry: %w", err)

@@ -108,7 +108,7 @@ func TestVerifyBlock_TamperedSigningMessage(t *testing.T) {
 	}
 }
 
-// TestVerifyBlock_RejectsKZero pins F-CONSENSUS-001 propagation.
+// TestVerifyBlock_RejectsKZero pins the signing-quorum lower bound.
 func TestVerifyBlock_RejectsKZero(t *testing.T) {
 	block, validators := blockFixture(t, 4, []int{0, 1, 2}, 4)
 	block.K = 0
@@ -118,6 +118,39 @@ func TestVerifyBlock_RejectsKZero(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(err.Error()), []byte("k=0")) {
 		t.Fatalf("expected k=0 in error, got %v", err)
+	}
+}
+
+// TestVerifyBlock_RejectsKAboveBitmaskCapacity prevents the uint64 Block.K
+// value from truncating when passed to VerifyClusterSignature's uint16 k.
+func TestVerifyBlock_RejectsKAboveBitmaskCapacity(t *testing.T) {
+	const oversizedK = 1<<16 + 1 // previously truncated to one at the uint16 conversion
+	block, validators := blockFixture(t, 4, []int{0, 1, 2}, oversizedK)
+
+	err := VerifyBlock(block, validators)
+	if err == nil {
+		t.Fatal("expected rejection when K exceeds the 256-validator bitmask capacity")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("k=65537")) {
+		t.Fatalf("expected rejected K value in error, got %v", err)
+	}
+}
+
+// TestVerifyBlock_RejectsOversizedValidatorRoster makes the [32]byte bitmask
+// contract explicit: entries above index 255 cannot be selected or bound to
+// the aggregate public key.
+func TestVerifyBlock_RejectsOversizedValidatorRoster(t *testing.T) {
+	block, validators := blockFixture(t, 4, []int{0, 1, 2}, 4)
+	for len(validators) <= core.MaxClusterSize {
+		validators = append(validators, validators[0])
+	}
+
+	err := VerifyBlock(block, validators)
+	if err == nil {
+		t.Fatal("expected rejection of validator roster with more than 256 entries")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("257 entries")) {
+		t.Fatalf("expected roster size in error, got %v", err)
 	}
 }
 
