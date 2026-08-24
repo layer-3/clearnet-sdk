@@ -129,17 +129,7 @@ func (w *ConfigRegistryWatcher) Cursor() (core.ConfigRegistryCursor, bool) {
 	return w.cursor, w.hasCursor
 }
 
-// Backfill initializes the in-memory cursor from the durable cursor source. If
-// no cursor exists, it starts from a recent confirmed-block lookback so payload
-// events committed shortly before startup can still be replayed into the store.
-func (w *ConfigRegistryWatcher) Backfill(ctx context.Context) error {
-	w.mu.RLock()
-	started := w.started
-	w.mu.RUnlock()
-	if started {
-		return fmt.Errorf("config registry watcher: Backfill called after Watch started")
-	}
-
+func (w *ConfigRegistryWatcher) initCursor(ctx context.Context) error {
 	if w.cursorSource != nil {
 		cur, ok, err := w.cursorSource.LatestConfigRegistryCursor(ctx, w.registryAddr)
 		if err != nil {
@@ -177,18 +167,31 @@ func (w *ConfigRegistryWatcher) Backfill(ctx context.Context) error {
 	w.hasCursor = false
 	w.watermark = start
 	w.mu.Unlock()
-	w.logger.Info("ConfigRegistryWatcher backfill complete",
+	w.logger.Info("ConfigRegistryWatcher cursor initialized",
 		"registry", w.registryAddr.Hex(), "watermark", start, "lookback", w.lookbackBlocks)
 	return nil
 }
 
 func (w *ConfigRegistryWatcher) Watch(ctx context.Context) error {
 	w.mu.Lock()
+	if w.started {
+		w.mu.Unlock()
+		return fmt.Errorf("config registry watcher: Watch already started")
+	}
 	w.started = true
 	w.mu.Unlock()
+	if err := w.initCursor(ctx); err != nil {
+		w.mu.Lock()
+		w.started = false
+		w.mu.Unlock()
+		return err
+	}
 	if w.client == nil {
 		<-ctx.Done()
 		return nil
+	}
+	if err := w.pollOnce(ctx); err != nil {
+		w.logger.Debug("ConfigRegistryWatcher initial poll failed", "error", err)
 	}
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()

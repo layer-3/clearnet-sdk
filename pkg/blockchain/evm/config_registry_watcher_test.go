@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -91,7 +92,16 @@ func (h *captureConfigRegistryHandler) HandleConfigRegistryEvent(_ context.Conte
 	return nil
 }
 
-func TestConfigRegistryWatcher_BackfillFromCursor(t *testing.T) {
+type channelConfigRegistryHandler struct {
+	events chan core.ConfigRegistryEvent
+}
+
+func (h channelConfigRegistryHandler) HandleConfigRegistryEvent(_ context.Context, ev core.ConfigRegistryEvent) error {
+	h.events <- ev
+	return nil
+}
+
+func TestConfigRegistryWatcher_InitCursorFromCursor(t *testing.T) {
 	registry := common.HexToAddress("0x000000000000000000000000000000000000beef")
 	handler := &captureConfigRegistryHandler{}
 	w, err := newConfigRegistryWatcher(fakeHead{head: 200}, registry, &fakeConfigRegistryWatcherReader{}, 12, handler)
@@ -100,8 +110,8 @@ func TestConfigRegistryWatcher_BackfillFromCursor(t *testing.T) {
 	}
 	cur := core.ConfigRegistryCursor{Registry: registry, BlockNumber: 123, LogIndex: 4, TxHash: common.HexToHash("0xabc")}
 	w.SetCursorSource(fakeConfigRegistryCursorSource{cursor: cur, ok: true})
-	if err := w.Backfill(context.Background()); err != nil {
-		t.Fatalf("backfill: %v", err)
+	if err := w.initCursor(context.Background()); err != nil {
+		t.Fatalf("init cursor: %v", err)
 	}
 	if got, ok := w.Cursor(); !ok || got != cur {
 		t.Fatalf("cursor: ok=%v got=%+v want=%+v", ok, got, cur)
@@ -111,7 +121,7 @@ func TestConfigRegistryWatcher_BackfillFromCursor(t *testing.T) {
 	}
 }
 
-func TestConfigRegistryWatcher_BackfillUsesLookbackWithoutCursor(t *testing.T) {
+func TestConfigRegistryWatcher_InitCursorUsesLookbackWithoutCursor(t *testing.T) {
 	registry := common.HexToAddress("0x000000000000000000000000000000000000beef")
 	handler := &captureConfigRegistryHandler{}
 	w, err := newConfigRegistryWatcher(fakeHead{head: 200}, registry, &fakeConfigRegistryWatcherReader{}, 12, handler)
@@ -119,8 +129,8 @@ func TestConfigRegistryWatcher_BackfillUsesLookbackWithoutCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.SetInitialLookback(50)
-	if err := w.Backfill(context.Background()); err != nil {
-		t.Fatalf("backfill: %v", err)
+	if err := w.initCursor(context.Background()); err != nil {
+		t.Fatalf("init cursor: %v", err)
 	}
 	// confirmed = 188; start = 188 - 50.
 	if wm := w.Watermark(); wm != 138 {
@@ -128,6 +138,51 @@ func TestConfigRegistryWatcher_BackfillUsesLookbackWithoutCursor(t *testing.T) {
 	}
 	if _, ok := w.Cursor(); ok {
 		t.Fatal("cursor should not be set without persisted cursor")
+	}
+}
+
+func TestConfigRegistryWatcher_WatchPollsImmediately(t *testing.T) {
+	registry := common.HexToAddress("0x000000000000000000000000000000000000beef")
+	issuer := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	var key [32]byte
+	key[31] = 0xA
+	ev := committedEvent(10, 2, issuer, key, [32]byte{0xAA}, 1)
+	reader := &fakeConfigRegistryWatcherReader{
+		committed: []*ConfigRegistryConfigCommitted{ev},
+	}
+	reader.addConfigSetLog(issuer, ev, 7)
+	handler := channelConfigRegistryHandler{events: make(chan core.ConfigRegistryEvent, 1)}
+	w, err := newConfigRegistryWatcher(fakeHead{head: 20}, registry, reader, 5, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetInitialLookback(20)
+	w.SetPollInterval(time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan error, 1)
+	go func() {
+		errs <- w.Watch(ctx)
+	}()
+
+	select {
+	case got := <-handler.events:
+		if got.BlockNumber != ev.Raw.BlockNumber || got.LogIndex != ev.Raw.Index || got.Epoch != 7 {
+			t.Fatalf("event = %+v, want block %d log %d epoch 7", got, ev.Raw.BlockNumber, ev.Raw.Index)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Watch did not poll before first ticker")
+	}
+
+	cancel()
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("Watch returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Watch did not stop after context cancellation")
 	}
 }
 
@@ -160,8 +215,8 @@ func TestConfigRegistryWatcher_PollDeliversOrderedEventsAndSkipsCursorLog(t *tes
 		cursor: core.ConfigRegistryCursor{Registry: registry, BlockNumber: 10, LogIndex: 2, TxHash: common.HexToHash("0x2")},
 		ok:     true,
 	})
-	if err := w.Backfill(context.Background()); err != nil {
-		t.Fatalf("backfill: %v", err)
+	if err := w.initCursor(context.Background()); err != nil {
+		t.Fatalf("init cursor: %v", err)
 	}
 	if err := w.pollOnce(context.Background()); err != nil {
 		t.Fatalf("pollOnce: %v", err)
@@ -210,8 +265,8 @@ func TestConfigRegistryWatcher_HandlerErrorDoesNotAdvancePastFailedEvent(t *test
 		cursor: core.ConfigRegistryCursor{Registry: registry, BlockNumber: 10, LogIndex: 1},
 		ok:     true,
 	})
-	if err := w.Backfill(context.Background()); err != nil {
-		t.Fatalf("backfill: %v", err)
+	if err := w.initCursor(context.Background()); err != nil {
+		t.Fatalf("init cursor: %v", err)
 	}
 	if err := w.pollOnce(context.Background()); err == nil {
 		t.Fatal("expected handler error")
@@ -238,8 +293,8 @@ func TestConfigRegistryWatcher_MissingConfigEpochEventFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.SetInitialLookback(20)
-	if err := w.Backfill(context.Background()); err != nil {
-		t.Fatalf("backfill: %v", err)
+	if err := w.initCursor(context.Background()); err != nil {
+		t.Fatalf("init cursor: %v", err)
 	}
 	if err := w.pollOnce(context.Background()); err == nil {
 		t.Fatal("expected missing IConfig event error")
@@ -263,8 +318,8 @@ func TestConfigRegistryWatcher_WrongDataConfigEpochEventFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.SetInitialLookback(20)
-	if err := w.Backfill(context.Background()); err != nil {
-		t.Fatalf("backfill: %v", err)
+	if err := w.initCursor(context.Background()); err != nil {
+		t.Fatalf("init cursor: %v", err)
 	}
 	if err := w.pollOnce(context.Background()); err == nil {
 		t.Fatal("expected wrong ConfigSetWithData payload to fail matching")
@@ -288,8 +343,8 @@ func TestConfigRegistryWatcher_WithDataChecksumMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.SetInitialLookback(20)
-	if err := w.Backfill(context.Background()); err != nil {
-		t.Fatalf("backfill: %v", err)
+	if err := w.initCursor(context.Background()); err != nil {
+		t.Fatalf("init cursor: %v", err)
 	}
 	if err := w.pollOnce(context.Background()); err == nil {
 		t.Fatal("expected checksum mismatch")

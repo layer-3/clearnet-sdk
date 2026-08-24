@@ -76,9 +76,6 @@ func TestIntegration_ConfigRegistryReceipts(t *testing.T) {
 	watcher.SetCursorSource(store)
 	watcher.SetInitialLookback(100)
 	watcher.SetPollInterval(100 * time.Millisecond)
-	if err := watcher.Backfill(ctx); err != nil {
-		t.Fatalf("watcher backfill: %v", err)
-	}
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	defer stopWatch()
 	go func() {
@@ -435,12 +432,6 @@ func verifyWatcherResumeFromCursor(ctx context.Context, t *testing.T, client *et
 	watcher.SetCursorSource(store)
 	watcher.SetInitialLookback(100)
 	watcher.SetPollInterval(100 * time.Millisecond)
-	if err := watcher.Backfill(ctx); err != nil {
-		t.Fatalf("resume backfill: %v", err)
-	}
-	if cur, ok := watcher.Cursor(); !ok || cur != cursorBefore {
-		t.Fatalf("resume cursor = %+v ok=%v, want %+v", cur, ok, cursorBefore)
-	}
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	defer stopWatch()
 	go func() {
@@ -448,6 +439,7 @@ func verifyWatcherResumeFromCursor(ctx context.Context, t *testing.T, client *et
 			t.Logf("resumed watcher stopped: %v", err)
 		}
 	}()
+	waitForWatcherCursor(ctx, t, watcher, cursorBefore)
 
 	before := store.eventWriteCount(registryAddr, issuer.id, receipt.ConfigRegistrySignersKey)
 	next := makeIssuerKeys(t, len(issuer.addrs))
@@ -636,6 +628,23 @@ func waitForCursorTx(ctx context.Context, t *testing.T, store *configEventStore,
 		select {
 		case <-ctx.Done():
 			t.Fatalf("timed out waiting for cursor tx %s", tx.Hex())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForWatcherCursor(ctx context.Context, t *testing.T, watcher *evm.ConfigRegistryWatcher, want core.ConfigRegistryCursor) {
+	t.Helper()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if cur, ok := watcher.Cursor(); ok && cur == want {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			cur, ok := watcher.Cursor()
+			t.Fatalf("timed out waiting for watcher cursor: ok=%v got %+v want %+v", ok, cur, want)
 		case <-ticker.C:
 		}
 	}
