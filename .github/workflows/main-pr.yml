@@ -12,6 +12,10 @@ jobs:
     name: Unit
     uses: ./.github/workflows/test-go.yml
 
+  forge:
+    name: Forge
+    uses: ./.github/workflows/test-forge.yml
+
   typescript:
     name: TypeScript
     uses: ./.github/workflows/test-ts.yml
