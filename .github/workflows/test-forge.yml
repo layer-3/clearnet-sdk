@@ -1,0 +1,54 @@
+name: Test (Forge)
+
+# This is the SDK's generated-code drift gate: it covers both the pre-existing
+# .abi -> *_abi.go step and the .sol -> .abi one.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  forge:
+    name: Forge
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          # Pinned (not "stable") as the bindings staleness gate below
+          # relies on forge's build output being byte-reproducible.
+          version: v1.7.1
+
+      - name: Forge fmt
+        run: forge fmt --check
+
+      - name: Forge build
+        run: forge build --sizes
+
+      - name: Re-extract the registry ABIs
+        run: |
+          jq '.abi' out/IClearnetRegistry.sol/IClearnetRegistry.json \
+            > ../pkg/blockchain/evm/artifacts/ClearnetRegistry.abi
+          jq '.abi' out/IClearnetRegistryProtocol.sol/IClearnetRegistryProtocol.json \
+            > ../pkg/blockchain/evm/artifacts/ClearnetRegistryProtocol.abi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Bindings are up to date
+        run: |
+          go generate ./pkg/blockchain/evm/...
+          if ! git diff --exit-code -- pkg/blockchain/evm/; then
+            echo "::error::pkg/blockchain/evm/ is stale. Run \`make generate\` and commit the result."
+            exit 1
+          fi
+        working-directory: .

@@ -34,7 +34,7 @@ type Attestation struct {
 // SetBitmaskBit sets bit i (0-indexed, little-endian bit order) in a [32]byte bitmask.
 // Bit i is stored at byte i/8, bit position i%8 within that byte.
 func SetBitmaskBit(bm *[32]byte, i int) {
-	if i < 0 || i >= 256 {
+	if i < 0 || i >= MaxClusterSize {
 		return
 	}
 	bm[i/8] |= 1 << uint(i%8)
@@ -42,7 +42,7 @@ func SetBitmaskBit(bm *[32]byte, i int) {
 
 // GetBitmaskBit returns true if bit i is set in the bitmask.
 func GetBitmaskBit(bm [32]byte, i int) bool {
-	if i < 0 || i >= 256 {
+	if i < 0 || i >= MaxClusterSize {
 		return false
 	}
 	return bm[i/8]&(1<<uint(i%8)) != 0

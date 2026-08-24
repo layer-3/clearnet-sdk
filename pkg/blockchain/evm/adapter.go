@@ -206,7 +206,7 @@ func copyG2ToBytes(dst []byte, g2 [4]*big.Int) {
 
 // parseRegistryActivationFromReceipt extracts (tokenId, nodeId) from the
 // NodeActivated event in a register() receipt.
-func parseRegistryActivationFromReceipt(registry *Registry, receipt *gethtypes.Receipt) (uint32, [32]byte, error) {
+func parseRegistryActivationFromReceipt(registry *ClearnetRegistryProtocol, receipt *gethtypes.Receipt) (uint32, [32]byte, error) {
 	for _, log := range receipt.Logs {
 		event, err := registry.ParseNodeActivated(*log)
 		if err != nil {

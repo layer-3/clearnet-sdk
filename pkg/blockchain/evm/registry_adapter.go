@@ -13,12 +13,12 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
 
-// RegistryAdapter wraps the Registry binding (plus the staking-token binding
-// for collateral approvals) for node onboarding and registry queries. It
-// implements core.RegistryReader and core.RegistryWriter.
+// RegistryAdapter wraps the ClearnetRegistryProtocol binding (plus the
+// staking-token binding for collateral approvals) for node onboarding and
+// registry queries. It implements core.RegistryReader and core.RegistryWriter.
 type RegistryAdapter struct {
 	client       *ethclient.Client
-	registry     *Registry
+	registry     *ClearnetRegistryProtocol
 	registryAddr common.Address
 	token        *MockERC20
 	auth         *bind.TransactOpts
@@ -29,11 +29,12 @@ var (
 	_ core.RegistryWriter = (*RegistryAdapter)(nil)
 )
 
-// NewRegistryAdapter binds the Registry at registryAddr and the staking token
-// at tokenAddr over client, with a transactor for the given key. The token is
-// needed because Lock/Fund approve collateral before the registry call.
+// NewRegistryAdapter binds the registry at registryAddr through
+// IClearnetRegistryProtocol, and the staking token at tokenAddr, over client,
+// with a transactor for the given key. The token is needed because Lock/Fund
+// approve collateral before the registry call.
 func NewRegistryAdapter(ctx context.Context, client *ethclient.Client, registryAddr, tokenAddr common.Address, key *ecdsa.PrivateKey) (*RegistryAdapter, error) {
-	registry, err := NewRegistry(registryAddr, client)
+	registry, err := NewClearnetRegistryProtocol(registryAddr, client)
 	if err != nil {
 		return nil, fmt.Errorf("load registry: %w", err)
 	}

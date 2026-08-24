@@ -125,7 +125,7 @@ func VerifyClusterSignature(data []byte, signature []byte, bitmask [32]byte, k u
 		}
 	}
 	var expected bn254.G2Affine
-	for i := 0; i < len(validators) && i < 256; i++ {
+	for i := 0; i < len(validators) && i < core.MaxClusterSize; i++ {
 		if !core.GetBitmaskBit(bitmask, i) {
 			continue
 		}

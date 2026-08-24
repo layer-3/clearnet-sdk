@@ -110,9 +110,16 @@ type BLSPubkeyCacheRegistry interface {
 	GetNodeById(opts *bind.CallOpts, nodeId [32]byte) (NodeRecord, error)
 }
 
-// compile-time check: the generated Registry binding satisfies the cache's
-// read surface (methods are hoisted via RegistryCaller embedding).
-var _ BLSPubkeyCacheRegistry = (*Registry)(nil)
+// compile-time check: the generated ClearnetRegistry binding (from
+// IClearnetRegistry, the issuer read surface) satisfies the cache's read
+// surface (methods are hoisted via the Caller embedding).
+var _ BLSPubkeyCacheRegistry = (*ClearnetRegistry)(nil)
+
+// compile-time check: the generated ClearnetRegistryProtocol binding (from
+// IClearnetRegistryProtocol, the clearing-side superset) satisfies it too —
+// the two bindings are generated in one abigen call and so share a single
+// NodeRecord (registry_abi.go), which is what makes both assignable here.
+var _ BLSPubkeyCacheRegistry = (*ClearnetRegistryProtocol)(nil)
 
 // NewBLSPubkeyCache constructs an empty cache. Call Backfill(ctx) before
 // Watch(ctx). The client may be nil for unit-test wiring that only exercises
