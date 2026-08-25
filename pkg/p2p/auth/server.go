@@ -24,22 +24,47 @@ import (
 // Server handles inbound auth streams: it issues a nonce, verifies the response
 // as operator or passive, and reports each success via an onAuth callback.
 type Server struct {
-	signers core.ReceiptSignerSource
-	onAuth  func(network.Conn, Result)
-	logger  log.Logger
+	signers             core.ReceiptSignerSource
+	trustedIssuerFilter TrustedIssuerFilter
+	onAuth              func(network.Conn, Result)
+	logger              log.Logger
 }
 
 var _ p2pproto.Registrar = (*Server)(nil)
 
+// TrustedIssuerFilter authorizes an issuer id before operator signer lookup.
+// A nil filter allows every syntactically valid issuer id.
+type TrustedIssuerFilter func(ctx context.Context, issuerID common.Address) error
+
+// ServerOption configures auth server behavior.
+type ServerOption func(*Server)
+
+// WithTrustedIssuerFilter installs an issuer authorization hook for operator
+// auth. Passing nil is a no-op.
+func WithTrustedIssuerFilter(filter TrustedIssuerFilter) ServerOption {
+	return func(s *Server) {
+		if filter != nil {
+			s.trustedIssuerFilter = filter
+		}
+	}
+}
+
 // NewServer returns a Server gated by the current issuer receipt signer source.
-// If signers is nil, only passive auth is accepted. onAuth, if non-nil, is
-// invoked with the connection and Result after each successful handshake.
-func NewServer(signers core.ReceiptSignerSource, onAuth func(network.Conn, Result), logger log.Logger) *Server {
+// Passing a signer source enables operator auth and disables passive auth; a
+// nil signer source enables passive auth and disables operator auth. If no
+// trusted issuer filter is configured, operator auth allows any syntactically
+// valid issuer id before loading its signer set. onAuth, if non-nil, is invoked
+// with the connection and Result after each successful handshake.
+func NewServer(signers core.ReceiptSignerSource, onAuth func(network.Conn, Result), logger log.Logger, opts ...ServerOption) *Server {
 	if logger == nil {
 		logger = log.NewNoopLogger()
 	}
 	lg := logger.WithName("p2p-auth-server").WithKV("protocol", p2pproto.ProtocolAuth)
-	return &Server{signers: signers, onAuth: onAuth, logger: lg}
+	s := &Server{signers: signers, onAuth: onAuth, logger: lg}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Register installs the auth stream handler on h.
@@ -55,13 +80,16 @@ const handshakeTimeout = 10 * time.Second
 func (s *Server) HandleAuth(stream network.Stream) {
 	defer stream.Close()
 	conn := stream.Conn()
+	deadline := time.Now().Add(handshakeTimeout)
 	// Bound the whole handshake: the server writes the challenge then reads the
 	// response, so the deadline covers both directions (slowloris guard).
-	if err := stream.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+	if err := stream.SetDeadline(deadline); err != nil {
 		s.logger.Debug("auth set deadline failed", "peer", conn.RemotePeer().ShortString(), "error", err)
 		return
 	}
-	res, err := s.verify(context.Background(), stream, conn.RemotePublicKey())
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	res, err := s.verify(ctx, stream, conn.RemotePublicKey())
 	if err != nil {
 		s.logger.Debug("auth handshake failed", "peer", conn.RemotePeer().ShortString(), "error", err)
 		return
@@ -115,6 +143,11 @@ func (s *Server) verify(ctx context.Context, stream network.Stream, remotePub li
 		return Result{}, fmt.Errorf("operator auth requires issuer id")
 	}
 	issuerID := common.HexToAddress(resp.IssuerID)
+	if s.trustedIssuerFilter != nil {
+		if err := s.trustedIssuerFilter(ctx, issuerID); err != nil {
+			return Result{}, fmt.Errorf("issuer %s not trusted: %w", issuerID.Hex(), err)
+		}
+	}
 	nonceHash := operatorAuthDigest(challenge.Nonce, issuerID)
 	pub, err := ethcrypto.SigToPub(nonceHash, resp.Signature)
 	if err != nil {

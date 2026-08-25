@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -27,6 +28,8 @@ const (
 	configRegistryOpSetConfigWithData    = "setConfigWithData"
 	configRegistryOpUpdateIssuerSettings = "updateIssuerSettings"
 )
+
+var ErrCommitStatusUnknown = errors.New("config registry commit status unknown")
 
 // ConfigRegistryIssuerRegistrationResult is returned by issuer registration.
 // IssuerID is always populated, including the idempotent already-registered
@@ -122,12 +125,12 @@ func (f *ConfigRegistryIssuerRegistrationFinalizer) Pack(_ context.Context, issu
 	})
 }
 
-func (f *ConfigRegistryIssuerRegistrationFinalizer) Validate(_ context.Context, packed []byte, issuerKeys []string, threshold int) error {
+func (f *ConfigRegistryIssuerRegistrationFinalizer) Validate(ctx context.Context, packed []byte, issuerKeys []string, threshold int) error {
 	var got configRegistryIssuerRegistrationPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("decode packed: %w", err)
 	}
-	wantBytes, err := f.Pack(context.Background(), issuerKeys, threshold)
+	wantBytes, err := f.Pack(ctx, issuerKeys, threshold)
 	if err != nil {
 		return err
 	}
@@ -409,7 +412,7 @@ func (f *ConfigRegistryCommitFinalizer) Submit(ctx context.Context, packed []byt
 	if err != nil {
 		return "", err
 	}
-	if txID, done, err := f.verifyCommit(ctx, key, checksum, p.Op); err != nil {
+	if txID, done, err := f.verifyCommit(ctx, key, checksum, p.Op, nil); err != nil {
 		return "", err
 	} else if done {
 		return txID, nil
@@ -431,7 +434,7 @@ func (f *ConfigRegistryCommitFinalizer) Submit(ctx context.Context, packed []byt
 	tx, err := f.transactor.Transact(ctx, f.fees, func(opts *bind.TransactOpts) (*gethtypes.Transaction, error) {
 		switch p.Op {
 		case configRegistryOpSetConfig:
-			if err := f.estimateGas(ctx, opts, key, checksum, nil, nonce, sigs); err != nil {
+			if err := f.estimateGas(ctx, opts, p.Op, key, checksum, nil, nonce, sigs); err != nil {
 				return nil, err
 			}
 			tx, err := f.registry.SetConfig(opts, f.issuerID, key, checksum, nonce, sigs)
@@ -440,7 +443,7 @@ func (f *ConfigRegistryCommitFinalizer) Submit(ctx context.Context, packed []byt
 			}
 			return tx, nil
 		case configRegistryOpSetConfigWithData:
-			if err := f.estimateGas(ctx, opts, key, [32]byte{}, data, nonce, sigs); err != nil {
+			if err := f.estimateGas(ctx, opts, p.Op, key, [32]byte{}, data, nonce, sigs); err != nil {
 				return nil, err
 			}
 			tx, err := f.registry.SetConfigWithData(opts, f.issuerID, key, data, nonce, sigs)
@@ -459,14 +462,14 @@ func (f *ConfigRegistryCommitFinalizer) Submit(ctx context.Context, packed []byt
 }
 
 func (f *ConfigRegistryCommitFinalizer) VerifyCommit(ctx context.Context, key [32]byte, checksum [32]byte) (string, bool, error) {
-	return f.verifyCommit(ctx, key, checksum, configRegistryOpSetConfig)
+	return f.verifyCommit(ctx, key, checksum, configRegistryOpSetConfig, nil)
 }
 
 func (f *ConfigRegistryCommitFinalizer) VerifyCommitWithData(ctx context.Context, key [32]byte, data []byte) (string, bool, error) {
-	return f.verifyCommit(ctx, key, crypto.Keccak256Hash(data), configRegistryOpSetConfigWithData)
+	return f.verifyCommit(ctx, key, crypto.Keccak256Hash(data), configRegistryOpSetConfigWithData, nil)
 }
 
-func (f *ConfigRegistryCommitFinalizer) verifyCommit(ctx context.Context, key [32]byte, checksum [32]byte, op string) (string, bool, error) {
+func (f *ConfigRegistryCommitFinalizer) verifyCommit(ctx context.Context, key [32]byte, checksum [32]byte, op string, expectedNonce *big.Int) (string, bool, error) {
 	epoch, err := f.config.ConfigEpoch(&bind.CallOpts{Context: ctx}, key)
 	if err != nil {
 		return "", false, fmt.Errorf("read config epoch: %w", err)
@@ -483,13 +486,28 @@ func (f *ConfigRegistryCommitFinalizer) verifyCommit(ctx context.Context, key [3
 	}
 	switch op {
 	case configRegistryOpSetConfig:
-		return f.lookupCommitTxID(ctx, key, checksum, op), true, nil
-	case configRegistryOpSetConfigWithData:
-		txID := f.lookupCommitTxID(ctx, key, checksum, op)
-		if txID == "" {
-			return "", false, nil
+		txID, ok, err := f.lookupCommitTxID(ctx, key, checksum, op, expectedNonce)
+		if err != nil {
+			return "", false, err
+		}
+		if !ok {
+			return "", false, ErrCommitStatusUnknown
 		}
 		return txID, true, nil
+	case configRegistryOpSetConfigWithData:
+		txID, ok, err := f.lookupCommitTxID(ctx, key, checksum, op, expectedNonce)
+		if err != nil {
+			return "", false, err
+		}
+		if ok {
+			return txID, true, nil
+		}
+		if _, checksumOnly, err := f.lookupCommitTxID(ctx, key, checksum, configRegistryOpSetConfig, nil); err != nil {
+			return "", false, err
+		} else if checksumOnly {
+			return "", false, nil
+		}
+		return "", false, ErrCommitStatusUnknown
 	default:
 		return "", false, fmt.Errorf("unsupported config registry op %q", op)
 	}
@@ -559,16 +577,19 @@ func (f *ConfigRegistryCommitFinalizer) parsePacked(packed []byte) (configRegist
 	}
 }
 
-func (f *ConfigRegistryCommitFinalizer) estimateGas(ctx context.Context, opts *bind.TransactOpts, key [32]byte, checksum [32]byte, data []byte, nonce *big.Int, sigs [][]byte) error {
+func (f *ConfigRegistryCommitFinalizer) estimateGas(ctx context.Context, opts *bind.TransactOpts, op string, key [32]byte, checksum [32]byte, data []byte, nonce *big.Int, sigs [][]byte) error {
 	abi, err := ConfigRegistryMetaData.GetAbi()
 	if err != nil {
 		return fmt.Errorf("parse ABI: %w", err)
 	}
 	var calldata []byte
-	if data == nil {
+	switch op {
+	case configRegistryOpSetConfig:
 		calldata, err = abi.Pack("setConfig", f.issuerID, key, checksum, nonce, sigs)
-	} else {
+	case configRegistryOpSetConfigWithData:
 		calldata, err = abi.Pack("setConfigWithData", f.issuerID, key, data, nonce, sigs)
+	default:
+		return fmt.Errorf("unsupported config registry op %q", op)
 	}
 	if err != nil {
 		return fmt.Errorf("pack config registry calldata: %w", err)
@@ -588,12 +609,10 @@ func (f *ConfigRegistryCommitFinalizer) estimateGas(ctx context.Context, opts *b
 	return nil
 }
 
-func (f *ConfigRegistryCommitFinalizer) lookupCommitTxID(ctx context.Context, key [32]byte, checksum [32]byte, op string) string {
+func (f *ConfigRegistryCommitFinalizer) lookupCommitTxID(ctx context.Context, key [32]byte, checksum [32]byte, op string, expectedNonce *big.Int) (string, bool, error) {
 	head, err := f.client.BlockNumber(ctx)
 	if err != nil {
-		f.logger.Warn("config commit txID lookup: block number failed, returning empty txID",
-			"issuerId", f.issuerID.Hex(), "key", hexBytes32(key), "error", err)
-		return ""
+		return "", false, fmt.Errorf("%w: block number: %v", ErrCommitStatusUnknown, err)
 	}
 	var from uint64
 	if head > f.lookupWindow {
@@ -604,44 +623,49 @@ func (f *ConfigRegistryCommitFinalizer) lookupCommitTxID(ctx context.Context, ke
 	case configRegistryOpSetConfig:
 		it, err := f.registry.FilterConfigCommitted(&bind.FilterOpts{Context: ctx, Start: from, End: &head}, []common.Address{f.issuerID}, [][32]byte{key})
 		if err != nil {
-			f.logger.Warn("config commit txID lookup: filter failed, returning empty txID",
-				"issuerId", f.issuerID.Hex(), "key", hexBytes32(key), "error", err)
-			return ""
+			return "", false, fmt.Errorf("%w: filter ConfigCommitted: %v", ErrCommitStatusUnknown, err)
 		}
 		defer it.Close()
 		var last string
 		for it.Next() {
-			if it.Event.Checksum == checksum {
+			if it.Event.Checksum == checksum && eventNonceMatches(it.Event.NewNonce, expectedNonce) {
 				last = it.Event.Raw.TxHash.Hex()
 			}
 		}
-		return f.warnEmptyCommitTxID(last, key, checksum)
+		if err := it.Error(); err != nil {
+			return "", false, fmt.Errorf("%w: iterate ConfigCommitted: %v", ErrCommitStatusUnknown, err)
+		}
+		return last, last != "", nil
 	case configRegistryOpSetConfigWithData:
 		it, err := f.registry.FilterConfigWithDataCommitted(&bind.FilterOpts{Context: ctx, Start: from, End: &head}, []common.Address{f.issuerID}, [][32]byte{key})
 		if err != nil {
-			f.logger.Warn("config-with-data commit txID lookup: filter failed, returning empty txID",
-				"issuerId", f.issuerID.Hex(), "key", hexBytes32(key), "error", err)
-			return ""
+			return "", false, fmt.Errorf("%w: filter ConfigWithDataCommitted: %v", ErrCommitStatusUnknown, err)
 		}
 		defer it.Close()
 		var last string
 		for it.Next() {
-			if it.Event.Checksum == checksum {
+			if it.Event.Checksum == checksum && eventNonceMatches(it.Event.NewNonce, expectedNonce) {
 				last = it.Event.Raw.TxHash.Hex()
 			}
 		}
-		return f.warnEmptyCommitTxID(last, key, checksum)
+		if err := it.Error(); err != nil {
+			return "", false, fmt.Errorf("%w: iterate ConfigWithDataCommitted: %v", ErrCommitStatusUnknown, err)
+		}
+		return last, last != "", nil
 	default:
-		return ""
+		return "", false, fmt.Errorf("unsupported config registry op %q", op)
 	}
 }
 
-func (f *ConfigRegistryCommitFinalizer) warnEmptyCommitTxID(txID string, key [32]byte, checksum [32]byte) string {
-	if txID == "" {
-		f.logger.Warn("config commit txID lookup: no matching event in window, returning empty txID",
-			"issuerId", f.issuerID.Hex(), "key", hexBytes32(key), "checksum", hexBytes32(checksum), "window", f.lookupWindow)
+func eventNonceMatches(newNonce *big.Int, expectedNonce *big.Int) bool {
+	if expectedNonce == nil {
+		return true
 	}
-	return txID
+	if newNonce == nil {
+		return false
+	}
+	want := new(big.Int).Add(expectedNonce, big.NewInt(1))
+	return newNonce.Cmp(want) == 0
 }
 
 // ConfigRegistryIssuerSettingsUpdateFinalizer rotates one issuer's registry key

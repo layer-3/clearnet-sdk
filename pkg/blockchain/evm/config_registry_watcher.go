@@ -325,11 +325,7 @@ func (w *ConfigRegistryWatcher) populateConfigEpoch(ctx context.Context, ev *cor
 	if ev == nil {
 		return nil
 	}
-	var data []byte
-	if ev.HasData {
-		data = ev.Data
-	}
-	epoch, err := w.resolveConfigEpoch(ctx, ev.IssuerID, ev.Key, ev.Checksum, data, gethtypes.Log{
+	epoch, err := w.resolveConfigEpoch(ctx, ev.IssuerID, ev.Key, ev.Checksum, ev.Data, ev.HasData, gethtypes.Log{
 		BlockNumber: ev.BlockNumber,
 		TxHash:      ev.TxHash,
 		Index:       ev.LogIndex,
@@ -341,7 +337,7 @@ func (w *ConfigRegistryWatcher) populateConfigEpoch(ctx context.Context, ev *cor
 	return nil
 }
 
-func (w *ConfigRegistryWatcher) resolveConfigEpoch(ctx context.Context, issuerID common.Address, key [32]byte, checksum [32]byte, data []byte, registryLog gethtypes.Log) (uint64, error) {
+func (w *ConfigRegistryWatcher) resolveConfigEpoch(ctx context.Context, issuerID common.Address, key [32]byte, checksum [32]byte, data []byte, hasData bool, registryLog gethtypes.Log) (uint64, error) {
 	logs, err := w.registry.TransactionLogs(ctx, registryLog.TxHash)
 	if err != nil {
 		return 0, fmt.Errorf("load tx logs %s: %w", registryLog.TxHash.Hex(), err)
@@ -355,7 +351,7 @@ func (w *ConfigRegistryWatcher) resolveConfigEpoch(ctx context.Context, issuerID
 		return 0, fmt.Errorf("parse IConfig ABI: %w", err)
 	}
 	var eventID common.Hash
-	if data == nil {
+	if !hasData {
 		eventID = meta.Events["ConfigSet"].ID
 	} else {
 		eventID = meta.Events["ConfigSetWithData"].ID
@@ -370,7 +366,7 @@ func (w *ConfigRegistryWatcher) resolveConfigEpoch(ctx context.Context, issuerID
 		if raw.Address != issuerID || raw.TxHash != registryLog.TxHash || raw.Index >= registryLog.Index || len(raw.Topics) == 0 || raw.Topics[0] != eventID {
 			continue
 		}
-		if data == nil {
+		if !hasData {
 			ev, err := parser.ParseConfigSet(raw)
 			if err != nil {
 				return 0, fmt.Errorf("parse ConfigSet: %w", err)
@@ -397,7 +393,7 @@ func (w *ConfigRegistryWatcher) resolveConfigEpoch(ctx context.Context, issuerID
 	}
 	if !found {
 		event := "ConfigSet"
-		if data != nil {
+		if hasData {
 			event = "ConfigSetWithData"
 		}
 		return 0, fmt.Errorf("missing matching %s for registry event: issuer=%s key=0x%s checksum=0x%s tx=%s log=%d",

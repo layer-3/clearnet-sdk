@@ -39,14 +39,18 @@ func NewReceiptVerifier(source core.ReceiptSignerSource, withdrawalIssuers Withd
 	return &ReceiptVerifier{source: source, withdrawalIssuers: withdrawalIssuers}
 }
 
-// SetSignersForTest seeds the cache from an explicit signer list. Tests use
+// SetSignersForTest seeds the verifier from an explicit signer list. Tests use
 // this to drive the verifier without an on-chain reader.
-func (rv *ReceiptVerifier) SetSignersForTest(signers []common.Address, threshold int) {
+func (rv *ReceiptVerifier) SetSignersForTest(signers []common.Address, threshold int) error {
 	if rv == nil {
-		return
+		return errors.New("receipt verifier not configured")
 	}
-	src, _ := NewStaticSignerSource(signers, threshold)
+	src, err := NewStaticSignerSource(signers, threshold)
+	if err != nil {
+		return err
+	}
 	rv.source = src
+	return nil
 }
 
 // VerifyBurnReceipt checks that the receipt carries at least `threshold`

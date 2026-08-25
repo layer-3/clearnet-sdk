@@ -7,8 +7,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-const DefaultIssuer = "0x0000000000000000000000000000000000000000"
-
 // AssetURI identifies an issuer-defined asset in protocol payloads.
 //
 // Core treats the asset id as opaque issuer-owned data. Chain-specific
@@ -25,12 +23,12 @@ type AssetURIParts struct {
 //
 //	yellow://ynet/asset/<issuer>/<asset-id>
 //
-// If issuer is empty, DefaultIssuer is used. The issuer must be a valid EVM
-// address; it is normalized to its canonical 0x-prefixed hex form. The
-// issuer-owned asset id is preserved as supplied.
+// The issuer must be a valid EVM address; it is normalized to its canonical
+// lowercase 0x-prefixed hex form. The issuer-owned asset id is preserved as
+// supplied.
 func NewAssetURI(issuer, assetID string) (AssetURI, error) {
 	if issuer == "" {
-		issuer = DefaultIssuer
+		return "", fmt.Errorf("asset URI issuer is required")
 	}
 	if !common.IsHexAddress(issuer) {
 		return "", fmt.Errorf("asset URI issuer must be an EVM address: %q", issuer)
@@ -92,7 +90,7 @@ func ValidateAssetURI(uri AssetURI) error {
 }
 
 func isValidAssetIssuer(s string) bool {
-	return common.IsHexAddress(s)
+	return common.IsHexAddress(s) && s == strings.ToLower(common.HexToAddress(s).Hex())
 }
 
 // IssuerIDFromAssetURI returns the ConfigRegistry issuer id encoded in uri.

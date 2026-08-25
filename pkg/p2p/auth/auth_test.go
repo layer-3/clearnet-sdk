@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +103,36 @@ func TestAuth_OperatorRejectedBySignerSource(t *testing.T) {
 		t.Fatalf("expected rejection, but server authenticated %+v", r)
 	case <-time.After(time.Second):
 		// expected: no callback
+	}
+}
+
+func TestAuth_OperatorRejectedByTrustedIssuerFilter(t *testing.T) {
+	srv, cli := newPair(t, nil)
+
+	signer := sign.NewKeySignerFromECDSA(mustKey(t))
+	addr, err := sign.EthAddress(signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results := make(chan Result, 1)
+	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerSet{
+		testIssuerID: {Signers: []common.Address{addr}, Threshold: 1},
+	}}, func(_ network.Conn, r Result) {
+		results <- r
+	}, nil, WithTrustedIssuerFilter(func(context.Context, common.Address) error {
+		return errors.New("issuer disabled")
+	})).Register(srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := NewClient(ClientOpts{Signer: signer, IssuerID: testIssuerID}).Authenticate(ctx, cli, srv.ID()); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	select {
+	case r := <-results:
+		t.Fatalf("expected rejection, but server authenticated %+v", r)
+	case <-time.After(time.Second):
 	}
 }
 

@@ -329,6 +329,34 @@ func TestConfigRegistryWatcher_WrongDataConfigEpochEventFails(t *testing.T) {
 	}
 }
 
+func TestConfigRegistryWatcher_EmptyWithDataPayloadResolvesEpoch(t *testing.T) {
+	registry := common.HexToAddress("0x000000000000000000000000000000000000beef")
+	issuer := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	var key [32]byte
+	key[31] = 0xA
+	ev := withDataEvent(10, 2, issuer, key, nil, 1)
+	reader := &fakeConfigRegistryWatcherReader{withData: []*ConfigRegistryConfigWithDataCommitted{ev}}
+	reader.addConfigSetWithDataLog(issuer, ev, 11)
+	handler := &captureConfigRegistryHandler{}
+	w, err := newConfigRegistryWatcher(fakeHead{head: 20}, registry, reader, 5, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetInitialLookback(20)
+	if err := w.initCursor(context.Background()); err != nil {
+		t.Fatalf("init cursor: %v", err)
+	}
+	if err := w.pollOnce(context.Background()); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	if len(handler.events) != 1 {
+		t.Fatalf("events: got %d want 1", len(handler.events))
+	}
+	if !handler.events[0].HasData || handler.events[0].Data != nil || handler.events[0].Epoch != 11 {
+		t.Fatalf("event = %+v, want with-data empty payload at epoch 11", handler.events[0])
+	}
+}
+
 func TestConfigRegistryWatcher_WithDataChecksumMismatch(t *testing.T) {
 	registry := common.HexToAddress("0x000000000000000000000000000000000000beef")
 	issuer := common.HexToAddress("0x0000000000000000000000000000000000000001")

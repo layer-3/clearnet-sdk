@@ -11,13 +11,8 @@ import (
 )
 
 // StaticSignerSource returns a fixed signer set and threshold supplied at
-// construction time. It is the production SignerSource implementation for
-// the receipt verifier today: operators publish the custody signer set in
-// the manifest, and every node loads the same list.
-//
-// When the on-chain Registry grows a custody-signers view, a
-// RegistrySignerSource will replace this implementation at the call site;
-// no verifier-side code changes are needed.
+// construction time. It is useful for tests and deployments where signer
+// rotation is managed outside ConfigRegistry.
 type StaticSignerSource struct {
 	signers   []common.Address
 	threshold int

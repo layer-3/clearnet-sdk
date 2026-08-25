@@ -9,20 +9,15 @@ import (
 var testIssuerAddress = common.HexToAddress("0x0000000000000000000000000000000000001234")
 
 func TestNewAssetURI(t *testing.T) {
-	got, err := NewAssetURI("", "evm/31337/0x0000000000000000000000000000000000000000")
-	if err != nil {
-		t.Fatalf("NewAssetURI: %v", err)
-	}
-	want := AssetURI("yellow://ynet/asset/" + DefaultIssuer + "/evm/31337/0x0000000000000000000000000000000000000000")
-	if got != want {
-		t.Fatalf("NewAssetURI = %q, want %q", got, want)
+	if _, err := NewAssetURI("", "evm/31337/0x0000000000000000000000000000000000000000"); err == nil {
+		t.Fatal("NewAssetURI accepted empty issuer")
 	}
 
-	got, err = NewAssetURI(testIssuerAddress.Hex(), "CHAIN/Asset:ID")
+	got, err := NewAssetURI(testIssuerAddress.Hex(), "CHAIN/Asset:ID")
 	if err != nil {
 		t.Fatalf("NewAssetURI mixed asset id: %v", err)
 	}
-	want = AssetURI("yellow://ynet/asset/" + testIssuerAddress.Hex() + "/CHAIN/Asset:ID")
+	want := AssetURI("yellow://ynet/asset/" + testIssuerAddress.Hex() + "/CHAIN/Asset:ID")
 	if got != want {
 		t.Fatalf("NewAssetURI = %q, want %q", got, want)
 	}
@@ -62,6 +57,8 @@ func TestValidateAssetURI(t *testing.T) {
 		AssetURI("yellow://other/asset/" + testIssuerAddress.Hex() + "/evm/1/0xabc"),
 		"yellow://ynet/asset//evm/1/0xabc",
 		"yellow://ynet/asset/Custody/evm/1/0xabc",
+		"yellow://ynet/asset/0000000000000000000000000000000000001234/evm/1/0xabc",
+		"yellow://ynet/asset/0x000000000000000000000000000000000000ABCD/evm/1/0xabc",
 		AssetURI("yellow://ynet/asset/" + testIssuerAddress.Hex()),
 		AssetURI("yellow://ynet/asset/" + testIssuerAddress.Hex() + "/"),
 		AssetURI("yellow://ynet/asset/" + testIssuerAddress.Hex() + "/asset id"),

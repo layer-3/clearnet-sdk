@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -283,10 +284,11 @@ func verifyConfigCommitIdempotency(ctx context.Context, t *testing.T, client *et
 
 func verifyIssuerReceipts(ctx context.Context, t *testing.T, verifier *receipt.ReceiptVerifier, resolver withdrawalIssuerMap, issuer issuerFixture, other issuerFixture) {
 	t.Helper()
+	issuerID := strings.ToLower(issuer.id.Hex())
 	mint := &core.MintReceipt{
 		TxID:     "mint/" + issuer.id.Hex(),
 		Account:  "yellow://ynet/user/0xabc",
-		AssetURI: core.AssetURI("yellow://ynet/asset/" + issuer.id.Hex() + "/evm/31337/0"),
+		AssetURI: core.AssetURI("yellow://ynet/asset/" + issuerID + "/evm/31337/0"),
 		Amount:   decimal.NewFromInt(1),
 	}
 	signMint(t, mint, issuer.keys[:issuer.threshold]...)
@@ -380,10 +382,11 @@ func verifyMalformedPayloadRecovery(ctx context.Context, t *testing.T, client *e
 
 func verifySignerPayloadOverwrite(ctx context.Context, t *testing.T, client *ethclient.Client, registry common.Address, payer sign.Signer, store *configEventStore, verifier *receipt.ReceiptVerifier, resolver withdrawalIssuerMap, issuer issuerFixture, other issuerFixture) {
 	t.Helper()
+	issuerID := strings.ToLower(issuer.id.Hex())
 	oldMint := &core.MintReceipt{
 		TxID:     "pre-rotation/" + issuer.id.Hex(),
 		Account:  "yellow://ynet/user/0xabc",
-		AssetURI: core.AssetURI("yellow://ynet/asset/" + issuer.id.Hex() + "/evm/31337/0"),
+		AssetURI: core.AssetURI("yellow://ynet/asset/" + issuerID + "/evm/31337/0"),
 		Amount:   decimal.NewFromInt(1),
 	}
 	signMint(t, oldMint, issuer.keys[:issuer.threshold]...)

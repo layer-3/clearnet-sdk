@@ -78,8 +78,23 @@ func signWith(t *testing.T, r *core.BurnReceipt, keys ...*ecdsa.PrivateKey) {
 
 func newTestBurnVerifier(signers []common.Address, threshold int) *ReceiptVerifier {
 	rv := NewReceiptVerifier(nil, stubWithdrawalIssuerResolver{issuerID: testIssuerID})
-	rv.SetSignersForTest(signers, threshold)
+	if err := rv.SetSignersForTest(signers, threshold); err != nil {
+		panic(err)
+	}
 	return rv
+}
+
+func TestReceiptVerifier_SetSignersForTestRejectsInvalidInput(t *testing.T) {
+	rv := NewReceiptVerifier(nil, stubWithdrawalIssuerResolver{issuerID: testIssuerID})
+	if err := rv.SetSignersForTest(nil, 1); err == nil {
+		t.Fatal("expected invalid signer set error")
+	}
+	r := makeReceipt(0x03)
+	r.Signatures = [][]byte{make([]byte, 65)}
+	err := rv.VerifyBurnReceipt(context.Background(), r)
+	if err == nil || !strings.Contains(err.Error(), "no signer source") {
+		t.Fatalf("Verify after invalid setup = %v, want no signer source", err)
+	}
 }
 
 func TestReceiptVerifier_LoadsIssuerScopedSigners(t *testing.T) {
