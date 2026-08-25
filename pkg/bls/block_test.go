@@ -91,6 +91,76 @@ func TestVerifyBlock_Valid(t *testing.T) {
 	}
 }
 
+// TestVerifyBlock_RejectsRepeatedKeyAndSignatureQuorum reproduces ISS-054.
+// The pairing is valid because both the signature and public key are added
+// three times, but all three selected positions represent one validator and
+// therefore must not satisfy the 3-of-4 threshold.
+func TestVerifyBlock_RejectsRepeatedKeyAndSignatureQuorum(t *testing.T) {
+	kp := KeyPairFromSeed([]byte("iss-054-single-validator"))
+	serialized := SerializeG2(kp.PublicG2)
+	validators := make([][]byte, 4)
+	for i := range validators {
+		validators[i] = append([]byte(nil), serialized...)
+	}
+
+	var bitmask [32]byte
+	for _, i := range []int{0, 1, 2} {
+		core.SetBitmaskBit(&bitmask, i)
+	}
+	block := &core.Block{
+		Anchor:   [32]byte{0x54},
+		SealedAt: 1_700_000_000,
+		K:        4,
+		Attestation: core.Attestation{
+			Validators: validators,
+			Bitmask:    bitmask,
+		},
+	}
+
+	msgHash := crypto.Keccak256Hash(block.SigningMessage())
+	oneSignature, err := Sign(&kp.Secret, msgHash)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	aggSig, err := AggregateG1([]bn254.G1Affine{oneSignature, oneSignature, oneSignature})
+	if err != nil {
+		t.Fatalf("AggregateG1: %v", err)
+	}
+	aggPub, err := AggregateG2([]bn254.G2Affine{kp.PublicG2, kp.PublicG2, kp.PublicG2})
+	if err != nil {
+		t.Fatalf("AggregateG2: %v", err)
+	}
+	if ok, verifyErr := Verify(aggSig, aggPub, msgHash); verifyErr != nil || !ok {
+		t.Fatalf("exploit fixture must have a valid pairing: ok=%v err=%v", ok, verifyErr)
+	}
+	block.Attestation.ThresholdSig, err = EncodeSignatureForContract(new(big.Int), aggSig, aggPub)
+	if err != nil {
+		t.Fatalf("EncodeSignatureForContract: %v", err)
+	}
+
+	err = VerifyBlock(block, validators)
+	if err == nil {
+		t.Fatal("ISS-054: repeated validator key forged a quorum")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("duplicate validator pubkey at indices 0 and 1")) {
+		t.Fatalf("expected duplicate-validator error, got %v", err)
+	}
+}
+
+func TestVerifyBlock_RejectsDuplicateUnselectedValidator(t *testing.T) {
+	block, validators := blockFixture(t, 4, []int{0, 1, 2}, 4)
+	validators[3] = append([]byte(nil), validators[0]...)
+	block.Attestation.Validators = validators
+
+	err := VerifyBlock(block, validators)
+	if err == nil {
+		t.Fatal("expected duplicate unselected validator to invalidate the roster")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("duplicate validator pubkey at indices 0 and 3")) {
+		t.Fatalf("expected duplicate-validator error, got %v", err)
+	}
+}
+
 // TestVerifyBlock_NilBlock pins the nil-block guard owned by this wrapper.
 func TestVerifyBlock_NilBlock(t *testing.T) {
 	if err := VerifyBlock(nil, nil); err == nil {

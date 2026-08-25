@@ -86,6 +86,25 @@ func TestAuthorizeValidators_RegisteredPubkeyAccepted(t *testing.T) {
 	}
 }
 
+// TestAuthorizeValidators_DuplicateRegisteredPubkeyRejected pins ISS-054 at
+// the registry boundary: a genuinely registered key still represents one
+// validator and cannot occupy several roster positions.
+func TestAuthorizeValidators_DuplicateRegisteredPubkeyRejected(t *testing.T) {
+	cache := newTestCache()
+	pk := makePubkey(0x15)
+	cache.Put(core.NodeID{0x01}, pk)
+
+	v := newTestBlockVerifier(cache)
+	duplicate := append([]byte(nil), pk...)
+	err := v.authorizeValidators([][]byte{pk, duplicate})
+	if err == nil {
+		t.Fatal("expected rejection when one registered pubkey occupies two validator positions")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("duplicate validator pubkey at indices 0 and 1")) {
+		t.Fatalf("expected duplicate indices in error, got %v", err)
+	}
+}
+
 // TestAuthorizeValidators_UnregisteredPubkeyRejected pins the security
 // invariant: a pubkey the Registry has never seen must be rejected, even
 // though it's well-formed 128 bytes.

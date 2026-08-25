@@ -107,10 +107,16 @@ func (v *BlockVerifier) VerifyBlockSignature(block *core.Block) error {
 // this membership gate, a sealer could insert self-generated keys, sign with
 // them, and forge a valid-looking block.
 func (v *BlockVerifier) authorizeValidators(entries [][]byte) error {
+	seen := make(map[string]int, len(entries))
 	for i, pk := range entries {
 		if len(pk) != BLSPubkeyCacheSize {
 			return fmt.Errorf("bls: validator[%d] has wrong length %d (want %d)", i, len(pk), BLSPubkeyCacheSize)
 		}
+		key := string(pk)
+		if first, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("bls: duplicate validator pubkey at indices %d and %d", first, i)
+		}
+		seen[key] = i
 		if _, ok := v.cache.NodeIDForPubkey(pk); !ok {
 			return fmt.Errorf("bls: validator[%d] pubkey not registered on chain", i)
 		}
