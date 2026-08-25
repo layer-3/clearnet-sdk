@@ -35,13 +35,74 @@ func VerifyClusterSignature(data []byte, signature []byte, bitmask [32]byte, k u
 	if k == 0 {
 		return false, errors.New("verify: k=0 not allowed; signing quorum must be explicit")
 	}
-	// Count signers via popcount on the full bitmask. We can't bound the
-	// loop by len(validators) because some sealers (P2PBlockSealer) append
-	// validators in partial-receipt order while bitmask bits track the
-	// original cluster-member index — so a high-index signer can fall
-	// outside a len(validators)-bounded iteration. Popcount is index-agnostic
-	// and matches the on-chain Slasher's signer count.
-	signerCount := core.BitmaskOnesCount(bitmask)
+	if len(validators) == 0 {
+		return false, nil
+	}
+
+	// ISSUE-043-02: bind the outer bitmask to the aggregated apkG2.
+	//
+	// Spec invariant (ADR-008 §11): every set bit of the bitmask references
+	// a valid index into Validators, i.e.
+	//     highest_set_bit(bitmask) < len(Validators)
+	// AND apkG2 == sum(Validators[i] for bit i set).
+	//
+	// Two sealer paths co-exist and produce compatible blocks under this
+	// invariant:
+	//   - cluster.SigningCoordinator.SealBlock writes ALL r shard
+	//     members into Validators and a signers-only bitmask; typically
+	//     popcount(bitmask) < len(Validators). This is the production
+	//     path (`cmd/clearnode/main.go`).
+	//   - node/service/block_sealer.go P2PBlockSealer writes only
+	//     signers into Validators with popcount == len(Validators).
+	//
+	// Previously this function rejected when popcount != len(Validators),
+	// which wrongly rejected every block sealed via SigningCoordinator
+	// with threshold < r. The fix below aligns off-chain verification
+	// with the on-chain Slasher reconstruction: range-check the bitmask
+	// against the validator roster, then sum only the validators at
+	// set bit positions.
+	// Bitmask is [32]byte; if any set bit i has i >= len(validators), the
+	// reconstruction would dereference out of range.
+	if core.BitmaskBitLen(bitmask) > len(validators) {
+		return false, nil
+	}
+
+	// ADR-008 §11 / F-CONSENSUS-001 / ISS-054: every validator entry MUST
+	// be one unique, full 128-byte BN254 G2 pubkey. A bitmask identifies
+	// validator positions, so accepting the same key at several positions
+	// would let one signature be aggregated repeatedly to forge a quorum.
+	// Reject duplicates across the entire roster, including unselected entries,
+	// before counting any signer. Serialized G2 coordinates are canonical on the
+	// acceptance path (DeserializeG2 rejects coordinates outside the field), so
+	// byte identity is point identity.
+	seenValidators := make(map[string]int, len(validators))
+	for i, v := range validators {
+		if len(v) != core.BLSPubKeyG2Len {
+			return false, fmt.Errorf("verify: validator %d has wrong length: got %d, want %d", i, len(v), core.BLSPubKeyG2Len)
+		}
+		key := string(v)
+		if first, duplicate := seenValidators[key]; duplicate {
+			return false, fmt.Errorf("verify: duplicate validator pubkey at indices %d and %d", first, i)
+		}
+		seenValidators[key] = i
+	}
+
+	// Count and reconstruct from the same set of unique, decoded, selected
+	// validators. Keeping these operations in one loop prevents the threshold
+	// count from drifting away from the keys actually checked by the pairing.
+	signerCount := 0
+	var expected bn254.G2Affine
+	for i := 0; i < len(validators) && i < core.MaxClusterSize; i++ {
+		if !core.GetBitmaskBit(bitmask, i) {
+			continue
+		}
+		pub, dErr := DeserializeG2(validators[i])
+		if dErr != nil {
+			return false, fmt.Errorf("validator pubkey decode: %w", dErr)
+		}
+		signerCount++
+		expected.Add(&expected, &pub)
+	}
 	threshold := (int(k)*2)/3 + 1
 	if signerCount < threshold {
 		return false, nil
@@ -57,9 +118,6 @@ func VerifyClusterSignature(data []byte, signature []byte, bitmask [32]byte, k u
 	values, err := args.Unpack(signature)
 	if err != nil {
 		return false, fmt.Errorf("decode signature: %w", err)
-	}
-	if len(validators) == 0 {
-		return false, nil
 	}
 
 	// ISSUE-043-01: reject tampered tuple-internal bitmask. AggregateSignatures
@@ -84,57 +142,8 @@ func VerifyClusterSignature(data []byte, signature []byte, bitmask [32]byte, k u
 	apkG2.Y.A1.SetBigInt(apkCoords[2]) // imaginary
 	apkG2.Y.A0.SetBigInt(apkCoords[3]) // real
 
-	// ISSUE-043-02: bind the outer bitmask to the aggregated apkG2.
-	//
-	// Spec invariant (ADR-008 §11): every set bit of the bitmask references
-	// a valid index into Validators, i.e.
-	//     highest_set_bit(bitmask) < len(Validators)
-	// AND apkG2 == sum(Validators[i] for bit i set).
-	//
-	// Two sealer paths co-exist and produce compatible blocks under this
-	// invariant:
-	//   - cluster.SigningCoordinator.SealBlock writes ALL r shard
-	//     members into Validators and a signers-only bitmask; typically
-	//     popcount(bitmask) < len(Validators). This is the production
-	//     path (`cmd/clearnode/main.go`).
-	//   - node/service/block_sealer.go P2PBlockSealer writes only
-	//     signers into Validators with popcount == len(Validators).
-	//
-	// Previously this function rejected when popcount != len(Validators),
-	// which wrongly rejected every block sealed via SigningCoordinator
-	// with threshold < r. The fix below aligns off-chain verification
-	// with the on-chain Slasher reconstruction: range-check the bitmask
-	// against the validator roster, then sum only the validators at
-	// set bit positions.
-	if len(validators) > 0 {
-		// Bitmask is [32]byte; len(validators) is guarded by this check.
-		// If any set bit i has i >= len(validators), the reconstruction
-		// would dereference out of range.
-		if core.BitmaskBitLen(bitmask) > len(validators) {
-			return false, nil
-		}
-	}
-
-	// ADR-008 §11 / F-CONSENSUS-001: every validator entry MUST be a full
-	// 128-byte BN254 G2 pubkey. NodeID placeholders or any other length are
-	// rejected. The sum of the bitmask-selected entries MUST match the
-	// embedded apkG2 — mirrors the on-chain Slasher reconstruction.
-	for i, v := range validators {
-		if len(v) != core.BLSPubKeyG2Len {
-			return false, fmt.Errorf("verify: validator %d has wrong length: got %d, want %d", i, len(v), core.BLSPubKeyG2Len)
-		}
-	}
-	var expected bn254.G2Affine
-	for i := 0; i < len(validators) && i < core.MaxClusterSize; i++ {
-		if !core.GetBitmaskBit(bitmask, i) {
-			continue
-		}
-		pub, dErr := DeserializeG2(validators[i])
-		if dErr != nil {
-			return false, fmt.Errorf("validator pubkey decode: %w", dErr)
-		}
-		expected.Add(&expected, &pub)
-	}
+	// The sum of the bitmask-selected entries MUST match the embedded apkG2 —
+	// mirrors the on-chain Slasher reconstruction.
 	if !expected.Equal(&apkG2) {
 		return false, nil
 	}
