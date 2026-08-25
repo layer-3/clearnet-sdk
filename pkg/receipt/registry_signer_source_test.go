@@ -8,34 +8,43 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+
+	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
 
-type fakeChecksumSource struct {
-	checksum [32]byte
-	ok       bool
+type fakeRegistryEventReader struct {
+	event core.ConfigRegistryEvent
+	ok    bool
+	err   error
+
+	wantRegistry common.Address
+	wantIssuerID common.Address
+	wantKey      [32]byte
 }
 
-func (f fakeChecksumSource) LatestChecksum(_ [32]byte) ([32]byte, bool) {
-	return f.checksum, f.ok
-}
-
-type fakeStore map[[32]byte][]byte
-
-func (s fakeStore) Payload(_ context.Context, checksum [32]byte) ([]byte, error) {
-	p, ok := s[checksum]
-	if !ok {
-		return nil, fmt.Errorf("not held")
+func (f fakeRegistryEventReader) LatestConfigRegistryEvent(_ context.Context, registry common.Address, issuerID common.Address, key [32]byte) (core.ConfigRegistryEvent, bool, error) {
+	if f.err != nil {
+		return core.ConfigRegistryEvent{}, false, f.err
 	}
-	return p, nil
+	if f.wantRegistry != (common.Address{}) && registry != f.wantRegistry {
+		return core.ConfigRegistryEvent{}, false, fmt.Errorf("registry = %s", registry.Hex())
+	}
+	if f.wantIssuerID != (common.Address{}) && issuerID != f.wantIssuerID {
+		return core.ConfigRegistryEvent{}, false, fmt.Errorf("issuer = %s", issuerID.Hex())
+	}
+	if f.wantKey != ([32]byte{}) && key != f.wantKey {
+		return core.ConfigRegistryEvent{}, false, fmt.Errorf("key = 0x%s", common.Bytes2Hex(key[:]))
+	}
+	return f.event, f.ok, nil
 }
 
-func sum(b []byte) [32]byte {
-	var out [32]byte
-	copy(out[:], crypto.Keccak256(b))
-	return out
+func checksum(b []byte) [32]byte {
+	return [32]byte(crypto.Keccak256Hash(b))
 }
 
 func TestRegistrySignerSource_Load(t *testing.T) {
+	registry := common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	issuerID := common.HexToAddress("0x00000000000000000000000000000000000000bb")
 	signers := []common.Address{
 		common.HexToAddress("0x0000000000000000000000000000000000000001"),
 		common.HexToAddress("0x0000000000000000000000000000000000000002"),
@@ -45,58 +54,100 @@ func TestRegistrySignerSource_Load(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	checksum := sum(payload)
-
-	var key [32]byte
-	key[0] = 0xAA
-	src, err := NewRegistrySignerSource(key, fakeChecksumSource{checksum: checksum, ok: true}, fakeStore{checksum: payload})
+	src, err := NewRegistrySignerSource(registry, fakeRegistryEventReader{
+		event: core.ConfigRegistryEvent{
+			Registry: registry,
+			IssuerID: issuerID,
+			Key:      ConfigRegistrySignersKey,
+			Checksum: checksum(payload),
+			HasData:  true,
+			Data:     payload,
+		},
+		ok:           true,
+		wantRegistry: registry,
+		wantIssuerID: issuerID,
+		wantKey:      ConfigRegistrySignersKey,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, thr, err := src.Load(context.Background())
+	got, err := src.LoadReceiptSigners(context.Background(), issuerID)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if thr != 2 || len(got) != 3 {
-		t.Fatalf("unexpected (signers=%d, threshold=%d)", len(got), thr)
+	if got.Threshold != 2 || len(got.Signers) != 3 {
+		t.Fatalf("unexpected (signers=%d, threshold=%d)", len(got.Signers), got.Threshold)
 	}
 }
 
-func TestRegistrySignerSource_NoChecksum(t *testing.T) {
-	var key [32]byte
-	src, _ := NewRegistrySignerSource(key, fakeChecksumSource{ok: false}, fakeStore{})
-	if _, _, err := src.Load(context.Background()); err == nil {
-		t.Fatal("expected error when no checksum is confirmed")
+func TestRegistrySignerSource_NoEvent(t *testing.T) {
+	registry := common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	issuerID := common.HexToAddress("0x00000000000000000000000000000000000000bb")
+	src, _ := NewRegistrySignerSource(registry, fakeRegistryEventReader{})
+	if _, err := src.LoadReceiptSigners(context.Background(), issuerID); err == nil {
+		t.Fatal("expected error when no signer event is confirmed")
 	}
 }
 
-// TestRegistrySignerSource_ChecksumMismatch is the safety property: a payload
-// store that returns bytes not matching the on-chain checksum cannot inject a
-// signer set — Load re-derives keccak256 and rejects.
 func TestRegistrySignerSource_ChecksumMismatch(t *testing.T) {
-	signers := []common.Address{
+	registry := common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	issuerID := common.HexToAddress("0x00000000000000000000000000000000000000bb")
+	payload, _ := MarshalSignerPayload([]common.Address{
 		common.HexToAddress("0x0000000000000000000000000000000000000001"),
 		common.HexToAddress("0x0000000000000000000000000000000000000002"),
-	}
-	payload, _ := MarshalSignerPayload(signers, 1)
-
-	// On-chain checksum claims something else.
-	var wrong [32]byte
-	wrong[0] = 0x99
-
-	var key [32]byte
-	src, _ := NewRegistrySignerSource(key, fakeChecksumSource{checksum: wrong, ok: true}, fakeStore{wrong: payload})
-	if _, _, err := src.Load(context.Background()); err == nil {
+	}, 1)
+	src, _ := NewRegistrySignerSource(registry, fakeRegistryEventReader{
+		event: core.ConfigRegistryEvent{
+			Registry: registry,
+			IssuerID: issuerID,
+			Key:      ConfigRegistrySignersKey,
+			Checksum: [32]byte{0x99},
+			HasData:  true,
+			Data:     payload,
+		},
+		ok: true,
+	})
+	if _, err := src.LoadReceiptSigners(context.Background(), issuerID); err == nil {
 		t.Fatal("expected checksum-mismatch rejection")
 	}
 }
 
-func TestRegistrySignerSource_MissingPayload(t *testing.T) {
-	var key, checksum [32]byte
-	checksum[0] = 0x01
-	src, _ := NewRegistrySignerSource(key, fakeChecksumSource{checksum: checksum, ok: true}, fakeStore{})
-	if _, _, err := src.Load(context.Background()); err == nil {
-		t.Fatal("expected error when payload is not held")
+func TestRegistrySignerSource_Rejections(t *testing.T) {
+	registry := common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	issuerID := common.HexToAddress("0x00000000000000000000000000000000000000bb")
+	payload, _ := MarshalSignerPayload([]common.Address{
+		common.HexToAddress("0x0000000000000000000000000000000000000001"),
+	}, 1)
+	base := core.ConfigRegistryEvent{
+		Registry: registry,
+		IssuerID: issuerID,
+		Key:      ConfigRegistrySignersKey,
+		Checksum: checksum(payload),
+		HasData:  true,
+		Data:     payload,
+	}
+	cases := []struct {
+		name string
+		mut  func(*core.ConfigRegistryEvent)
+	}{
+		{"wrong registry", func(ev *core.ConfigRegistryEvent) {
+			ev.Registry = common.HexToAddress("0x00000000000000000000000000000000000000cc")
+		}},
+		{"wrong issuer", func(ev *core.ConfigRegistryEvent) {
+			ev.IssuerID = common.HexToAddress("0x00000000000000000000000000000000000000dd")
+		}},
+		{"wrong key", func(ev *core.ConfigRegistryEvent) { ev.Key = [32]byte{0x01} }},
+		{"no data", func(ev *core.ConfigRegistryEvent) { ev.HasData = false }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := base
+			tc.mut(&ev)
+			src, _ := NewRegistrySignerSource(registry, fakeRegistryEventReader{event: ev, ok: true})
+			if _, err := src.LoadReceiptSigners(context.Background(), issuerID); err == nil {
+				t.Fatal("expected load to fail")
+			}
+		})
 	}
 }
 
@@ -110,31 +161,28 @@ func TestSignerPayload_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	got, thr, err := ParseSignerPayload(b)
+	got, err := ParseSignerPayload(b)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if thr != 2 {
-		t.Fatalf("threshold: got %d want 2", thr)
+	if got.Threshold != 2 {
+		t.Fatalf("threshold: got %d want 2", got.Threshold)
 	}
-	// Parsed set is ascending regardless of input order.
 	want := []common.Address{
 		common.HexToAddress("0x0000000000000000000000000000000000000001"),
 		common.HexToAddress("0x0000000000000000000000000000000000000002"),
 		common.HexToAddress("0x0000000000000000000000000000000000000003"),
 	}
-	if len(got) != len(want) {
-		t.Fatalf("len: got %d want %d", len(got), len(want))
+	if len(got.Signers) != len(want) {
+		t.Fatalf("len: got %d want %d", len(got.Signers), len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("signer[%d]: got %s want %s", i, got[i].Hex(), want[i].Hex())
+		if got.Signers[i] != want[i] {
+			t.Fatalf("signer[%d]: got %s want %s", i, got.Signers[i].Hex(), want[i].Hex())
 		}
 	}
 }
 
-// TestSignerPayload_Deterministic asserts content-addressing: the same intent in
-// a different input order yields byte-identical output (so the checksum agrees).
 func TestSignerPayload_Deterministic(t *testing.T) {
 	a := []common.Address{
 		common.HexToAddress("0x00000000000000000000000000000000000000aa"),
@@ -174,19 +222,16 @@ func TestSignerPayload_Rejections(t *testing.T) {
 		t.Error("expected error for duplicate signer")
 	}
 
-	// Version skew is rejected on parse.
 	bad := []byte(`{"v":2,"threshold":1,"signers":["0x0000000000000000000000000000000000000001"]}`)
-	if _, _, err := ParseSignerPayload(bad); err == nil {
+	if _, err := ParseSignerPayload(bad); err == nil {
 		t.Error("expected error for unsupported version")
 	}
-	// Non-ascending order is rejected.
 	unsorted := []byte(`{"v":1,"threshold":1,"signers":["0x0000000000000000000000000000000000000002","0x0000000000000000000000000000000000000001"]}`)
-	if _, _, err := ParseSignerPayload(unsorted); err == nil {
+	if _, err := ParseSignerPayload(unsorted); err == nil {
 		t.Error("expected error for non-ascending signers")
 	}
-	// The zero address is a valid hex address but never a valid signer.
 	zero := []byte(`{"v":1,"threshold":1,"signers":["0x0000000000000000000000000000000000000000"]}`)
-	if _, _, err := ParseSignerPayload(zero); err == nil {
+	if _, err := ParseSignerPayload(zero); err == nil {
 		t.Error("expected error for zero-address signer")
 	}
 }

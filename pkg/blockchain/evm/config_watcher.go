@@ -39,8 +39,7 @@ var _ ConfigWatcherReader = (*Config)(nil)
 // Config registry keys (ADR-017), modelled on BLSPubkeyCache: a startup
 // Backfill of latestConfigChecksum(key)/configEpoch(key), then a Watch loop that
 // applies ConfigSet events once they reach `confirmations` depth. It is the
-// shared read primitive behind both the daemon's ACTIVATE loop and clearnet's
-// RegistrySignerSource.
+// shared read primitive behind daemon config activation loops.
 //
 // A confirmed epoch advance fires OnChange (if set) so the consumer can react —
 // the daemon resolves the checksum to a held config_versions payload and either

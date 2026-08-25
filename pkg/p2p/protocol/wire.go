@@ -33,14 +33,15 @@ type AuthChallenge struct {
 
 // AuthResponse is the peer's reply after signing the nonce.
 //
-// Wire encoding: cborx V1 envelope wrapping a 2-tuple (Signature []byte,
-// Address string). Operator auth sets Address and signs keccak256(Nonce) with
-// the operator secp256k1 key (raw v=0/1 form). Passive auth leaves Address
-// empty and signs a domain-separated nonce with the libp2p identity key; the
-// Address field is then carried empty.
+// Wire encoding: cborx V1 envelope wrapping a 3-tuple (Signature []byte,
+// Address string, IssuerID string). Operator auth sets Address and IssuerID and
+// signs a domain-separated digest over Nonce + IssuerID. Passive auth leaves
+// Address and IssuerID empty and signs a domain-separated nonce with the libp2p
+// identity key.
 type AuthResponse struct {
 	Signature []byte
 	Address   string
+	IssuerID  string
 }
 
 // ReceiptAck is the server's response to a burn/mint receipt submission.
@@ -100,9 +101,9 @@ func (t *AuthChallenge) UnmarshalCBOR(r io.Reader) error {
 	return nil
 }
 
-var lengthBufAuthResponse = []byte{0x82} // CBOR array, 2 elements
+var lengthBufAuthResponse = []byte{0x83} // CBOR array, 3 elements
 
-// MarshalCBOR writes AuthResponse as a 2-element CBOR array.
+// MarshalCBOR writes AuthResponse as a 3-element CBOR array.
 func (t *AuthResponse) MarshalCBOR(w io.Writer) error {
 	if t == nil {
 		_, err := w.Write(cbg.CborNull)
@@ -127,11 +128,20 @@ func (t *AuthResponse) MarshalCBOR(w io.Writer) error {
 	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(t.Address))); err != nil {
 		return err
 	}
-	_, err := cw.WriteString(t.Address)
+	if _, err := cw.WriteString(t.Address); err != nil {
+		return err
+	}
+	if len(t.IssuerID) > cbg.MaxLength {
+		return fmt.Errorf("AuthResponse.IssuerID too long")
+	}
+	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(t.IssuerID))); err != nil {
+		return err
+	}
+	_, err := cw.WriteString(t.IssuerID)
 	return err
 }
 
-// UnmarshalCBOR reads AuthResponse from a 2-element CBOR array.
+// UnmarshalCBOR reads AuthResponse from a 3-element CBOR array.
 func (t *AuthResponse) UnmarshalCBOR(r io.Reader) error {
 	*t = AuthResponse{}
 	cr := cbg.NewCborReader(r)
@@ -139,8 +149,8 @@ func (t *AuthResponse) UnmarshalCBOR(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	if maj != cbg.MajArray || extra != 2 {
-		return fmt.Errorf("AuthResponse: expected 2-element CBOR array")
+	if maj != cbg.MajArray || extra != 3 {
+		return fmt.Errorf("AuthResponse: expected 3-element CBOR array")
 	}
 	// Signature (byte string).
 	maj, extra, err = cr.ReadHeader()
@@ -163,6 +173,11 @@ func (t *AuthResponse) UnmarshalCBOR(r io.Reader) error {
 		return fmt.Errorf("AuthResponse.Address: %w", err)
 	}
 	t.Address = addr
+	issuerID, err := cbg.ReadString(cr)
+	if err != nil {
+		return fmt.Errorf("AuthResponse.IssuerID: %w", err)
+	}
+	t.IssuerID = issuerID
 	return nil
 }
 

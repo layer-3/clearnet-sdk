@@ -29,6 +29,8 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
+const preparedTestIssuer = "0x0000000000000000000000000000000000001234"
+
 type preparedGetTxOutCall struct {
 	txID           string
 	vout           uint32
@@ -188,7 +190,7 @@ func newPreparedFixture(t *testing.T) *preparedFixture {
 		finalizers:   finalizers,
 		signers:      signers,
 		pubkeys:      pubkeys,
-		op:           &core.WithdrawalOp{Recipient: recipient.EncodeAddress(), AssetURI: "yellow://ynet/asset/custody/btc/0/0", Amount: decimal.New(100_000, -8)},
+		op:           &core.WithdrawalOp{Recipient: recipient.EncodeAddress(), AssetURI: "yellow://ynet/asset/" + preparedTestIssuer + "/btc/0/0", Amount: decimal.New(100_000, -8)},
 		withdrawalID: [32]byte{0xba, 0xdd, 0xca, 0xfe},
 		deadline:     2_000_000_000,
 	}
@@ -338,7 +340,7 @@ func TestPreparedWithdrawalPrepareAndValidate(t *testing.T) {
 	wrongAmount := *fixture.op
 	wrongAmount.Amount = decimal.New(100_001, -8)
 	wrongAsset := *fixture.op
-	wrongAsset.AssetURI = "yellow://ynet/asset/custody/btc/0/1"
+	wrongAsset.AssetURI = "yellow://ynet/asset/" + preparedTestIssuer + "/btc/0/1"
 	wrongID := fixture.withdrawalID
 	wrongID[31] ^= 1
 	checks := []struct {
@@ -447,7 +449,7 @@ func TestPreparedWithdrawalBinaryRoundTripAndMalformed(t *testing.T) {
 	// catches an encoder/decoder pair drifting together and silently making
 	// persisted prepared envelopes unreadable across binary upgrades.
 	const goldenLength = 1079
-	wantGoldenHash, err := hex.DecodeString("c43b9bf982496b46a47fd2177369a04f2f2e2dab0dca620fd47860f9d6496ae8")
+	wantGoldenHash, err := hex.DecodeString("0af94de0359455976c08541904baf0e57ce2d4a4c844dda9988a6c3f354f45c3")
 	if err != nil {
 		t.Fatal(err)
 	}

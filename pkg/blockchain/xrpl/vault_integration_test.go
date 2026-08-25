@@ -111,7 +111,7 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 
 	var wid [32]byte
 	wid[0], wid[31] = 0x12, 0x34
-	op := &core.WithdrawalOp{Recipient: recID.ClassicAddress, AssetURI: "yellow://ynet/asset/custody/xrpl/0/0", Amount: decimal.NewFromInt(50)} // 50 XRP
+	op := &core.WithdrawalOp{Recipient: recID.ClassicAddress, AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/xrpl/0/0", Amount: decimal.NewFromInt(50)} // 50 XRP
 
 	// Far-future deadline: the happy path must not expire mid-test. In standalone
 	// mode the value is not bound into LLS, but Pack/Validate still take it.
