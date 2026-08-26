@@ -2,7 +2,6 @@ package finality
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -16,37 +15,25 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 )
 
-type mapValidatorSet map[string]struct{}
+type mapValidatorChecker map[string]struct{}
 
-func newMapValidatorSet(validators [][]byte) mapValidatorSet {
-	set := make(mapValidatorSet, len(validators))
+func newMapValidatorChecker(validators [][]byte) mapValidatorChecker {
+	set := make(mapValidatorChecker, len(validators))
 	for _, validator := range validators {
 		set[string(validator)] = struct{}{}
 	}
 	return set
 }
 
-func (s mapValidatorSet) Contains(pubkey []byte) bool {
+func (s mapValidatorChecker) IsTrustedValidator(pubkey []byte) bool {
 	_, ok := s[string(pubkey)]
 	return ok
-}
-
-type staticValidatorSetSource struct {
-	set mapValidatorSet
-	err error
-}
-
-func (s staticValidatorSetSource) ValidatorSetAt(int64) (TrustedValidatorSet, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	return s.set, nil
 }
 
 func TestFinalizedWithdrawalVerifier_Valid(t *testing.T) {
 	fw, validators := finalizedWithdrawalFixture(t)
 	verifier := &FinalizedWithdrawalVerifier{
-		ValidatorSets: staticValidatorSetSource{set: newMapValidatorSet(validators)},
+		TrustedValidators: newMapValidatorChecker(validators),
 	}
 
 	got, err := verifier.Verify(fw)
@@ -76,28 +63,17 @@ func TestFinalizedWithdrawalVerifier_Valid(t *testing.T) {
 
 func TestFinalizedWithdrawalVerifier_RejectsNilFinalizedWithdrawal(t *testing.T) {
 	verifier := &FinalizedWithdrawalVerifier{
-		ValidatorSets: staticValidatorSetSource{set: mapValidatorSet{}},
+		TrustedValidators: mapValidatorChecker{},
 	}
 	if _, err := verifier.Verify(nil); err == nil {
 		t.Fatal("expected nil finalized withdrawal rejection")
 	}
 }
 
-func TestFinalizedWithdrawalVerifier_RejectsMissingValidatorSetSource(t *testing.T) {
+func TestFinalizedWithdrawalVerifier_RejectsMissingTrustedValidators(t *testing.T) {
 	fw, _ := finalizedWithdrawalFixture(t)
 	if _, err := (&FinalizedWithdrawalVerifier{}).Verify(fw); err == nil {
-		t.Fatal("expected missing validator set source rejection")
-	}
-}
-
-func TestFinalizedWithdrawalVerifier_PropagatesValidatorSetErrors(t *testing.T) {
-	fw, _ := finalizedWithdrawalFixture(t)
-	want := errors.New("registry unavailable")
-	verifier := &FinalizedWithdrawalVerifier{
-		ValidatorSets: staticValidatorSetSource{err: want},
-	}
-	if _, err := verifier.Verify(fw); !errors.Is(err, want) {
-		t.Fatalf("expected validator set error, got %v", err)
+		t.Fatal("expected missing trusted validators rejection")
 	}
 }
 
@@ -137,6 +113,19 @@ func TestFinalizedWithdrawalVerifier_RejectsBlockAttestationMismatch(t *testing.
 	}
 }
 
+func TestFinalizedWithdrawalVerifier_RejectsUnexpectedSigningClusterSize(t *testing.T) {
+	fw, validators := finalizedWithdrawalFixture(t)
+	fw.Block.K = core.BlockSigningClusterSize + 1
+	resignBlock(t, &fw.Block)
+	fw.BlockHash = fw.Block.Hash()
+	resignFinalizedWithdrawal(t, fw)
+
+	err := verifyFixtureFails(fw, validators)
+	if err == nil || !strings.Contains(err.Error(), "invalid signing quorum") {
+		t.Fatalf("expected signing cluster size rejection, got %v", err)
+	}
+}
+
 func TestFinalizedWithdrawalVerifier_RejectsFinalizedWithdrawalAttestationMismatch(t *testing.T) {
 	fw, validators := finalizedWithdrawalFixture(t)
 	fw.FinalizedAt++
@@ -149,9 +138,9 @@ func TestFinalizedWithdrawalVerifier_RejectsFinalizedWithdrawalAttestationMismat
 
 func TestFinalizedWithdrawalVerifier_RejectsUnauthorizedValidator(t *testing.T) {
 	fw, validators := finalizedWithdrawalFixture(t)
-	trusted := newMapValidatorSet(validators[:len(validators)-1])
+	trusted := newMapValidatorChecker(validators[:len(validators)-1])
 	verifier := &FinalizedWithdrawalVerifier{
-		ValidatorSets: staticValidatorSetSource{set: trusted},
+		TrustedValidators: trusted,
 	}
 
 	err := verifierErr(verifier, fw)
@@ -164,7 +153,7 @@ func TestFinalizedWithdrawalVerifier_RejectsDuplicateValidator(t *testing.T) {
 	fw, validators := finalizedWithdrawalFixture(t)
 	fw.Attestation.Validators[3] = append([]byte(nil), fw.Attestation.Validators[0]...)
 	verifier := &FinalizedWithdrawalVerifier{
-		ValidatorSets: staticValidatorSetSource{set: newMapValidatorSet(validators)},
+		TrustedValidators: newMapValidatorChecker(validators),
 	}
 
 	err := verifierErr(verifier, fw)
@@ -260,7 +249,7 @@ func TestFinalizedWithdrawalVerifier_RejectsFinalizedBeforeSealed(t *testing.T) 
 
 func verifyFixtureFails(fw *core.FinalizedWithdrawal, validators [][]byte) error {
 	verifier := &FinalizedWithdrawalVerifier{
-		ValidatorSets: staticValidatorSetSource{set: newMapValidatorSet(validators)},
+		TrustedValidators: newMapValidatorChecker(validators),
 	}
 	return verifierErr(verifier, fw)
 }
@@ -301,7 +290,7 @@ func finalizedWithdrawalFixture(t *testing.T) (*core.FinalizedWithdrawal, [][]by
 		Entries:       []core.BlockEntry{entry},
 		EntriesDigest: core.ComputeEntriesDigest([]core.BlockEntry{entry}),
 		StateRoot:     [32]byte{0xbb},
-		K:             5,
+		K:             core.BlockSigningClusterSize,
 		Attestation: core.Attestation{
 			Validators: cloneValidators(validators),
 		},
@@ -389,7 +378,7 @@ func cloneValidators(validators [][]byte) [][]byte {
 }
 
 func TestVerifyRosterAuthorized_RejectsWrongLength(t *testing.T) {
-	err := verifyRosterAuthorized([][]byte{bytes.Repeat([]byte{0x11}, 32)}, mapValidatorSet{})
+	err := verifyRosterTrusted([][]byte{bytes.Repeat([]byte{0x11}, 32)}, mapValidatorChecker{})
 	if err == nil || !strings.Contains(err.Error(), "wrong length") {
 		t.Fatalf("expected wrong-length rejection, got %v", err)
 	}
