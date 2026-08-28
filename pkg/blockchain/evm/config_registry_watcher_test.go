@@ -50,7 +50,13 @@ func (f *fakeConfigRegistryWatcherReader) FilterConfigCommittedEvents(_ context.
 	}
 	end := to
 	f.committedRanges = append(f.committedRanges, filterRange{start: from, end: &end})
-	return f.committed, nil
+	var out []*ConfigRegistryConfigCommitted
+	for _, ev := range f.committed {
+		if ev != nil && ev.Raw.BlockNumber >= from && ev.Raw.BlockNumber <= to {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeConfigRegistryWatcherReader) FilterConfigWithDataCommittedEvents(_ context.Context, from, to uint64) ([]*ConfigRegistryConfigWithDataCommitted, error) {
@@ -59,7 +65,13 @@ func (f *fakeConfigRegistryWatcherReader) FilterConfigWithDataCommittedEvents(_ 
 	}
 	end := to
 	f.withDataRanges = append(f.withDataRanges, filterRange{start: from, end: &end})
-	return f.withData, nil
+	var out []*ConfigRegistryConfigWithDataCommitted
+	for _, ev := range f.withData {
+		if ev != nil && ev.Raw.BlockNumber >= from && ev.Raw.BlockNumber <= to {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeConfigRegistryWatcherReader) TransactionLogs(_ context.Context, txHash common.Hash) ([]types.Log, error) {
@@ -246,6 +258,56 @@ func TestConfigRegistryWatcher_PollDeliversOrderedEventsAndSkipsCursorLog(t *tes
 		t.Fatalf("watermark: got %d want 15", wm)
 	}
 }
+
+func TestConfigRegistryWatcher_PollChunksRestoredCursorByLookback(t *testing.T) {
+	registry := common.HexToAddress("0x000000000000000000000000000000000000beef")
+	issuer := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	var key [32]byte
+	key[31] = 0xA
+	ev := committedEvent(132, 1, issuer, key, [32]byte{0xAA}, 1)
+	reader := &fakeConfigRegistryWatcherReader{
+		committed: []*ConfigRegistryConfigCommitted{ev},
+	}
+	reader.addConfigSetLog(issuer, ev, 3)
+	handler := &captureConfigRegistryHandler{}
+	w, err := newConfigRegistryWatcher(fakeHead{head: 140}, registry, reader, 5, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetInitialLookback(10)
+	w.SetCursorSource(fakeConfigRegistryCursorSource{
+		cursor: core.ConfigRegistryCursor{Registry: registry, BlockNumber: 100, LogIndex: 0},
+		ok:     true,
+	})
+	if err := w.initCursor(context.Background()); err != nil {
+		t.Fatalf("init cursor: %v", err)
+	}
+	if err := w.pollOnce(context.Background()); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	want := []filterRange{
+		{start: 100, end: uint64ptr(109)},
+		{start: 110, end: uint64ptr(119)},
+		{start: 120, end: uint64ptr(129)},
+		{start: 130, end: uint64ptr(135)},
+	}
+	if len(reader.committedRanges) != len(want) {
+		t.Fatalf("committed ranges: got %d want %d (%+v)", len(reader.committedRanges), len(want), reader.committedRanges)
+	}
+	for i, got := range reader.committedRanges {
+		if got.start != want[i].start || *got.end != *want[i].end {
+			t.Fatalf("committed range[%d]: start=%d end=%d want start=%d end=%d", i, got.start, *got.end, want[i].start, *want[i].end)
+		}
+	}
+	if len(handler.events) != 1 || handler.events[0].BlockNumber != 132 {
+		t.Fatalf("events: %+v, want block 132", handler.events)
+	}
+	if wm := w.Watermark(); wm != 135 {
+		t.Fatalf("watermark: got %d want 135", wm)
+	}
+}
+
+func uint64ptr(v uint64) *uint64 { return &v }
 
 func TestConfigRegistryWatcher_HandlerErrorDoesNotAdvancePastFailedEvent(t *testing.T) {
 	registry := common.HexToAddress("0x000000000000000000000000000000000000beef")
