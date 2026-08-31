@@ -223,7 +223,6 @@ func (w *ConfigRegistryWatcher) pollOnce(ctx context.Context) error {
 
 	w.mu.RLock()
 	watermark := w.watermark
-	cur := w.cursor
 	hasCursor := w.hasCursor
 	w.mu.RUnlock()
 
@@ -231,11 +230,38 @@ func (w *ConfigRegistryWatcher) pollOnce(ctx context.Context) error {
 	if !hasCursor && from < confirmed {
 		from++
 	}
-	if from > confirmed {
-		return nil
+	for {
+		if from > confirmed {
+			return nil
+		}
+		to := confirmed
+		if limit := w.logRangeLimit(); to-from+1 > limit {
+			to = from + limit - 1
+		}
+		if err := w.pollRange(ctx, from, to); err != nil {
+			return err
+		}
+		if to >= confirmed {
+			return nil
+		}
+		from = to + 1
 	}
+}
 
-	events, err := w.fetchEvents(ctx, from, confirmed)
+func (w *ConfigRegistryWatcher) logRangeLimit() uint64 {
+	if w.lookbackBlocks == 0 {
+		return defaultConfigLookupWindow
+	}
+	return w.lookbackBlocks
+}
+
+func (w *ConfigRegistryWatcher) pollRange(ctx context.Context, from, to uint64) error {
+	w.mu.RLock()
+	cur := w.cursor
+	hasCursor := w.hasCursor
+	w.mu.RUnlock()
+
+	events, err := w.fetchEvents(ctx, from, to)
 	if err != nil {
 		return err
 	}
@@ -266,8 +292,8 @@ func (w *ConfigRegistryWatcher) pollOnce(ctx context.Context) error {
 	}
 
 	w.mu.Lock()
-	if confirmed > w.watermark {
-		w.watermark = confirmed
+	if to > w.watermark {
+		w.watermark = to
 	}
 	w.mu.Unlock()
 	return nil
