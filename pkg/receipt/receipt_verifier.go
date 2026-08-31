@@ -61,10 +61,10 @@ func (v *ReceiptSignatureValidator) Threshold() int {
 	return v.threshold
 }
 
-// SameSnapshot reports whether two validators bind the same digest, quorum
-// threshold, and authorized signer set. Callers use it to fail closed when the
-// live roster changes between collection and persistence.
-func (v *ReceiptSignatureValidator) SameSnapshot(other *ReceiptSignatureValidator) bool {
+// MatchesSigningContext reports whether two validators bind the same digest,
+// quorum threshold, and authorized signer set. Callers use it to fail closed
+// when the live roster changes between collection and persistence.
+func (v *ReceiptSignatureValidator) MatchesSigningContext(other *ReceiptSignatureValidator) bool {
 	if v == nil || other == nil || v.threshold != other.threshold ||
 		!bytes.Equal(v.digest, other.digest) || len(v.signers) != len(other.signers) {
 		return false

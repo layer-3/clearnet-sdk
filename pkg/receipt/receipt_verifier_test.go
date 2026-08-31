@@ -111,7 +111,7 @@ func TestPrepareBurnReceiptSignaturesFreezesRosterAndMatchesVerifier(t *testing.
 	if !reflect.DeepEqual(forward, reverse) {
 		t.Fatal("receipt quorum assembly depends on arrival order")
 	}
-	if current, err := rv.PrepareBurnReceiptSignatures(context.Background(), r); err == nil || prepared.SameSnapshot(current) {
+	if current, err := rv.PrepareBurnReceiptSignatures(context.Background(), r); err == nil || prepared.MatchesSigningContext(current) {
 		t.Fatalf("changed signer source unexpectedly matched prepared snapshot: current=%v err=%v", current, err)
 	}
 }

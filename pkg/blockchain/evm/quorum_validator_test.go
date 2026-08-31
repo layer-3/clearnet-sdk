@@ -72,10 +72,10 @@ func TestSignatureValidatorSnapshotEqualityIncludesRosterThresholdAndDigest(t *t
 	reordered, _ := NewSignatureValidator(digest, []common.Address{a2, a1}, 1)
 	changedThreshold, _ := NewSignatureValidator(digest, []common.Address{a1, a2}, 2)
 	changedDigest, _ := NewSignatureValidator(crypto.Keccak256Hash([]byte("other")), []common.Address{a1, a2}, 1)
-	if !base.SameSnapshot(reordered) {
+	if !base.MatchesSigningContext(reordered) {
 		t.Fatal("equivalent signer set did not match")
 	}
-	if base.SameSnapshot(changedThreshold) || base.SameSnapshot(changedDigest) {
+	if base.MatchesSigningContext(changedThreshold) || base.MatchesSigningContext(changedDigest) {
 		t.Fatal("changed quorum or digest matched snapshot")
 	}
 }

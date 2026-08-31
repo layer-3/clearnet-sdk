@@ -48,9 +48,9 @@ func (v *SignatureValidator) Threshold() int {
 	return v.threshold
 }
 
-// SameSnapshot reports whether two validators bind the same digest and exact
-// authorized quorum.
-func (v *SignatureValidator) SameSnapshot(other *SignatureValidator) bool {
+// MatchesSigningContext reports whether two validators bind the same digest
+// and exact authorized quorum.
+func (v *SignatureValidator) MatchesSigningContext(other *SignatureValidator) bool {
 	if v == nil || other == nil || v.digest != other.digest ||
 		v.threshold != other.threshold || len(v.authorized) != len(other.authorized) {
 		return false

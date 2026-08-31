@@ -68,10 +68,10 @@ func TestSignatureValidatorSnapshotEqualityIncludesRosterThresholdAndDigest(t *t
 	reordered, _ := NewSignatureValidator([32]byte{1}, []solana.PublicKey{a2, a1}, 1)
 	changedThreshold, _ := NewSignatureValidator([32]byte{1}, []solana.PublicKey{a1, a2}, 2)
 	changedDigest, _ := NewSignatureValidator([32]byte{2}, []solana.PublicKey{a1, a2}, 1)
-	if !base.SameSnapshot(reordered) {
+	if !base.MatchesSigningContext(reordered) {
 		t.Fatal("equivalent signer set did not match")
 	}
-	if base.SameSnapshot(changedThreshold) || base.SameSnapshot(changedDigest) {
+	if base.MatchesSigningContext(changedThreshold) || base.MatchesSigningContext(changedDigest) {
 		t.Fatal("changed quorum or digest matched snapshot")
 	}
 }
