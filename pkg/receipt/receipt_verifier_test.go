@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -73,6 +74,45 @@ func signWith(t *testing.T, r *core.BurnReceipt, keys ...*ecdsa.PrivateKey) {
 			t.Fatalf("sign[%d]: %v", i, err)
 		}
 		r.Signatures[i] = sig
+	}
+}
+
+func TestPrepareBurnReceiptSignaturesFreezesRosterAndMatchesVerifier(t *testing.T) {
+	k1, k2 := mustGenerateKey(t), mustGenerateKey(t)
+	source := &stubSignerSource{signers: []common.Address{
+		crypto.PubkeyToAddress(k1.PublicKey), crypto.PubkeyToAddress(k2.PublicKey),
+	}, threshold: 2}
+	rv := NewReceiptVerifier(source, stubWithdrawalIssuerResolver{issuerID: testIssuerID})
+	r := makeReceipt(0x50)
+	prepared, err := rv.PrepareBurnReceiptSignatures(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signWith(t, r, k1, k2)
+	// Mutating the source after preparation must not change candidate rules.
+	source.signers = nil
+	source.threshold = 0
+	for i, sig := range r.Signatures {
+		if _, ok := prepared.ValidateSignature(sig); !ok {
+			t.Fatalf("signature %d rejected", i)
+		}
+	}
+	if err := prepared.VerifySignatures(r.Signatures); err != nil {
+		t.Fatal(err)
+	}
+	forward, err := prepared.QuorumSignatures(r.Signatures)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reverse, err := prepared.QuorumSignatures([][]byte{r.Signatures[1], r.Signatures[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(forward, reverse) {
+		t.Fatal("receipt quorum assembly depends on arrival order")
+	}
+	if current, err := rv.PrepareBurnReceiptSignatures(context.Background(), r); err == nil || prepared.SameSnapshot(current) {
+		t.Fatalf("changed signer source unexpectedly matched prepared snapshot: current=%v err=%v", current, err)
 	}
 }
 

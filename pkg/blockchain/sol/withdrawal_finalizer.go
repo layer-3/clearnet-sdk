@@ -1,12 +1,10 @@
 package sol
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -172,14 +170,32 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 	return share, nil
 }
 
+// PrepareSignatureValidator freezes the live program quorum and exact
+// withdrawal digest for validation-first mesh collection.
+func (f *WithdrawalFinalizer) PrepareSignatureValidator(ctx context.Context, packed []byte) (*SignatureValidator, error) {
+	digest, err := f.digestFromPacked(packed)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
+	if err != nil {
+		return nil, err
+	}
+	return NewSignatureValidator(digest, cfg.Signers, int(cfg.Threshold))
+}
+
 // merge filters the shares against the live on-chain signer set and orders +
 // trims them to the quorum, returning the parallel ed25519 pubkeys / signatures.
-func (f *WithdrawalFinalizer) merge(ctx context.Context, shares [][]byte) (pubkeys, sigs [][]byte, err error) {
+func (f *WithdrawalFinalizer) merge(ctx context.Context, digest [32]byte, shares [][]byte) (pubkeys, sigs [][]byte, err error) {
 	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
 	if err != nil {
 		return nil, nil, err
 	}
-	return assembleQuorum(shares, cfg.Signers, int(cfg.Threshold))
+	validator, err := NewSignatureValidator(digest, cfg.Signers, int(cfg.Threshold))
+	if err != nil {
+		return nil, nil, err
+	}
+	return validator.AssembleShares(shares)
 }
 
 // Submit filters + orders the collected shares against the live signer set,
@@ -195,12 +211,12 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares 
 		return "", err
 	}
 
-	pubkeys, sigs, err := f.merge(ctx, shares)
+	digest := WithdrawDigest(f.chainID, f.programID, f.vaultPDA, to, mint, amount, wid, deadline)
+	pubkeys, sigs, err := f.merge(ctx, digest, shares)
 	if err != nil {
 		return "", err
 	}
 
-	digest := WithdrawDigest(f.chainID, f.programID, f.vaultPDA, to, mint, amount, wid, deadline)
 	ed25519Ix, err := BuildEd25519Instruction(pubkeys, sigs, digest[:])
 	if err != nil {
 		return "", err
@@ -383,46 +399,4 @@ func decodePacked(p solPacked) (to, mint solana.PublicKey, amount uint64, wid [3
 	amount = p.Amount
 	deadline = p.Deadline
 	return
-}
-
-// assembleQuorum filters shares to the authorized signer set, dedups, orders by
-// pubkey ascending (the program's verifier walks them in order), and trims to
-// the threshold.
-func assembleQuorum(shares [][]byte, authorized []solana.PublicKey, threshold int) (pubkeys, sigs [][]byte, err error) {
-	auth := make(map[solana.PublicKey]struct{}, len(authorized))
-	for _, s := range authorized {
-		auth[s] = struct{}{}
-	}
-	type item struct {
-		pub solana.PublicKey
-		sig []byte
-	}
-	seen := make(map[solana.PublicKey]struct{})
-	var items []item
-	for _, sh := range shares {
-		if len(sh) != shareLen {
-			continue
-		}
-		var pub solana.PublicKey
-		copy(pub[:], sh[:32])
-		if _, ok := auth[pub]; !ok {
-			continue
-		}
-		if _, dup := seen[pub]; dup {
-			continue
-		}
-		seen[pub] = struct{}{}
-		items = append(items, item{pub: pub, sig: append([]byte(nil), sh[32:96]...)})
-	}
-	if len(items) < threshold {
-		return nil, nil, fmt.Errorf("sol: only %d of %d authorized shares", len(items), threshold)
-	}
-	sort.Slice(items, func(i, j int) bool { return bytes.Compare(items[i].pub[:], items[j].pub[:]) < 0 })
-	items = items[:threshold]
-	for _, it := range items {
-		pk := it.pub
-		pubkeys = append(pubkeys, append([]byte(nil), pk[:]...))
-		sigs = append(sigs, it.sig)
-	}
-	return pubkeys, sigs, nil
 }

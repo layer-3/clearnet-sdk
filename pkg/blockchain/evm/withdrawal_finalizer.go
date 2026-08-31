@@ -143,6 +143,24 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
+// PrepareSignatureValidator freezes the live vault quorum and exact withdrawal
+// digest for validation-first mesh collection.
+func (f *WithdrawalFinalizer) PrepareSignatureValidator(ctx context.Context, packed []byte) (*SignatureValidator, error) {
+	var p evmPacked
+	if err := json.Unmarshal(packed, &p); err != nil {
+		return nil, fmt.Errorf("decode packed: %w", err)
+	}
+	digest, err := f.digest(p)
+	if err != nil {
+		return nil, err
+	}
+	signers, threshold, err := fetchLiveQuorum(ctx, f.custody)
+	if err != nil {
+		return nil, err
+	}
+	return NewSignatureValidator(digest, signers, threshold)
+}
+
 // merge filters the collected signatures against the live on-chain signer set,
 // trims to the live threshold, orders them by signer address (Custody.sol
 // requires ascending, no duplicates), and shifts V to {27,28}. It returns the

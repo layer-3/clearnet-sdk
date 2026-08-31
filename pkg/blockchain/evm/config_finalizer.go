@@ -407,6 +407,16 @@ func (f *ConfigRegistryCommitFinalizer) Sign(ctx context.Context, packed []byte)
 	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
+// PrepareSignatureValidator binds packed to the caller's frozen issuer quorum.
+// Custody uses the same snapshot for leader selection and candidate collection.
+func (f *ConfigRegistryCommitFinalizer) PrepareSignatureValidator(packed []byte, liveKeys []common.Address, liveThreshold int) (*SignatureValidator, error) {
+	digest, err := f.digestFromPacked(packed)
+	if err != nil {
+		return nil, err
+	}
+	return NewSignatureValidator(common.Hash(digest), liveKeys, liveThreshold)
+}
+
 func (f *ConfigRegistryCommitFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error) {
 	p, key, checksum, data, nonce, err := f.parsePacked(packed)
 	if err != nil {
@@ -789,6 +799,16 @@ func (f *ConfigRegistryIssuerSettingsUpdateFinalizer) Sign(ctx context.Context, 
 		return nil, err
 	}
 	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
+}
+
+// PrepareSignatureValidator binds packed to the caller's frozen outgoing
+// issuer quorum for validation-first collection.
+func (f *ConfigRegistryIssuerSettingsUpdateFinalizer) PrepareSignatureValidator(packed []byte, liveKeys []common.Address, liveThreshold int) (*SignatureValidator, error) {
+	digest, err := f.digestFromPacked(packed)
+	if err != nil {
+		return nil, err
+	}
+	return NewSignatureValidator(common.Hash(digest), liveKeys, liveThreshold)
 }
 
 func (f *ConfigRegistryIssuerSettingsUpdateFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error) {

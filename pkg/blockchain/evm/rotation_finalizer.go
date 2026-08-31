@@ -135,6 +135,20 @@ func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, er
 	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
+// PrepareSignatureValidator freezes the live outgoing vault quorum and exact
+// rotation digest for validation-first mesh collection.
+func (f *RotationFinalizer) PrepareSignatureValidator(ctx context.Context, packed []byte) (*SignatureValidator, error) {
+	digest, err := f.digestFromPacked(packed)
+	if err != nil {
+		return nil, err
+	}
+	signers, threshold, err := fetchLiveQuorum(ctx, f.custody)
+	if err != nil {
+		return nil, err
+	}
+	return NewSignatureValidator(common.Hash(digest), signers, threshold)
+}
+
 // Submit merges the collected signatures against the live (outgoing) signer set
 // and broadcasts updateSigners. Idempotent: if the rotation already applied it
 // returns the prior txID without re-submitting.

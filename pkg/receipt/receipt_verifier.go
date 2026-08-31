@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -35,6 +36,101 @@ type ReceiptVerifier struct {
 	withdrawalIssuers WithdrawalIssuerResolver
 }
 
+// ReceiptSignatureValidator is an immutable snapshot of the signer quorum and
+// digest for one receipt. It is safe to use while collecting untrusted mesh
+// candidates: rejected signatures never consume a quorum slot.
+type ReceiptSignatureValidator struct {
+	digest    []byte
+	signers   map[common.Address]struct{}
+	threshold int
+}
+
+// Digest returns a defensive copy of the receipt digest.
+func (v *ReceiptSignatureValidator) Digest() []byte {
+	if v == nil {
+		return nil
+	}
+	return append([]byte(nil), v.digest...)
+}
+
+// Threshold returns the frozen quorum threshold.
+func (v *ReceiptSignatureValidator) Threshold() int {
+	if v == nil {
+		return 0
+	}
+	return v.threshold
+}
+
+// SameSnapshot reports whether two validators bind the same digest, quorum
+// threshold, and authorized signer set. Callers use it to fail closed when the
+// live roster changes between collection and persistence.
+func (v *ReceiptSignatureValidator) SameSnapshot(other *ReceiptSignatureValidator) bool {
+	if v == nil || other == nil || v.threshold != other.threshold ||
+		!bytes.Equal(v.digest, other.digest) || len(v.signers) != len(other.signers) {
+		return false
+	}
+	for signer := range v.signers {
+		if _, ok := other.signers[signer]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateSignature recovers and authorizes one receipt signature.
+func (v *ReceiptSignatureValidator) ValidateSignature(sig []byte) (common.Address, bool) {
+	if v == nil {
+		return common.Address{}, false
+	}
+	addr, ok, err := recoverReceiptSigner(v.digest, sig)
+	if err != nil || !ok {
+		return common.Address{}, false
+	}
+	_, authorized := v.signers[addr]
+	return addr, authorized
+}
+
+// VerifySignatures verifies a distinct authorized quorum against the frozen
+// snapshot used during collection.
+func (v *ReceiptSignatureValidator) VerifySignatures(sigs [][]byte) error {
+	_, err := v.QuorumSignatures(sigs)
+	return err
+}
+
+// QuorumSignatures filters invalid, unauthorized, and duplicate candidates,
+// then returns a deterministic threshold-sized quorum ordered by signer.
+func (v *ReceiptSignatureValidator) QuorumSignatures(sigs [][]byte) ([][]byte, error) {
+	if v == nil || v.threshold <= 0 {
+		return nil, errors.New("receipt signature validator not configured")
+	}
+	if len(sigs) < v.threshold {
+		return nil, fmt.Errorf("insufficient signatures: %d < %d", len(sigs), v.threshold)
+	}
+	bySigner := make(map[common.Address][]byte, v.threshold)
+	for _, sig := range sigs {
+		addr, ok := v.ValidateSignature(sig)
+		if !ok {
+			continue
+		}
+		if kept, exists := bySigner[addr]; !exists || bytes.Compare(sig, kept) < 0 {
+			bySigner[addr] = append([]byte(nil), sig...)
+		}
+	}
+	if len(bySigner) < v.threshold {
+		return nil, fmt.Errorf("insufficient distinct signers: %d/%d", len(bySigner), v.threshold)
+	}
+	addresses := make([]common.Address, 0, len(bySigner))
+	for addr := range bySigner {
+		addresses = append(addresses, addr)
+	}
+	sort.Slice(addresses, func(i, j int) bool { return bytes.Compare(addresses[i][:], addresses[j][:]) < 0 })
+	out := make([][]byte, v.threshold)
+	for i, addr := range addresses[:v.threshold] {
+		out[i] = bySigner[addr]
+	}
+	return out, nil
+}
+
 func NewReceiptVerifier(source core.ReceiptSignerSource, withdrawalIssuers WithdrawalIssuerResolver) *ReceiptVerifier {
 	return &ReceiptVerifier{source: source, withdrawalIssuers: withdrawalIssuers}
 }
@@ -56,80 +152,82 @@ func (rv *ReceiptVerifier) SetSignersForTest(signers []common.Address, threshold
 // VerifyBurnReceipt checks that the receipt carries at least `threshold`
 // distinct valid signatures from the cached signer set over BurnReceiptDigest.
 func (rv *ReceiptVerifier) VerifyBurnReceipt(ctx context.Context, v *core.BurnReceipt) error {
+	validator, err := rv.PrepareBurnReceiptSignatures(ctx, v)
+	if err != nil {
+		return err
+	}
+	return validator.VerifySignatures(v.Signatures)
+}
+
+// PrepareBurnReceiptSignatures freezes the current issuer receipt quorum and
+// exact BurnReceipt digest for poison-tolerant candidate collection.
+func (rv *ReceiptVerifier) PrepareBurnReceiptSignatures(ctx context.Context, v *core.BurnReceipt) (*ReceiptSignatureValidator, error) {
 	if v == nil {
-		return errors.New("nil burn receipt")
+		return nil, errors.New("nil burn receipt")
 	}
 	if rv == nil || rv.withdrawalIssuers == nil {
-		return errors.New("receipt verifier has no withdrawal issuer resolver")
+		return nil, errors.New("receipt verifier has no withdrawal issuer resolver")
 	}
 	issuerID, err := rv.withdrawalIssuers.IssuerIDByWithdrawalID(ctx, v.WithdrawalID)
 	if err != nil {
-		return fmt.Errorf("resolve withdrawal issuer: %w", err)
+		return nil, fmt.Errorf("resolve withdrawal issuer: %w", err)
 	}
-	return rv.verifySignatures(ctx, issuerID, BurnReceiptDigest(v), v.Signatures)
+	return rv.prepareSignatures(ctx, issuerID, BurnReceiptDigest(v))
 }
 
 // VerifyMintReceipt checks that the receipt carries at least `threshold`
 // distinct valid signatures from the cached signer set over MintReceiptDigest.
 func (rv *ReceiptVerifier) VerifyMintReceipt(ctx context.Context, v *core.MintReceipt) error {
+	validator, err := rv.PrepareMintReceiptSignatures(ctx, v)
+	if err != nil {
+		return err
+	}
+	return validator.VerifySignatures(v.Signatures)
+}
+
+// PrepareMintReceiptSignatures freezes the current issuer receipt quorum and
+// exact MintReceipt digest for poison-tolerant candidate collection.
+func (rv *ReceiptVerifier) PrepareMintReceiptSignatures(ctx context.Context, v *core.MintReceipt) (*ReceiptSignatureValidator, error) {
 	if v == nil {
-		return errors.New("nil mint receipt")
+		return nil, errors.New("nil mint receipt")
 	}
 	if v.Amount.Sign() <= 0 {
-		return errors.New("mint receipt amount must be positive")
+		return nil, errors.New("mint receipt amount must be positive")
 	}
 	issuerID, err := core.IssuerIDFromAssetURI(v.AssetURI)
 	if err != nil {
-		return fmt.Errorf("mint receipt issuer: %w", err)
+		return nil, fmt.Errorf("mint receipt issuer: %w", err)
 	}
-	return rv.verifySignatures(ctx, issuerID, MintReceiptDigest(v), v.Signatures)
+	return rv.prepareSignatures(ctx, issuerID, MintReceiptDigest(v))
 }
 
-// verifySignatures is the shared signature-quorum check used by both receipt
-// kinds. It enforces the staleness window, the count floor, and distinct-signer
-// quorum.
-func (rv *ReceiptVerifier) verifySignatures(ctx context.Context, issuerID common.Address, digest []byte, sigs [][]byte) error {
+func (rv *ReceiptVerifier) prepareSignatures(ctx context.Context, issuerID common.Address, digest []byte) (*ReceiptSignatureValidator, error) {
 	if rv == nil {
-		return errors.New("receipt verifier not configured")
+		return nil, errors.New("receipt verifier not configured")
 	}
 	if rv.source == nil {
-		return errors.New("receipt verifier has no signer source")
+		return nil, errors.New("receipt verifier has no signer source")
 	}
 	set, err := rv.source.LoadReceiptSigners(ctx, issuerID)
 	if err != nil {
-		return fmt.Errorf("load receipt signers: %w", err)
+		return nil, fmt.Errorf("load receipt signers: %w", err)
 	}
 	if set.Threshold <= 0 || set.Threshold > len(set.Signers) {
-		return fmt.Errorf("receipt threshold = %d out of range for %d signers", set.Threshold, len(set.Signers))
+		return nil, fmt.Errorf("receipt threshold = %d out of range for %d signers", set.Threshold, len(set.Signers))
 	}
 	signers := make(map[common.Address]struct{}, len(set.Signers))
 	for _, s := range set.Signers {
+		if s == (common.Address{}) {
+			return nil, errors.New("receipt signer set contains zero address")
+		}
 		signers[s] = struct{}{}
 	}
-	if len(sigs) < set.Threshold {
-		return fmt.Errorf("insufficient signatures: %d < %d", len(sigs), set.Threshold)
+	if set.Threshold > len(signers) {
+		return nil, fmt.Errorf("receipt threshold = %d exceeds %d distinct signers", set.Threshold, len(signers))
 	}
-	seen := make(map[common.Address]struct{}, set.Threshold)
-	for _, sig := range sigs {
-		addr, ok, err := recoverReceiptSigner(digest, sig)
-		if err != nil {
-			continue
-		}
-		if !ok {
-			continue
-		}
-		if _, isSigner := signers[addr]; !isSigner {
-			continue
-		}
-		if _, dup := seen[addr]; dup {
-			continue
-		}
-		seen[addr] = struct{}{}
-		if len(seen) >= set.Threshold {
-			return nil
-		}
-	}
-	return fmt.Errorf("insufficient distinct signers: %d/%d", len(seen), set.Threshold)
+	return &ReceiptSignatureValidator{
+		digest: append([]byte(nil), digest...), signers: signers, threshold: set.Threshold,
+	}, nil
 }
 
 // recoverReceiptSigner dispatches signature verification by length and
