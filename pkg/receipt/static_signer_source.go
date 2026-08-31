@@ -30,6 +30,9 @@ func NewStaticSignerSource(signers []common.Address, threshold int) (*StaticSign
 	seen := make(map[common.Address]struct{}, len(signers))
 	out := make([]common.Address, 0, len(signers))
 	for _, s := range signers {
+		if s == (common.Address{}) {
+			return nil, errors.New("custody signer set contains zero address")
+		}
 		if _, dup := seen[s]; dup {
 			return nil, fmt.Errorf("duplicate custody signer %s", s.Hex())
 		}

@@ -184,23 +184,11 @@ func (f *WithdrawalFinalizer) PrepareSignatureValidator(ctx context.Context, pac
 	return NewSignatureValidator(digest, cfg.Signers, int(cfg.Threshold))
 }
 
-// merge filters the shares against the live on-chain signer set and orders +
-// trims them to the quorum, returning the parallel ed25519 pubkeys / signatures.
-func (f *WithdrawalFinalizer) merge(ctx context.Context, digest [32]byte, shares [][]byte) (pubkeys, sigs [][]byte, err error) {
-	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
-	if err != nil {
-		return nil, nil, err
-	}
-	validator, err := NewSignatureValidator(digest, cfg.Signers, int(cfg.Threshold))
-	if err != nil {
-		return nil, nil, err
-	}
-	return validator.AssembleShares(shares)
-}
-
 // Submit filters + orders the collected shares against the live signer set,
 // assembles the Ed25519-precompile + execute transaction, and broadcasts it
-// (fee-payer signed), then waits for the Withdrawal PDA to appear.
+// (fee-payer signed), then waits for the Withdrawal PDA to appear. The caller
+// owns the ceremony boundary and compares its collection-time validator with a
+// fresh one before calling Submit.
 func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
 	var p solPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
@@ -211,8 +199,12 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares 
 		return "", err
 	}
 
-	digest := WithdrawDigest(f.chainID, f.programID, f.vaultPDA, to, mint, amount, wid, deadline)
-	pubkeys, sigs, err := f.merge(ctx, digest, shares)
+	validator, err := f.PrepareSignatureValidator(ctx, packed)
+	if err != nil {
+		return "", err
+	}
+	digest := validator.Digest()
+	pubkeys, sigs, err := validator.AssembleShares(shares)
 	if err != nil {
 		return "", err
 	}

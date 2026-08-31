@@ -112,6 +112,9 @@ type VaultDepositor interface {
 // deadline (unix seconds) is threaded into Pack/Validate: it is a
 // digest input on every chain, so the packed bytes — and thus the signature —
 // bind it. Sign/Submit are unchanged; the packed body already carries it.
+// Chain-specific validation-first collection APIs are exposed by the concrete
+// EVM and Solana finalizers rather than this cross-chain interface; BTC and XRPL
+// use their own prepared/finalized validation models.
 type VaultWithdrawalFinalizer interface {
 	Pack(ctx context.Context, op *WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error)
 	Validate(ctx context.Context, packed []byte, op *WithdrawalOp, withdrawalID [32]byte, deadline int64) error
@@ -158,6 +161,10 @@ type VaultWithdrawalFinalizer interface {
 //     requested one?" — binary (done or not), the signal each node uses to close
 //     the dual-sign window and drop the outgoing key. It is keyed on the new
 //     signer set (not opID), so it stays a direct state read on every chain.
+//
+// Chain-specific validation-first collection APIs are exposed by the concrete
+// EVM and Solana finalizers rather than this cross-chain interface; BTC and XRPL
+// use their own prepared/finalized validation models.
 type SignerRotationFinalizer interface {
 	Pack(ctx context.Context, opID [32]byte, newSigners []string, newThreshold int) ([]byte, error)
 	Validate(ctx context.Context, opID [32]byte, packed []byte, newSigners []string, newThreshold int) error

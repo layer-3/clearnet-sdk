@@ -20,6 +20,16 @@ type SignatureValidator struct {
 	threshold  int
 }
 
+const maxCandidatesPerAuthorizedSigner = 4
+
+type signatureValidation uint8
+
+const (
+	signatureInvalid signatureValidation = iota
+	signatureUnauthorized
+	signatureAuthorized
+)
+
 // NewSignatureValidator prepares candidate validation without any network
 // access. Signatures must use the custody wire form V in {0,1}; contract form
 // {27,28} is produced only by ContractSignatures.
@@ -40,6 +50,7 @@ func NewSignatureValidator(digest common.Hash, signers []common.Address, thresho
 	return &SignatureValidator{digest: digest, authorized: authorized, threshold: threshold}, nil
 }
 
+// Digest returns the prepared operation digest. A nil validator returns zero.
 func (v *SignatureValidator) Digest() common.Hash {
 	if v == nil {
 		return common.Hash{}
@@ -47,6 +58,7 @@ func (v *SignatureValidator) Digest() common.Hash {
 	return v.digest
 }
 
+// Threshold returns the prepared quorum threshold. A nil validator returns zero.
 func (v *SignatureValidator) Threshold() int {
 	if v == nil {
 		return 0
@@ -71,44 +83,71 @@ func (v *SignatureValidator) MatchesSigningContext(other *SignatureValidator) bo
 }
 
 // ValidateSignature rejects malformed and malleable signatures before signer
-// recovery, then returns the canonical authorized signer identity.
+// recovery, then returns the canonical authorized signer identity. Every
+// rejected candidate, including an unauthorized recovery, returns zero,false.
 func (v *SignatureValidator) ValidateSignature(sig []byte) (common.Address, bool) {
-	if v == nil || len(sig) != crypto.SignatureLength || sig[64] > 1 {
+	addr, result := v.validateSignature(sig)
+	if result != signatureAuthorized {
 		return common.Address{}, false
+	}
+	return addr, true
+}
+
+func (v *SignatureValidator) validateSignature(sig []byte) (common.Address, signatureValidation) {
+	if v == nil || len(sig) != crypto.SignatureLength || sig[64] > 1 {
+		return common.Address{}, signatureInvalid
 	}
 	r := new(big.Int).SetBytes(sig[:32])
 	s := new(big.Int).SetBytes(sig[32:64])
 	if !crypto.ValidateSignatureValues(sig[64], r, s, true) {
-		return common.Address{}, false
+		return common.Address{}, signatureInvalid
 	}
 	pub, err := crypto.SigToPub(v.digest[:], sig)
 	if err != nil {
-		return common.Address{}, false
+		return common.Address{}, signatureInvalid
 	}
 	addr := crypto.PubkeyToAddress(*pub)
-	_, ok := v.authorized[addr]
-	return addr, ok
+	if _, ok := v.authorized[addr]; !ok {
+		return addr, signatureUnauthorized
+	}
+	return addr, signatureAuthorized
 }
 
 // ContractSignatures filters invalid, unauthorized, and duplicate candidates,
-// selects a deterministic quorum, sorts it by signer address, and converts V
-// from wire form {0,1} to Solidity form {27,28}.
+// selects the threshold lowest authorized signer addresses, and converts V from
+// wire form {0,1} to Solidity form {27,28}. Selecting after the full validated
+// scan is deterministic and intentionally does not preserve arrival order.
 func (v *SignatureValidator) ContractSignatures(signatures [][]byte) ([][]byte, error) {
 	if v == nil || v.threshold <= 0 {
 		return nil, fmt.Errorf("signature validator not configured")
 	}
+	if len(signatures) > maxCandidatesPerAuthorizedSigner*len(v.authorized) {
+		return nil, fmt.Errorf("too many signature candidates: %d for %d authorized signers", len(signatures), len(v.authorized))
+	}
 	bySigner := make(map[common.Address][]byte, v.threshold)
+	var invalid, unauthorized, duplicates int
 	for _, sig := range signatures {
-		addr, ok := v.ValidateSignature(sig)
-		if !ok {
+		addr, result := v.validateSignature(sig)
+		switch result {
+		case signatureInvalid:
+			invalid++
+			continue
+		case signatureUnauthorized:
+			unauthorized++
 			continue
 		}
-		if kept, exists := bySigner[addr]; !exists || bytes.Compare(sig, kept) < 0 {
+		if kept, exists := bySigner[addr]; exists {
+			duplicates++
+			if bytes.Compare(sig, kept) < 0 {
+				bySigner[addr] = append([]byte(nil), sig...)
+			}
+		} else {
 			bySigner[addr] = append([]byte(nil), sig...)
 		}
 	}
 	if len(bySigner) < v.threshold {
-		return nil, fmt.Errorf("only %d of %d authorized signatures", len(bySigner), v.threshold)
+		return nil, fmt.Errorf("only %d of %d authorized signatures (invalid=%d unauthorized=%d duplicate=%d)",
+			len(bySigner), v.threshold, invalid, unauthorized, duplicates)
 	}
 	addresses := make([]common.Address, 0, len(bySigner))
 	for addr := range bySigner {
@@ -124,34 +163,34 @@ func (v *SignatureValidator) ContractSignatures(signatures [][]byte) ([][]byte, 
 	return out, nil
 }
 
-// fetchLiveQuorum reads the vault's current authorized signer set and threshold.
-// The outgoing/current quorum is what authorizes both execute and updateSigners,
-// so withdrawal and rotation both size and filter against it.
-func fetchLiveQuorum(ctx context.Context, custody *Custody) ([]common.Address, int, error) {
-	signers, err := custody.Signers(&bind.CallOpts{Context: ctx})
+type quorumBlockNumberReader interface {
+	BlockNumber(context.Context) (uint64, error)
+}
+
+type vaultQuorumReader interface {
+	Signers(*bind.CallOpts) ([]common.Address, error)
+	Threshold(*bind.CallOpts) (*big.Int, error)
+}
+
+// fetchLiveQuorum reads the vault's current authorized signer set and threshold
+// at one explicit block. Pinning both calls prevents a rotation between them
+// from producing a signer/threshold pair that never existed on chain.
+func fetchLiveQuorum(ctx context.Context, chain quorumBlockNumberReader, custody vaultQuorumReader) ([]common.Address, int, error) {
+	block, err := chain.BlockNumber(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read quorum block number: %w", err)
+	}
+	opts := &bind.CallOpts{Context: ctx, BlockNumber: new(big.Int).SetUint64(block)}
+	signers, err := custody.Signers(opts)
 	if err != nil {
 		return nil, 0, fmt.Errorf("read signers: %w", err)
 	}
-	thr, err := custody.Threshold(&bind.CallOpts{Context: ctx})
+	thr, err := custody.Threshold(opts)
 	if err != nil {
 		return nil, 0, fmt.Errorf("read threshold: %w", err)
 	}
-	if !thr.IsInt64() || thr.Int64() <= 0 || thr.Int64() > int64(len(signers)) {
-		return nil, 0, fmt.Errorf("on-chain threshold %s out of range for %d signers", thr, len(signers))
+	if thr == nil || !thr.IsInt64() || thr.Int64() <= 0 || thr.Int64() > int64(len(signers)) {
+		return nil, 0, fmt.Errorf("on-chain threshold %v out of range for %d signers", thr, len(signers))
 	}
 	return signers, int(thr.Int64()), nil
-}
-
-// mergeQuorumSigs filters the collected signatures over digest against the live
-// signer set, drops duplicates and unauthorized recoveries, trims to the live
-// threshold, orders by signer address (Custody.sol requires ascending, no
-// duplicates), and shifts V to {27,28}. It returns the contract-ready signature
-// list. Both Custody.execute (withdrawal) and Custody.updateSigners (rotation)
-// share this verification shape, differing only in the digest.
-func mergeQuorumSigs(digest common.Hash, signatures [][]byte, liveSigners []common.Address, liveThreshold int) ([][]byte, error) {
-	validator, err := NewSignatureValidator(digest, liveSigners, liveThreshold)
-	if err != nil {
-		return nil, err
-	}
-	return validator.ContractSignatures(signatures)
 }

@@ -6,12 +6,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/big"
 	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
-	"github.com/layer-3/clearnet-sdk/pkg/eip712"
 )
 
 // WithdrawalIssuerResolver maps a withdrawal id to the ConfigRegistry issuer
@@ -45,6 +45,10 @@ type ReceiptSignatureValidator struct {
 	threshold int
 }
 
+const maxCandidatesPerReceiptSigner = 4
+
+var receiptSecp256k1HalfN = new(big.Int).Rsh(new(big.Int).Set(crypto.S256().Params().N), 1)
+
 // Digest returns a defensive copy of the receipt digest.
 func (v *ReceiptSignatureValidator) Digest() []byte {
 	if v == nil {
@@ -77,24 +81,59 @@ func (v *ReceiptSignatureValidator) MatchesSigningContext(other *ReceiptSignatur
 	return true
 }
 
-// ValidateSignature recovers and authorizes one receipt signature.
+// ValidateSignature recovers and authorizes one receipt signature. Legacy
+// recovery-ID forms {0,1,27,28} and high-S encodings remain accepted, but
+// QuorumSignatures emits their unique low-S, V={0,1} canonical form. Every
+// rejected candidate, including an unauthorized recovery, returns zero,false.
 func (v *ReceiptSignatureValidator) ValidateSignature(sig []byte) (common.Address, bool) {
 	if v == nil {
 		return common.Address{}, false
 	}
-	addr, ok, err := recoverReceiptSigner(v.digest, sig)
+	addr, _, ok, err := recoverCanonicalReceiptSigner(v.digest, sig)
 	if err != nil || !ok {
 		return common.Address{}, false
 	}
-	_, authorized := v.signers[addr]
-	return addr, authorized
+	if _, authorized := v.signers[addr]; !authorized {
+		return common.Address{}, false
+	}
+	return addr, true
 }
 
 // VerifySignatures verifies a distinct authorized quorum against the frozen
 // snapshot used during collection.
 func (v *ReceiptSignatureValidator) VerifySignatures(sigs [][]byte) error {
-	_, err := v.QuorumSignatures(sigs)
-	return err
+	if v == nil || v.threshold <= 0 {
+		return errors.New("receipt signature validator not configured")
+	}
+	if len(sigs) < v.threshold {
+		return fmt.Errorf("insufficient signatures: %d < %d", len(sigs), v.threshold)
+	}
+	if len(sigs) > maxCandidatesPerReceiptSigner*len(v.signers) {
+		return fmt.Errorf("too many signature candidates: %d for %d authorized signers", len(sigs), len(v.signers))
+	}
+	seen := make(map[common.Address]struct{}, v.threshold)
+	var invalid, unauthorized, duplicates int
+	for _, sig := range sigs {
+		addr, _, ok, err := recoverCanonicalReceiptSigner(v.digest, sig)
+		if err != nil || !ok {
+			invalid++
+			continue
+		}
+		if _, authorized := v.signers[addr]; !authorized {
+			unauthorized++
+			continue
+		}
+		if _, duplicate := seen[addr]; duplicate {
+			duplicates++
+			continue
+		}
+		seen[addr] = struct{}{}
+		if len(seen) >= v.threshold {
+			return nil
+		}
+	}
+	return fmt.Errorf("insufficient distinct signers: %d/%d (invalid=%d unauthorized=%d duplicate=%d)",
+		len(seen), v.threshold, invalid, unauthorized, duplicates)
 }
 
 // QuorumSignatures filters invalid, unauthorized, and duplicate candidates,
@@ -106,18 +145,33 @@ func (v *ReceiptSignatureValidator) QuorumSignatures(sigs [][]byte) ([][]byte, e
 	if len(sigs) < v.threshold {
 		return nil, fmt.Errorf("insufficient signatures: %d < %d", len(sigs), v.threshold)
 	}
+	if len(sigs) > maxCandidatesPerReceiptSigner*len(v.signers) {
+		return nil, fmt.Errorf("too many signature candidates: %d for %d authorized signers", len(sigs), len(v.signers))
+	}
 	bySigner := make(map[common.Address][]byte, v.threshold)
+	var invalid, unauthorized, duplicates int
 	for _, sig := range sigs {
-		addr, ok := v.ValidateSignature(sig)
-		if !ok {
+		addr, canonical, ok, err := recoverCanonicalReceiptSigner(v.digest, sig)
+		if err != nil || !ok {
+			invalid++
 			continue
 		}
-		if kept, exists := bySigner[addr]; !exists || bytes.Compare(sig, kept) < 0 {
-			bySigner[addr] = append([]byte(nil), sig...)
+		if _, authorized := v.signers[addr]; !authorized {
+			unauthorized++
+			continue
+		}
+		if kept, exists := bySigner[addr]; exists {
+			duplicates++
+			if bytes.Compare(canonical, kept) < 0 {
+				bySigner[addr] = canonical
+			}
+		} else {
+			bySigner[addr] = canonical
 		}
 	}
 	if len(bySigner) < v.threshold {
-		return nil, fmt.Errorf("insufficient distinct signers: %d/%d", len(bySigner), v.threshold)
+		return nil, fmt.Errorf("insufficient distinct signers: %d/%d (invalid=%d unauthorized=%d duplicate=%d)",
+			len(bySigner), v.threshold, invalid, unauthorized, duplicates)
 	}
 	addresses := make([]common.Address, 0, len(bySigner))
 	for addr := range bySigner {
@@ -230,23 +284,41 @@ func (rv *ReceiptVerifier) prepareSignatures(ctx context.Context, issuerID commo
 	}, nil
 }
 
-// recoverReceiptSigner dispatches signature verification by length and
-// returns the signer address that produced it. ED25519 is recognised but not
-// yet implemented; non-canonical lengths are ignored (ok=false, err=nil).
-func recoverReceiptSigner(digest, sig []byte) (common.Address, bool, error) {
+// recoverCanonicalReceiptSigner dispatches signature verification by length
+// and returns both the signer and the canonical wire signature. ED25519 is
+// recognised but not yet implemented; unsupported lengths are ignored.
+func recoverCanonicalReceiptSigner(digest, sig []byte) (common.Address, []byte, bool, error) {
 	switch len(sig) {
 	case 65:
-		addr, err := eip712.RecoverSigner(digest, sig)
-		if err != nil {
-			return common.Address{}, false, err
+		canonical := append([]byte(nil), sig...)
+		v := canonical[64]
+		if v == 27 || v == 28 {
+			v -= 27
+		} else if v > 1 {
+			return common.Address{}, nil, false, nil
 		}
-		return addr, true, nil
+		r := new(big.Int).SetBytes(canonical[:32])
+		s := new(big.Int).SetBytes(canonical[32:64])
+		if !crypto.ValidateSignatureValues(v, r, s, false) {
+			return common.Address{}, nil, false, nil
+		}
+		if s.Cmp(receiptSecp256k1HalfN) > 0 {
+			s.Sub(crypto.S256().Params().N, s)
+			s.FillBytes(canonical[32:64])
+			v ^= 1
+		}
+		canonical[64] = v
+		pub, err := crypto.SigToPub(digest, canonical)
+		if err != nil {
+			return common.Address{}, nil, false, err
+		}
+		return crypto.PubkeyToAddress(*pub), canonical, true, nil
 	case 64:
 		// XRPL / Solana ED25519 lands when its custody adapter is wired
 		// (ADR-005 §10). Until then the receipt path is ECDSA-only.
-		return common.Address{}, false, nil
+		return common.Address{}, nil, false, nil
 	default:
-		return common.Address{}, false, nil
+		return common.Address{}, nil, false, nil
 	}
 }
 

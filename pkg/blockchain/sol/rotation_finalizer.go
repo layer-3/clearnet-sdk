@@ -179,7 +179,8 @@ func (f *RotationFinalizer) PrepareSignatureValidator(ctx context.Context, packe
 // Submit filters the collected shares against the live (outgoing) signer set,
 // assembles the Ed25519-precompile + update_signers transaction, and broadcasts
 // it (fee-payer signed). Idempotent: if the rotation already applied it returns
-// without re-submitting.
+// without re-submitting. The caller owns the ceremony boundary and compares its
+// collection-time validator with a fresh one before calling Submit.
 func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
 	var p rotPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
@@ -193,16 +194,11 @@ func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares []
 		return "", nil
 	}
 
-	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
+	validator, err := f.PrepareSignatureValidator(ctx, packed)
 	if err != nil {
 		return "", err
 	}
-	commitment := SignersCommitment(newPubs, p.NewThreshold)
-	digest := RotateDigest(f.chainID, f.programID, f.configPDA, commitment, p.SignerNonce)
-	validator, err := NewSignatureValidator(digest, cfg.Signers, int(cfg.Threshold))
-	if err != nil {
-		return "", err
-	}
+	digest := validator.Digest()
 	pubkeys, sigs, err := validator.AssembleShares(shares)
 	if err != nil {
 		return "", err
