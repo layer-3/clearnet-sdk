@@ -107,8 +107,7 @@ func (v *ReceiptSignatureValidator) VerifySignatures(sigs [][]byte) error {
 	if len(sigs) < v.snapshot.Threshold() {
 		return fmt.Errorf("insufficient signatures: %d < %d", len(sigs), v.snapshot.Threshold())
 	}
-	_, err := v.quorumEntries(sigs)
-	return err
+	return receiptQuorumError(v.snapshot.HasQuorum(sigs, v.decodeSignature, nil))
 }
 
 // QuorumSignatures filters invalid, unauthorized, and duplicate candidates,
@@ -135,19 +134,23 @@ func (v *ReceiptSignatureValidator) quorumEntries(sigs [][]byte) ([]internalquor
 	entries, err := v.snapshot.Assemble(sigs, v.decodeSignature, nil, func(a, b common.Address) bool {
 		return bytes.Compare(a[:], b[:]) < 0
 	})
+	return entries, receiptQuorumError(err)
+}
+
+func receiptQuorumError(err error) error {
 	if err == nil {
-		return entries, nil
+		return nil
 	}
 	var limit *internalquorum.CandidateLimitError
 	var below *internalquorum.BelowThresholdError
 	switch {
 	case errors.As(err, &limit):
-		return nil, fmt.Errorf("too many signature candidates: %d for %d authorized signers", limit.Candidates, limit.Signers)
+		return fmt.Errorf("too many signature candidates: %d for %d authorized signers", limit.Candidates, limit.Signers)
 	case errors.As(err, &below):
-		return nil, fmt.Errorf("insufficient distinct signers: %d/%d (invalid=%d unauthorized=%d duplicate=%d)",
+		return fmt.Errorf("insufficient distinct signers: %d/%d (invalid=%d unauthorized=%d duplicate=%d)",
 			below.Accepted, below.Threshold, below.Stats.Invalid, below.Stats.Unauthorized, below.Stats.Duplicate)
 	default:
-		return nil, err
+		return err
 	}
 }
 

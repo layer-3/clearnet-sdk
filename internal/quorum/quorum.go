@@ -163,6 +163,53 @@ func (s *Snapshot[K]) ValidateCandidate(candidate []byte, decode Decoder[K], ver
 	return signer, payload, Authorized
 }
 
+func (s *Snapshot[K]) checkCandidates(count int) error {
+	if s == nil || s.threshold <= 0 {
+		return ErrNotConfigured
+	}
+	if count > MaxCandidatesPerSigner*len(s.authorized) {
+		return &CandidateLimitError{Candidates: count, Signers: len(s.authorized)}
+	}
+	return nil
+}
+
+// HasQuorum validates candidates only until it finds threshold distinct
+// authorized signers. Unlike Assemble, it does not choose or order a
+// deterministic subset because callers that only verify quorum do not consume
+// that output.
+func (s *Snapshot[K]) HasQuorum(candidates [][]byte, decode Decoder[K], verify Verifier[K]) error {
+	if err := s.checkCandidates(len(candidates)); err != nil {
+		return err
+	}
+
+	seen := make(map[K]struct{}, s.threshold)
+	var stats Stats
+	for _, candidate := range candidates {
+		signer, _, result := s.ValidateCandidate(candidate, decode, verify)
+		switch result {
+		case Invalid:
+			stats.Invalid++
+			continue
+		case Unauthorized:
+			stats.Unauthorized++
+			continue
+		case Authorized:
+		default:
+			stats.Invalid++
+			continue
+		}
+		if _, duplicate := seen[signer]; duplicate {
+			stats.Duplicate++
+			continue
+		}
+		seen[signer] = struct{}{}
+		if len(seen) == s.threshold {
+			return nil
+		}
+	}
+	return &BelowThresholdError{Accepted: len(seen), Threshold: s.threshold, Stats: stats}
+}
+
 // Assemble validates the entire bounded candidate set, deduplicates by
 // cryptographic signer, retains the lexicographically smallest valid payload
 // for each signer, orders by signer, and returns exactly threshold entries.
@@ -172,11 +219,8 @@ func (s *Snapshot[K]) Assemble(
 	verify Verifier[K],
 	lessSigner func(K, K) bool,
 ) ([]Entry[K], error) {
-	if s == nil || s.threshold <= 0 {
-		return nil, ErrNotConfigured
-	}
-	if len(candidates) > MaxCandidatesPerSigner*len(s.authorized) {
-		return nil, &CandidateLimitError{Candidates: len(candidates), Signers: len(s.authorized)}
+	if err := s.checkCandidates(len(candidates)); err != nil {
+		return nil, err
 	}
 
 	bySigner := make(map[K][]byte, s.threshold)

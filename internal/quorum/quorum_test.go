@@ -92,6 +92,46 @@ func TestValidateCandidateAuthorizesBeforeDeferredVerification(t *testing.T) {
 	}
 }
 
+func TestHasQuorumStopsAtThreshold(t *testing.T) {
+	snapshot, err := NewSnapshot([32]byte{1}, []byte{1, 2, 3}, 2, func(signer byte) bool { return signer == 0 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodeCalls := 0
+	decode := func(candidate []byte) (byte, []byte, bool) {
+		decodeCalls++
+		return candidate[0], nil, true
+	}
+
+	if err := snapshot.HasQuorum([][]byte{{1}, {2}, {3}}, decode, nil); err != nil {
+		t.Fatal(err)
+	}
+	if decodeCalls != 2 {
+		t.Fatalf("decoder calls = %d, want 2; verification scanned beyond threshold", decodeCalls)
+	}
+}
+
+func TestHasQuorumPreservesFailureDiagnostics(t *testing.T) {
+	snapshot, err := NewSnapshot([32]byte{1}, []byte{1, 2}, 2, func(signer byte) bool { return signer == 0 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode := func(candidate []byte) (byte, []byte, bool) {
+		if len(candidate) != 1 {
+			return 0, nil, false
+		}
+		return candidate[0], nil, true
+	}
+	err = snapshot.HasQuorum([][]byte{{1}, {1}, {9}, {}}, decode, nil)
+	var below *BelowThresholdError
+	if !errors.As(err, &below) {
+		t.Fatalf("HasQuorum() error = %v, want BelowThresholdError", err)
+	}
+	if below.Accepted != 1 || below.Stats != (Stats{Invalid: 1, Unauthorized: 1, Duplicate: 1}) {
+		t.Fatalf("unexpected rejection accounting: %+v", below)
+	}
+}
+
 func TestAssembleUsesOneDeterministicDuplicateRule(t *testing.T) {
 	snapshot, err := NewSnapshot([32]byte{1}, []byte{1, 2, 3}, 2, func(signer byte) bool { return signer == 0 })
 	if err != nil {
