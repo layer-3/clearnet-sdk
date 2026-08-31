@@ -25,18 +25,36 @@ jobs:
           # relies on forge's build output being byte-reproducible.
           version: v1.7.1
 
+      - name: Install contract dependencies
+        run: |
+          [ -d lib/forge-std ] || forge install --no-git foundry-rs/forge-std@v1.16.1
+          [ -d lib/openzeppelin-contracts ] || forge install --no-git openzeppelin/openzeppelin-contracts@v5.5.0
+
       - name: Forge fmt
         run: forge fmt --check
 
       - name: Forge build
         run: forge build --sizes
 
-      - name: Re-extract the registry ABIs
+      - name: Forge test
+        run: forge test -vvv
+
+      - name: Re-extract the vendored ABIs
         run: |
           jq '.abi' out/IClearnetRegistry.sol/IClearnetRegistry.json \
             > ../pkg/blockchain/evm/artifacts/ClearnetRegistry.abi
           jq '.abi' out/IClearnetRegistryProtocol.sol/IClearnetRegistryProtocol.json \
             > ../pkg/blockchain/evm/artifacts/ClearnetRegistryProtocol.abi
+          jq -r '.abi' out/ConfigRegistry.sol/ConfigRegistry.json \
+            > ../pkg/blockchain/evm/artifacts/ConfigRegistry.abi
+          jq -r '.bytecode.object' out/ConfigRegistry.sol/ConfigRegistry.json \
+            > ../pkg/blockchain/evm/artifacts/ConfigRegistry.bin
+          jq -r '.abi' out/IConfig.sol/IConfig.json \
+            > ../pkg/blockchain/evm/artifacts/IConfig.abi
+          jq -r '.abi' out/Config.sol/Config.json \
+            > ../pkg/blockchain/evm/artifacts/Config.abi
+          jq -r '.bytecode.object' out/Config.sol/Config.json \
+            > ../pkg/blockchain/evm/artifacts/Config.bin
 
       - name: Set up Go
         uses: actions/setup-go@v5

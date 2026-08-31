@@ -1,9 +1,10 @@
 # Stray `go build` output for the refresher command
 /abi_refresher
 
-# Foundry build output for contracts/ (the SDK's own pure-interface Solidity)
+# Foundry build output
 contracts/out/
 contracts/cache/
+contracts/lib/
 
 # Go workspace files
 go.work
