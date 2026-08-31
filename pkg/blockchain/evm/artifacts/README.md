@@ -34,16 +34,19 @@ This rewrites `../*_abi.go` from the `.abi`/`.bin` here. Commit the result.
 The files are produced by `forge build` in the repo that owns each contract's
 Solidity source. The source trees are split three ways:
 
-- **This repo** owns the two registry interfaces —
-  `contracts/src/interfaces/IClearnetRegistry.sol` (issuer read subset) and
-  `IClearnetRegistryProtocol.sol` (clearing-side superset). They compile here,
-  so refreshing `ClearnetRegistry.abi` / `ClearnetRegistryProtocol.abi` is a
-  local `forge build`, with no other repo in the loop.
+- **This repo** owns the two registry interfaces and the **config governance
+  contracts**. They compile here, so refreshing `.abi` and `.bin` artifacts
+  is a local `forge build`, with no other repo in the loop:
+  - `contracts/src/interfaces/IClearnetRegistry.sol` (issuer read subset) and
+    `IClearnetRegistryProtocol.sol` (clearing-side superset).
+  - `contracts/src/ConfigRegistry.sol`, `contracts/src/Config.sol`, and their
+    interfaces + `libraries/ConfigRegistryDigests.sol` — the per-issuer config
+    governance surface every issuer implementation must satisfy.
 - **custody** (`chains/evm/contract`) owns `Custody` (`src/Custody.sol`).
 - **clearnet** (`contracts/evm`) owns the remaining clearing contracts —
   `YellowToken`, `MockERC20`, `NodeID`, `Faucet`, `Slasher`.
 
-### The registry pair (local `forge build`, no other repo)
+### Locally-built artifacts (no other repo)
 
 ```sh
 cd contracts && forge build
@@ -58,6 +61,18 @@ type string — which carries no field names. A half-refresh therefore does not
 fail the build; it silently takes the field names of whichever contract abigen
 bound first. `noderecord_identity_test.go` and the forge CI job both exist to
 catch that.
+
+The config governance surface is refreshed the same way, from the same build:
+
+```sh
+cd contracts && forge build
+jq -r '.abi'             out/ConfigRegistry.sol/ConfigRegistry.json > ../pkg/blockchain/evm/artifacts/ConfigRegistry.abi
+jq -r '.bytecode.object' out/ConfigRegistry.sol/ConfigRegistry.json > ../pkg/blockchain/evm/artifacts/ConfigRegistry.bin
+jq -r '.abi'             out/IConfig.sol/IConfig.json               > ../pkg/blockchain/evm/artifacts/IConfig.abi
+jq -r '.abi'             out/Config.sol/Config.json                 > ../pkg/blockchain/evm/artifacts/Config.abi
+jq -r '.bytecode.object' out/Config.sol/Config.json                 > ../pkg/blockchain/evm/artifacts/Config.bin
+cd .. && make generate
+```
 
 ### The other contracts (built in their owning repo)
 

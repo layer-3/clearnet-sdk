@@ -13,6 +13,20 @@ This repository currently contains:
 The Go SDK is the broader backend-facing SDK. The TypeScript SDK currently
 focuses on browser and application deposit flows for EVM, Solana, and XRPL.
 
+## Where This Fits
+
+The wider system is organized into two layers. The **clearing layer** decides
+what settlement should happen, and orders and finalizes it. The **issuers
+layer** custodies real assets and issues and discharges obligations against
+them.
+
+This repository holds the shared protocol surface both layers must satisfy:
+the wire types, digests, and verifiers, plus the governance contracts every
+issuer must conform to. There is currently one Yellow-specific implementation
+of each layer — Clearnet for clearing, Custody for issuance — while the
+protocol surface here is deliberately implementation-agnostic, so a second
+issuer needs no change to this repository.
+
 ## Repository Layout
 
 | Path | Purpose |

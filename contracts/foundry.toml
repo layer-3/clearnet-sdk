@@ -1,7 +1,7 @@
 [profile.default]
 src = "src"
 out = "out"
-libs = []
+libs = ["lib"]
 optimizer = true
 optimizer_runs = 200
 via_ir = true
@@ -9,6 +9,13 @@ solc_version = "0.8.34"
 evm_version = "prague"
 bytecode_hash = "none"
 cbor_metadata = false
-remappings = []
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+]
+
+[dependencies]
+forge-std = { version = "1.16.1", git = "https://github.com/foundry-rs/forge-std", tag = "v1.16.1" }
+openzeppelin-contracts = { version = "5.5.0", git = "https://github.com/OpenZeppelin/openzeppelin-contracts", tag = "v5.5.0" }
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

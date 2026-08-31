@@ -12,14 +12,7 @@
   },
   {
     "type": "function",
-    "name": "acceptOwnership",
-    "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "configChecksumAt",
+    "name": "configChecksumAtEpoch",
     "inputs": [
       {
         "name": "key",
@@ -27,7 +20,7 @@
         "internalType": "bytes32"
       },
       {
-        "name": "index",
+        "name": "epoch",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -81,25 +74,6 @@
   },
   {
     "type": "function",
-    "name": "configWriter",
-    "inputs": [
-      {
-        "name": "key",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "latestConfigChecksum",
     "inputs": [
       {
@@ -132,26 +106,6 @@
   },
   {
     "type": "function",
-    "name": "pendingOwner",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "renounceOwnership",
-    "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "setConfig",
     "inputs": [
       {
@@ -170,7 +124,7 @@
   },
   {
     "type": "function",
-    "name": "setConfigWriter",
+    "name": "setConfigWithData",
     "inputs": [
       {
         "name": "key",
@@ -178,22 +132,9 @@
         "internalType": "bytes32"
       },
       {
-        "name": "writer",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "transferOwnership",
-    "inputs": [
-      {
-        "name": "newOwner",
-        "type": "address",
-        "internalType": "address"
+        "name": "data",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [],
@@ -232,7 +173,7 @@
   },
   {
     "type": "event",
-    "name": "ConfigWriterSet",
+    "name": "ConfigSetWithData",
     "inputs": [
       {
         "name": "key",
@@ -241,54 +182,28 @@
         "internalType": "bytes32"
       },
       {
-        "name": "previousWriter",
+        "name": "writer",
         "type": "address",
         "indexed": true,
         "internalType": "address"
       },
       {
-        "name": "newWriter",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "OwnershipTransferStarted",
-    "inputs": [
-      {
-        "name": "previousOwner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
+        "name": "checksum",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
       },
       {
-        "name": "newOwner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "OwnershipTransferred",
-    "inputs": [
-      {
-        "name": "previousOwner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
+        "name": "epoch",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
       },
       {
-        "name": "newOwner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
+        "name": "data",
+        "type": "bytes",
+        "indexed": false,
+        "internalType": "bytes"
       }
     ],
     "anonymous": false
@@ -305,29 +220,12 @@
   },
   {
     "type": "error",
-    "name": "NotConfigWriter",
+    "name": "InvalidOwner",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "OwnableInvalidOwner",
-    "inputs": [
-      {
-        "name": "owner",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "OwnableUnauthorizedAccount",
-    "inputs": [
-      {
-        "name": "account",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
+    "name": "NotConfigOwner",
+    "inputs": []
   }
 ]

@@ -17,11 +17,11 @@
 //	jq -r '.abi'             clearnet/contracts/evm/out/Custody.sol/Custody.json > artifacts/Custody.abi
 //	jq -r '.bytecode.object' clearnet/contracts/evm/out/Custody.sol/Custody.json > artifacts/Custody.bin
 //
-// The two registry artifacts are the exception: ClearnetRegistry.abi and
-// ClearnetRegistryProtocol.abi are refreshed by a local `forge build` in
-// contracts/, because this repo owns both interfaces. This package binds the
-// registry through those interfaces only — never through clearnet's private
-// Registry.sol implementation — see artifacts/README.md.
+// Artifacts owned by this repo are the exception — they are refreshed by a
+// local `forge build` in contracts/, because their Solidity source lives here:
+// the registry interfaces and the per-issuer config governance surface.
+// This package binds the registry through those interfaces only — never through
+// clearnet's private Registry.sol implementation — see artifacts/README.md.
 package main
 
 import (
@@ -63,7 +63,6 @@ var groups = []group{
 	{names: []string{"Faucet"}, out: "faucet_abi.go"},
 	{names: []string{"YellowToken"}, out: "yellowtoken_abi.go"},
 	{names: []string{"Config"}, out: "config_abi.go"},
-	{names: []string{"ConfigGovernor"}, out: "config_governor_abi.go"},
 	{names: []string{"ConfigRegistry"}, out: "config_registry_abi.go"},
 	{names: []string{"IConfig"}, out: "iconfig_abi.go"},
 }
