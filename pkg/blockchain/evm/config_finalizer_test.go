@@ -76,6 +76,13 @@ func TestConfigRegistryCommitFinalizer_DigestFromPacked(t *testing.T) {
 	if got != want {
 		t.Fatalf("digest mismatch\nwant %x\ngot  %x", want, got)
 	}
+	validator, err := f.PrepareSignatureValidator(packed, []common.Address{common.HexToAddress("0x1")}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validator.Digest() != common.Hash(want) {
+		t.Fatalf("prepared digest = %x, want %x", validator.Digest(), want)
+	}
 }
 
 func TestConfigRegistryCommitFinalizer_DigestFromPackedWithData(t *testing.T) {
@@ -104,6 +111,13 @@ func TestConfigRegistryCommitFinalizer_DigestFromPackedWithData(t *testing.T) {
 	if got != want {
 		t.Fatalf("digest mismatch\nwant %x\ngot  %x", want, got)
 	}
+	validator, err := f.PrepareSignatureValidator(packed, []common.Address{common.HexToAddress("0x1")}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validator.Digest() != common.Hash(want) {
+		t.Fatalf("prepared digest = %x, want %x", validator.Digest(), want)
+	}
 }
 
 func TestConfigRegistryIssuerRegistrationFinalizer_DigestFromPacked(t *testing.T) {
@@ -130,6 +144,13 @@ func TestConfigRegistryIssuerRegistrationFinalizer_DigestFromPacked(t *testing.T
 	want := ComputeConfigRegistryRegistrationDigest(31337, registry, keys, big.NewInt(2))
 	if got != want {
 		t.Fatalf("digest mismatch\nwant %x\ngot  %x", want, got)
+	}
+	validator, err := f.PrepareSignatureValidator(packed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validator.Digest() != common.Hash(want) || validator.Threshold() != 2 {
+		t.Fatalf("prepared registration context = %x/%d, want %x/2", validator.Digest(), validator.Threshold(), want)
 	}
 }
 
@@ -160,5 +181,12 @@ func TestConfigRegistryIssuerSettingsUpdateFinalizer_DigestFromPacked(t *testing
 	want := ComputeConfigRegistryUpdateIssuerSettingsDigest(31337, registry, issuerID, keys, big.NewInt(2), big.NewInt(7))
 	if got != want {
 		t.Fatalf("digest mismatch\nwant %x\ngot  %x", want, got)
+	}
+	validator, err := f.PrepareSignatureValidator(packed, keys, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validator.Digest() != common.Hash(want) {
+		t.Fatalf("prepared digest = %x, want %x", validator.Digest(), want)
 	}
 }

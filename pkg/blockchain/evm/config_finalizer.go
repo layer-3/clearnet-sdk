@@ -152,6 +152,22 @@ func (f *ConfigRegistryIssuerRegistrationFinalizer) Sign(ctx context.Context, pa
 	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
+// PrepareSignatureValidator derives the self-authorizing issuer quorum and
+// exact registration digest from packed. Registration has no prior live issuer
+// roster: the proposed keys and threshold are the authorization snapshot.
+func (f *ConfigRegistryIssuerRegistrationFinalizer) PrepareSignatureValidator(packed []byte) (*SignatureValidator, error) {
+	var p configRegistryIssuerRegistrationPacked
+	if err := json.Unmarshal(packed, &p); err != nil {
+		return nil, fmt.Errorf("decode packed: %w", err)
+	}
+	addrs, threshold, err := parseRegistrationPacked(p)
+	if err != nil {
+		return nil, err
+	}
+	digest := ComputeConfigRegistryRegistrationDigest(f.chainID, f.registryAddr, addrs, threshold)
+	return NewSignatureValidator(common.Hash(digest), addrs, int(threshold.Int64()))
+}
+
 func (f *ConfigRegistryIssuerRegistrationFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (ConfigRegistryIssuerRegistrationResult, error) {
 	var p configRegistryIssuerRegistrationPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
@@ -176,8 +192,11 @@ func (f *ConfigRegistryIssuerRegistrationFinalizer) Submit(ctx context.Context, 
 		return result, nil
 	}
 
-	digest := ComputeConfigRegistryRegistrationDigest(f.chainID, f.registryAddr, addrs, threshold)
-	sigs, err := mergeQuorumSigs(common.Hash(digest), signatures, addrs, int(threshold.Int64()))
+	validator, err := f.PrepareSignatureValidator(packed)
+	if err != nil {
+		return result, err
+	}
+	sigs, err := validator.ContractSignatures(signatures)
 	if err != nil {
 		return result, err
 	}
@@ -407,6 +426,18 @@ func (f *ConfigRegistryCommitFinalizer) Sign(ctx context.Context, packed []byte)
 	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
+// PrepareSignatureValidator binds packed to an issuer quorum snapshot supplied
+// by the caller. It validates the snapshot structurally but does not read chain
+// state: Custody configsync owns one frozen roster for leader selection,
+// candidate collection, and the pre-submit MatchesSigningContext check.
+func (f *ConfigRegistryCommitFinalizer) PrepareSignatureValidator(packed []byte, liveKeys []common.Address, liveThreshold int) (*SignatureValidator, error) {
+	digest, err := f.digestFromPacked(packed)
+	if err != nil {
+		return nil, err
+	}
+	return NewSignatureValidator(common.Hash(digest), liveKeys, liveThreshold)
+}
+
 func (f *ConfigRegistryCommitFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error) {
 	p, key, checksum, data, nonce, err := f.parsePacked(packed)
 	if err != nil {
@@ -418,15 +449,15 @@ func (f *ConfigRegistryCommitFinalizer) Submit(ctx context.Context, packed []byt
 		return txID, nil
 	}
 
-	digest, err := f.digestFromParsed(p, key, checksum, data, nonce)
-	if err != nil {
-		return "", err
-	}
 	liveKeys, liveThreshold, err := fetchLiveIssuerQuorum(ctx, f.registry, f.issuerID)
 	if err != nil {
 		return "", err
 	}
-	sigs, err := mergeQuorumSigs(common.Hash(digest), signatures, liveKeys, liveThreshold)
+	validator, err := f.PrepareSignatureValidator(packed, liveKeys, liveThreshold)
+	if err != nil {
+		return "", err
+	}
+	sigs, err := validator.ContractSignatures(signatures)
 	if err != nil {
 		return "", err
 	}
@@ -791,6 +822,18 @@ func (f *ConfigRegistryIssuerSettingsUpdateFinalizer) Sign(ctx context.Context, 
 	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
+// PrepareSignatureValidator binds packed to an outgoing issuer quorum snapshot
+// supplied by the caller. It validates the snapshot structurally but does not
+// read chain state: Custody configsync owns the frozen roster and freshness
+// comparison for this ceremony.
+func (f *ConfigRegistryIssuerSettingsUpdateFinalizer) PrepareSignatureValidator(packed []byte, liveKeys []common.Address, liveThreshold int) (*SignatureValidator, error) {
+	digest, err := f.digestFromPacked(packed)
+	if err != nil {
+		return nil, err
+	}
+	return NewSignatureValidator(common.Hash(digest), liveKeys, liveThreshold)
+}
+
 func (f *ConfigRegistryIssuerSettingsUpdateFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error) {
 	p, addrs, threshold, nonce, err := f.parsePacked(packed)
 	if err != nil {
@@ -802,12 +845,15 @@ func (f *ConfigRegistryIssuerSettingsUpdateFinalizer) Submit(ctx context.Context
 		return txID, nil
 	}
 
-	digest := ComputeConfigRegistryUpdateIssuerSettingsDigest(f.chainID, f.registryAddr, f.issuerID, addrs, threshold, nonce)
 	liveKeys, liveThreshold, err := fetchLiveIssuerQuorum(ctx, f.registry, f.issuerID)
 	if err != nil {
 		return "", err
 	}
-	sigs, err := mergeQuorumSigs(common.Hash(digest), signatures, liveKeys, liveThreshold)
+	validator, err := f.PrepareSignatureValidator(packed, liveKeys, liveThreshold)
+	if err != nil {
+		return "", err
+	}
+	sigs, err := validator.ContractSignatures(signatures)
 	if err != nil {
 		return "", err
 	}
@@ -833,15 +879,11 @@ func (f *ConfigRegistryIssuerSettingsUpdateFinalizer) VerifyUpdate(ctx context.C
 	if err != nil {
 		return "", false, err
 	}
-	live, err := f.registry.IssuerKeys(&bind.CallOpts{Context: ctx}, f.issuerID)
+	live, threshold, err := fetchLiveIssuerQuorum(ctx, f.registry, f.issuerID)
 	if err != nil {
-		return "", false, fmt.Errorf("read issuer keys: %w", err)
+		return "", false, err
 	}
-	thr, err := f.registry.Threshold(&bind.CallOpts{Context: ctx}, f.issuerID)
-	if err != nil {
-		return "", false, fmt.Errorf("read issuer threshold: %w", err)
-	}
-	if !thr.IsInt64() || int(thr.Int64()) != newThreshold || !addrSetEqual(live, addrs) {
+	if threshold != newThreshold || !addrSetEqual(live, addrs) {
 		return "", false, nil
 	}
 	return f.lookupIssuerSettingsUpdatedTxID(ctx, addrs), true, nil
@@ -936,16 +978,13 @@ func (f *ConfigRegistryIssuerSettingsUpdateFinalizer) lookupIssuerSettingsUpdate
 }
 
 func fetchLiveIssuerQuorum(ctx context.Context, registry *ConfigRegistry, issuerID common.Address) ([]common.Address, int, error) {
-	keys, err := registry.IssuerKeys(&bind.CallOpts{Context: ctx}, issuerID)
+	settings, err := registry.IssuerSettings(&bind.CallOpts{Context: ctx}, issuerID)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read issuer keys: %w", err)
+		return nil, 0, fmt.Errorf("read issuer settings: %w", err)
 	}
-	thr, err := registry.Threshold(&bind.CallOpts{Context: ctx}, issuerID)
-	if err != nil {
-		return nil, 0, fmt.Errorf("read issuer threshold: %w", err)
-	}
-	if !thr.IsInt64() || thr.Int64() <= 0 || thr.Int64() > int64(len(keys)) {
-		return nil, 0, fmt.Errorf("on-chain issuer threshold %s out of range for %d keys", thr, len(keys))
+	keys, thr := settings.IssuerKeys, settings.Threshold
+	if thr == nil || !thr.IsInt64() || thr.Int64() <= 0 || thr.Int64() > int64(len(keys)) {
+		return nil, 0, fmt.Errorf("on-chain issuer threshold %v out of range for %d keys", thr, len(keys))
 	}
 	return keys, int(thr.Int64()), nil
 }

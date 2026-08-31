@@ -162,10 +162,25 @@ func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, er
 	return share, nil
 }
 
+// PrepareSignatureValidator freezes the live outgoing program quorum and exact
+// rotation digest for validation-first mesh collection.
+func (f *RotationFinalizer) PrepareSignatureValidator(ctx context.Context, packed []byte) (*SignatureValidator, error) {
+	digest, err := f.digestFromPacked(packed)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
+	if err != nil {
+		return nil, err
+	}
+	return NewSignatureValidator(digest, cfg.Signers, int(cfg.Threshold))
+}
+
 // Submit filters the collected shares against the live (outgoing) signer set,
 // assembles the Ed25519-precompile + update_signers transaction, and broadcasts
 // it (fee-payer signed). Idempotent: if the rotation already applied it returns
-// without re-submitting.
+// without re-submitting. The caller owns the ceremony boundary and compares its
+// collection-time validator with a fresh one before calling Submit.
 func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
 	var p rotPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
@@ -179,17 +194,16 @@ func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares []
 		return "", nil
 	}
 
-	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
+	validator, err := f.PrepareSignatureValidator(ctx, packed)
 	if err != nil {
 		return "", err
 	}
-	pubkeys, sigs, err := assembleQuorum(shares, cfg.Signers, int(cfg.Threshold))
+	digest := validator.Digest()
+	pubkeys, sigs, err := validator.AssembleShares(shares)
 	if err != nil {
 		return "", err
 	}
 
-	commitment := SignersCommitment(newPubs, p.NewThreshold)
-	digest := RotateDigest(f.chainID, f.programID, f.configPDA, commitment, p.SignerNonce)
 	ed25519Ix, err := BuildEd25519Instruction(pubkeys, sigs, digest[:])
 	if err != nil {
 		return "", err

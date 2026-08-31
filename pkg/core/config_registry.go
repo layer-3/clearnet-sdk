@@ -45,7 +45,8 @@ type ReceiptSignerSet struct {
 // ReceiptSignerSource resolves receipt signers for a ConfigRegistry issuer.
 // Dynamic implementations backed by watchers or remote stores must fail closed
 // when they cannot prove their data is fresh enough for their integration's
-// safety policy.
+// safety policy. Implementations must return a positive threshold, distinct
+// non-zero signer addresses, and at least threshold signers.
 type ReceiptSignerSource interface {
 	LoadReceiptSigners(ctx context.Context, issuerID common.Address) (ReceiptSignerSet, error)
 }

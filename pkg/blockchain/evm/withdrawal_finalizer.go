@@ -143,26 +143,30 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
-// merge filters the collected signatures against the live on-chain signer set,
-// trims to the live threshold, orders them by signer address (Custody.sol
-// requires ascending, no duplicates), and shifts V to {27,28}. It returns the
-// contract-ready signature list.
-func (f *WithdrawalFinalizer) merge(ctx context.Context, p evmPacked, signatures [][]byte) ([][]byte, error) {
+// PrepareSignatureValidator freezes the live vault quorum and exact withdrawal
+// digest for validation-first mesh collection.
+func (f *WithdrawalFinalizer) PrepareSignatureValidator(ctx context.Context, packed []byte) (*SignatureValidator, error) {
+	var p evmPacked
+	if err := json.Unmarshal(packed, &p); err != nil {
+		return nil, fmt.Errorf("decode packed: %w", err)
+	}
 	digest, err := f.digest(p)
 	if err != nil {
 		return nil, err
 	}
-	liveSigners, liveThreshold, err := fetchLiveQuorum(ctx, f.custody)
+	signers, threshold, err := fetchLiveQuorum(ctx, f.client, f.custody)
 	if err != nil {
 		return nil, err
 	}
-	return mergeQuorumSigs(digest, signatures, liveSigners, liveThreshold)
+	return NewSignatureValidator(digest, signers, threshold)
 }
 
 // Submit merges the collected signatures into a contract-ready quorum and
 // broadcasts it via Custody.execute, returning the txID. Idempotent: if
 // the withdrawal is already executed it returns the prior txID without
-// re-submitting.
+// re-submitting. The caller owns the ceremony boundary and should compare its
+// collection-time validator with a fresh one before calling Submit; Submit also
+// performs fresh live-quorum verification immediately before broadcasting.
 func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error) {
 	var p evmPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
@@ -178,7 +182,11 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, signatu
 		return txID, nil
 	}
 
-	sigs, err := f.merge(ctx, p, signatures)
+	validator, err := f.PrepareSignatureValidator(ctx, packed)
+	if err != nil {
+		return "", err
+	}
+	sigs, err := validator.ContractSignatures(signatures)
 	if err != nil {
 		return "", err
 	}

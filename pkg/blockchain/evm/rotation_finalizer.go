@@ -135,9 +135,24 @@ func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, er
 	return sign.SignEthDigest(ctx, f.authorizer, digest[:], f.authorizerAddr)
 }
 
+// PrepareSignatureValidator freezes the live outgoing vault quorum and exact
+// rotation digest for validation-first mesh collection.
+func (f *RotationFinalizer) PrepareSignatureValidator(ctx context.Context, packed []byte) (*SignatureValidator, error) {
+	digest, err := f.digestFromPacked(packed)
+	if err != nil {
+		return nil, err
+	}
+	signers, threshold, err := fetchLiveQuorum(ctx, f.client, f.custody)
+	if err != nil {
+		return nil, err
+	}
+	return NewSignatureValidator(common.Hash(digest), signers, threshold)
+}
+
 // Submit merges the collected signatures against the live (outgoing) signer set
 // and broadcasts updateSigners. Idempotent: if the rotation already applied it
-// returns the prior txID without re-submitting.
+// returns the prior txID without re-submitting. The caller owns the ceremony
+// boundary and compares its collection-time validator with a fresh one.
 func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error) {
 	var p evmRotPacked
 	if err := json.Unmarshal(packed, &p); err != nil {
@@ -153,15 +168,11 @@ func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, signature
 		return txID, nil
 	}
 
-	digest, err := f.digestFromPacked(packed)
+	validator, err := f.PrepareSignatureValidator(ctx, packed)
 	if err != nil {
 		return "", err
 	}
-	liveSigners, liveThreshold, err := fetchLiveQuorum(ctx, f.custody)
-	if err != nil {
-		return "", err
-	}
-	sigs, err := mergeQuorumSigs(common.Hash(digest), signatures, liveSigners, liveThreshold)
+	sigs, err := validator.ContractSignatures(signatures)
 	if err != nil {
 		return "", err
 	}
@@ -191,15 +202,11 @@ func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []str
 	if err != nil {
 		return "", false, err
 	}
-	live, err := f.custody.Signers(&bind.CallOpts{Context: ctx})
+	live, threshold, err := fetchLiveQuorum(ctx, f.client, f.custody)
 	if err != nil {
-		return "", false, fmt.Errorf("read signers: %w", err)
+		return "", false, err
 	}
-	thr, err := f.custody.Threshold(&bind.CallOpts{Context: ctx})
-	if err != nil {
-		return "", false, fmt.Errorf("read threshold: %w", err)
-	}
-	if !thr.IsInt64() || int(thr.Int64()) != newThreshold || !addrSetEqual(live, addrs) {
+	if threshold != newThreshold || !addrSetEqual(live, addrs) {
 		return "", false, nil
 	}
 	return f.lookupRotationTxID(ctx, addrs), true, nil
