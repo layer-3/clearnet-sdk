@@ -7,10 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	internalquorum "github.com/layer-3/clearnet-sdk/internal/quorum"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
 
@@ -40,12 +40,10 @@ type ReceiptVerifier struct {
 // digest for one receipt. It is safe to use while collecting untrusted mesh
 // candidates: rejected signatures never consume a quorum slot.
 type ReceiptSignatureValidator struct {
-	digest    []byte
-	signers   map[common.Address]struct{}
-	threshold int
+	snapshot *internalquorum.Snapshot[common.Address]
 }
 
-const maxCandidatesPerReceiptSigner = 4
+const maxCandidatesPerReceiptSigner = internalquorum.MaxCandidatesPerSigner
 
 var receiptSecp256k1HalfN = new(big.Int).Rsh(new(big.Int).Set(crypto.S256().Params().N), 1)
 
@@ -54,7 +52,8 @@ func (v *ReceiptSignatureValidator) Digest() []byte {
 	if v == nil {
 		return nil
 	}
-	return append([]byte(nil), v.digest...)
+	digest := v.snapshot.Digest()
+	return append([]byte(nil), digest[:]...)
 }
 
 // Threshold returns the frozen quorum threshold.
@@ -62,23 +61,14 @@ func (v *ReceiptSignatureValidator) Threshold() int {
 	if v == nil {
 		return 0
 	}
-	return v.threshold
+	return v.snapshot.Threshold()
 }
 
 // MatchesSigningContext reports whether two validators bind the same digest,
 // quorum threshold, and authorized signer set. Callers use it to fail closed
 // when the live roster changes between collection and persistence.
 func (v *ReceiptSignatureValidator) MatchesSigningContext(other *ReceiptSignatureValidator) bool {
-	if v == nil || other == nil || v.threshold != other.threshold ||
-		!bytes.Equal(v.digest, other.digest) || len(v.signers) != len(other.signers) {
-		return false
-	}
-	for signer := range v.signers {
-		if _, ok := other.signers[signer]; !ok {
-			return false
-		}
-	}
-	return true
+	return v != nil && other != nil && v.snapshot.Matches(other.snapshot)
 }
 
 // ValidateSignature recovers and authorizes one receipt signature. Legacy
@@ -89,100 +79,76 @@ func (v *ReceiptSignatureValidator) ValidateSignature(sig []byte) (common.Addres
 	if v == nil {
 		return common.Address{}, false
 	}
-	addr, _, ok, err := recoverCanonicalReceiptSigner(v.digest, sig)
-	if err != nil || !ok {
-		return common.Address{}, false
-	}
-	if _, authorized := v.signers[addr]; !authorized {
+	addr, _, result := v.snapshot.ValidateCandidate(sig, v.decodeSignature, nil)
+	if result != internalquorum.Authorized {
 		return common.Address{}, false
 	}
 	return addr, true
 }
 
+func (v *ReceiptSignatureValidator) decodeSignature(sig []byte) (common.Address, []byte, bool) {
+	if v == nil {
+		return common.Address{}, nil, false
+	}
+	digest := v.snapshot.Digest()
+	addr, canonical, ok, err := recoverCanonicalReceiptSigner(digest[:], sig)
+	if err != nil || !ok {
+		return common.Address{}, nil, false
+	}
+	return addr, canonical, true
+}
+
 // VerifySignatures verifies a distinct authorized quorum against the frozen
 // snapshot used during collection.
 func (v *ReceiptSignatureValidator) VerifySignatures(sigs [][]byte) error {
-	if v == nil || v.threshold <= 0 {
+	if v == nil || v.snapshot == nil || v.snapshot.Threshold() <= 0 {
 		return errors.New("receipt signature validator not configured")
 	}
-	if len(sigs) < v.threshold {
-		return fmt.Errorf("insufficient signatures: %d < %d", len(sigs), v.threshold)
+	if len(sigs) < v.snapshot.Threshold() {
+		return fmt.Errorf("insufficient signatures: %d < %d", len(sigs), v.snapshot.Threshold())
 	}
-	if len(sigs) > maxCandidatesPerReceiptSigner*len(v.signers) {
-		return fmt.Errorf("too many signature candidates: %d for %d authorized signers", len(sigs), len(v.signers))
-	}
-	seen := make(map[common.Address]struct{}, v.threshold)
-	var invalid, unauthorized, duplicates int
-	for _, sig := range sigs {
-		addr, _, ok, err := recoverCanonicalReceiptSigner(v.digest, sig)
-		if err != nil || !ok {
-			invalid++
-			continue
-		}
-		if _, authorized := v.signers[addr]; !authorized {
-			unauthorized++
-			continue
-		}
-		if _, duplicate := seen[addr]; duplicate {
-			duplicates++
-			continue
-		}
-		seen[addr] = struct{}{}
-		if len(seen) >= v.threshold {
-			return nil
-		}
-	}
-	return fmt.Errorf("insufficient distinct signers: %d/%d (invalid=%d unauthorized=%d duplicate=%d)",
-		len(seen), v.threshold, invalid, unauthorized, duplicates)
+	_, err := v.quorumEntries(sigs)
+	return err
 }
 
 // QuorumSignatures filters invalid, unauthorized, and duplicate candidates,
 // then returns a deterministic threshold-sized quorum ordered by signer.
 func (v *ReceiptSignatureValidator) QuorumSignatures(sigs [][]byte) ([][]byte, error) {
-	if v == nil || v.threshold <= 0 {
+	if v == nil || v.snapshot == nil || v.snapshot.Threshold() <= 0 {
 		return nil, errors.New("receipt signature validator not configured")
 	}
-	if len(sigs) < v.threshold {
-		return nil, fmt.Errorf("insufficient signatures: %d < %d", len(sigs), v.threshold)
+	if len(sigs) < v.snapshot.Threshold() {
+		return nil, fmt.Errorf("insufficient signatures: %d < %d", len(sigs), v.snapshot.Threshold())
 	}
-	if len(sigs) > maxCandidatesPerReceiptSigner*len(v.signers) {
-		return nil, fmt.Errorf("too many signature candidates: %d for %d authorized signers", len(sigs), len(v.signers))
+	entries, err := v.quorumEntries(sigs)
+	if err != nil {
+		return nil, err
 	}
-	bySigner := make(map[common.Address][]byte, v.threshold)
-	var invalid, unauthorized, duplicates int
-	for _, sig := range sigs {
-		addr, canonical, ok, err := recoverCanonicalReceiptSigner(v.digest, sig)
-		if err != nil || !ok {
-			invalid++
-			continue
-		}
-		if _, authorized := v.signers[addr]; !authorized {
-			unauthorized++
-			continue
-		}
-		if kept, exists := bySigner[addr]; exists {
-			duplicates++
-			if bytes.Compare(canonical, kept) < 0 {
-				bySigner[addr] = canonical
-			}
-		} else {
-			bySigner[addr] = canonical
-		}
-	}
-	if len(bySigner) < v.threshold {
-		return nil, fmt.Errorf("insufficient distinct signers: %d/%d (invalid=%d unauthorized=%d duplicate=%d)",
-			len(bySigner), v.threshold, invalid, unauthorized, duplicates)
-	}
-	addresses := make([]common.Address, 0, len(bySigner))
-	for addr := range bySigner {
-		addresses = append(addresses, addr)
-	}
-	sort.Slice(addresses, func(i, j int) bool { return bytes.Compare(addresses[i][:], addresses[j][:]) < 0 })
-	out := make([][]byte, v.threshold)
-	for i, addr := range addresses[:v.threshold] {
-		out[i] = bySigner[addr]
+	out := make([][]byte, len(entries))
+	for i, entry := range entries {
+		out[i] = entry.Payload
 	}
 	return out, nil
+}
+
+func (v *ReceiptSignatureValidator) quorumEntries(sigs [][]byte) ([]internalquorum.Entry[common.Address], error) {
+	entries, err := v.snapshot.Assemble(sigs, v.decodeSignature, nil, func(a, b common.Address) bool {
+		return bytes.Compare(a[:], b[:]) < 0
+	})
+	if err == nil {
+		return entries, nil
+	}
+	var limit *internalquorum.CandidateLimitError
+	var below *internalquorum.BelowThresholdError
+	switch {
+	case errors.As(err, &limit):
+		return nil, fmt.Errorf("too many signature candidates: %d for %d authorized signers", limit.Candidates, limit.Signers)
+	case errors.As(err, &below):
+		return nil, fmt.Errorf("insufficient distinct signers: %d/%d (invalid=%d unauthorized=%d duplicate=%d)",
+			below.Accepted, below.Threshold, below.Stats.Invalid, below.Stats.Unauthorized, below.Stats.Duplicate)
+	default:
+		return nil, err
+	}
 }
 
 func NewReceiptVerifier(source core.ReceiptSignerSource, withdrawalIssuers WithdrawalIssuerResolver) *ReceiptVerifier {
@@ -266,22 +232,29 @@ func (rv *ReceiptVerifier) prepareSignatures(ctx context.Context, issuerID commo
 	if err != nil {
 		return nil, fmt.Errorf("load receipt signers: %w", err)
 	}
-	if set.Threshold <= 0 || set.Threshold > len(set.Signers) {
-		return nil, fmt.Errorf("receipt threshold = %d out of range for %d signers", set.Threshold, len(set.Signers))
+	if len(digest) != 32 {
+		return nil, fmt.Errorf("receipt digest length = %d, want 32", len(digest))
 	}
-	signers := make(map[common.Address]struct{}, len(set.Signers))
-	for _, s := range set.Signers {
-		if s == (common.Address{}) {
+	var digest32 [32]byte
+	copy(digest32[:], digest)
+	snapshot, err := internalquorum.NewSnapshot(digest32, set.Signers, set.Threshold, func(signer common.Address) bool {
+		return signer == (common.Address{})
+	})
+	if err != nil {
+		var thresholdRange *internalquorum.ThresholdRangeError
+		if errors.As(err, &thresholdRange) {
+			return nil, fmt.Errorf("receipt threshold = %d out of range for %d signers", thresholdRange.Threshold, thresholdRange.Signers)
+		}
+		if errors.Is(err, internalquorum.ErrZeroSigner) {
 			return nil, errors.New("receipt signer set contains zero address")
 		}
-		signers[s] = struct{}{}
+		var distinct *internalquorum.DistinctSignerError
+		if errors.As(err, &distinct) {
+			return nil, fmt.Errorf("receipt threshold = %d exceeds %d distinct signers", distinct.Threshold, distinct.Signers)
+		}
+		return nil, err
 	}
-	if set.Threshold > len(signers) {
-		return nil, fmt.Errorf("receipt threshold = %d exceeds %d distinct signers", set.Threshold, len(signers))
-	}
-	return &ReceiptSignatureValidator{
-		digest: append([]byte(nil), digest...), signers: signers, threshold: set.Threshold,
-	}, nil
+	return &ReceiptSignatureValidator{snapshot: snapshot}, nil
 }
 
 // recoverCanonicalReceiptSigner dispatches signature verification by length

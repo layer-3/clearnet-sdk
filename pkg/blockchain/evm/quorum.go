@@ -3,51 +3,35 @@ package evm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
-	"sort"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	internalquorum "github.com/layer-3/clearnet-sdk/internal/quorum"
 )
 
 // SignatureValidator is an immutable digest, signer-set, and threshold
 // snapshot for one EVM quorum operation.
 type SignatureValidator struct {
-	digest     common.Hash
-	authorized map[common.Address]struct{}
-	threshold  int
+	snapshot *internalquorum.Snapshot[common.Address]
 }
 
-const maxCandidatesPerAuthorizedSigner = 4
-
-type signatureValidation uint8
-
-const (
-	signatureInvalid signatureValidation = iota
-	signatureUnauthorized
-	signatureAuthorized
-)
+const maxCandidatesPerAuthorizedSigner = internalquorum.MaxCandidatesPerSigner
 
 // NewSignatureValidator prepares candidate validation without any network
 // access. Signatures must use the custody wire form V in {0,1}; contract form
 // {27,28} is produced only by ContractSignatures.
 func NewSignatureValidator(digest common.Hash, signers []common.Address, threshold int) (*SignatureValidator, error) {
-	if threshold <= 0 || threshold > len(signers) {
-		return nil, fmt.Errorf("threshold %d out of range for %d signers", threshold, len(signers))
+	snapshot, err := internalquorum.NewSnapshot([32]byte(digest), signers, threshold, func(signer common.Address) bool {
+		return signer == (common.Address{})
+	})
+	if err != nil {
+		return nil, err
 	}
-	authorized := make(map[common.Address]struct{}, len(signers))
-	for _, signer := range signers {
-		if signer == (common.Address{}) {
-			return nil, fmt.Errorf("zero authorized signer")
-		}
-		authorized[signer] = struct{}{}
-	}
-	if threshold > len(authorized) {
-		return nil, fmt.Errorf("threshold %d exceeds %d distinct signers", threshold, len(authorized))
-	}
-	return &SignatureValidator{digest: digest, authorized: authorized, threshold: threshold}, nil
+	return &SignatureValidator{snapshot: snapshot}, nil
 }
 
 // Digest returns the prepared operation digest. A nil validator returns zero.
@@ -55,7 +39,7 @@ func (v *SignatureValidator) Digest() common.Hash {
 	if v == nil {
 		return common.Hash{}
 	}
-	return v.digest
+	return common.Hash(v.snapshot.Digest())
 }
 
 // Threshold returns the prepared quorum threshold. A nil validator returns zero.
@@ -63,54 +47,46 @@ func (v *SignatureValidator) Threshold() int {
 	if v == nil {
 		return 0
 	}
-	return v.threshold
+	return v.snapshot.Threshold()
 }
 
 // MatchesSigningContext reports whether two validators bind the same digest
 // and exact authorized quorum. It lets a collector reject signatures when live
 // chain state rotated while the ceremony was in progress.
 func (v *SignatureValidator) MatchesSigningContext(other *SignatureValidator) bool {
-	if v == nil || other == nil || v.digest != other.digest ||
-		v.threshold != other.threshold || len(v.authorized) != len(other.authorized) {
-		return false
-	}
-	for signer := range v.authorized {
-		if _, ok := other.authorized[signer]; !ok {
-			return false
-		}
-	}
-	return true
+	return v != nil && other != nil && v.snapshot.Matches(other.snapshot)
 }
 
 // ValidateSignature rejects malformed and malleable signatures before signer
 // recovery, then returns the canonical authorized signer identity. Every
 // rejected candidate, including an unauthorized recovery, returns zero,false.
 func (v *SignatureValidator) ValidateSignature(sig []byte) (common.Address, bool) {
-	addr, result := v.validateSignature(sig)
-	if result != signatureAuthorized {
+	if v == nil {
+		return common.Address{}, false
+	}
+	addr, _, result := v.snapshot.ValidateCandidate(sig, v.decodeSignature, nil)
+	if result != internalquorum.Authorized {
 		return common.Address{}, false
 	}
 	return addr, true
 }
 
-func (v *SignatureValidator) validateSignature(sig []byte) (common.Address, signatureValidation) {
+func (v *SignatureValidator) decodeSignature(sig []byte) (common.Address, []byte, bool) {
 	if v == nil || len(sig) != crypto.SignatureLength || sig[64] > 1 {
-		return common.Address{}, signatureInvalid
+		return common.Address{}, nil, false
 	}
 	r := new(big.Int).SetBytes(sig[:32])
 	s := new(big.Int).SetBytes(sig[32:64])
 	if !crypto.ValidateSignatureValues(sig[64], r, s, true) {
-		return common.Address{}, signatureInvalid
+		return common.Address{}, nil, false
 	}
-	pub, err := crypto.SigToPub(v.digest[:], sig)
+	digest := v.snapshot.Digest()
+	pub, err := crypto.SigToPub(digest[:], sig)
 	if err != nil {
-		return common.Address{}, signatureInvalid
+		return common.Address{}, nil, false
 	}
 	addr := crypto.PubkeyToAddress(*pub)
-	if _, ok := v.authorized[addr]; !ok {
-		return addr, signatureUnauthorized
-	}
-	return addr, signatureAuthorized
+	return addr, sig, true
 }
 
 // ContractSignatures filters invalid, unauthorized, and duplicate candidates,
@@ -118,45 +94,31 @@ func (v *SignatureValidator) validateSignature(sig []byte) (common.Address, sign
 // wire form {0,1} to Solidity form {27,28}. Selecting after the full validated
 // scan is deterministic and intentionally does not preserve arrival order.
 func (v *SignatureValidator) ContractSignatures(signatures [][]byte) ([][]byte, error) {
-	if v == nil || v.threshold <= 0 {
-		return nil, fmt.Errorf("signature validator not configured")
+	var snapshot *internalquorum.Snapshot[common.Address]
+	if v != nil {
+		snapshot = v.snapshot
 	}
-	if len(signatures) > maxCandidatesPerAuthorizedSigner*len(v.authorized) {
-		return nil, fmt.Errorf("too many signature candidates: %d for %d authorized signers", len(signatures), len(v.authorized))
-	}
-	bySigner := make(map[common.Address][]byte, v.threshold)
-	var invalid, unauthorized, duplicates int
-	for _, sig := range signatures {
-		addr, result := v.validateSignature(sig)
-		switch result {
-		case signatureInvalid:
-			invalid++
-			continue
-		case signatureUnauthorized:
-			unauthorized++
-			continue
-		}
-		if kept, exists := bySigner[addr]; exists {
-			duplicates++
-			if bytes.Compare(sig, kept) < 0 {
-				bySigner[addr] = append([]byte(nil), sig...)
-			}
-		} else {
-			bySigner[addr] = append([]byte(nil), sig...)
+	entries, err := snapshot.Assemble(signatures, v.decodeSignature, nil, func(a, b common.Address) bool {
+		return bytes.Compare(a[:], b[:]) < 0
+	})
+	if err != nil {
+		var limit *internalquorum.CandidateLimitError
+		var below *internalquorum.BelowThresholdError
+		switch {
+		case errors.Is(err, internalquorum.ErrNotConfigured):
+			return nil, fmt.Errorf("signature validator not configured")
+		case errors.As(err, &limit):
+			return nil, fmt.Errorf("too many signature candidates: %d for %d authorized signers", limit.Candidates, limit.Signers)
+		case errors.As(err, &below):
+			return nil, fmt.Errorf("only %d of %d authorized signatures (invalid=%d unauthorized=%d duplicate=%d)",
+				below.Accepted, below.Threshold, below.Stats.Invalid, below.Stats.Unauthorized, below.Stats.Duplicate)
+		default:
+			return nil, err
 		}
 	}
-	if len(bySigner) < v.threshold {
-		return nil, fmt.Errorf("only %d of %d authorized signatures (invalid=%d unauthorized=%d duplicate=%d)",
-			len(bySigner), v.threshold, invalid, unauthorized, duplicates)
-	}
-	addresses := make([]common.Address, 0, len(bySigner))
-	for addr := range bySigner {
-		addresses = append(addresses, addr)
-	}
-	sort.Slice(addresses, func(i, j int) bool { return bytes.Compare(addresses[i][:], addresses[j][:]) < 0 })
-	out := make([][]byte, v.threshold)
-	for i, addr := range addresses[:v.threshold] {
-		sig := bySigner[addr]
+	out := make([][]byte, len(entries))
+	for i, entry := range entries {
+		sig := entry.Payload
 		sig[64] += 27
 		out[i] = sig
 	}
