@@ -23,7 +23,9 @@ import {ConfigRegistryDigests} from "./libraries/ConfigRegistryDigests.sol";
 ///         `setConfigWithData`, `updateIssuerSettings`) for that issuer, consumed
 ///         on every successful call to any of them. It also implements
 ///         rotating its own issuer key set via the same threshold idiom and
-///         the same shared `nonce`.
+///         the same shared `nonce`. Key-set size and threshold are issuer-owned
+///         governance policy: this generic registry intentionally permits any
+///         structurally valid policy, including a single key at threshold one.
 contract ConfigRegistry is IConfigRegistry {
     using ECDSA for bytes32;
 
@@ -192,6 +194,10 @@ contract ConfigRegistry is IConfigRegistry {
     ///      rotation even if the issuer set is later revisited (A -> B -> A). Shares
     ///      the same per-issuer `nonce` as `setConfig`/`setConfigWithData` — see
     ///      `setConfig`'s dev note for the cross-entrypoint invalidation consequence.
+    ///      The outgoing quorum may select any structurally valid new policy,
+    ///      including fewer keys, a non-majority threshold, or one key at threshold
+    ///      one. This is intentional: the registry authenticates each issuer's
+    ///      chosen policy; it does not prescribe a decentralization policy.
     function updateIssuerSettings(
         address issuerId,
         address[] calldata newIssuerKeys,
@@ -225,13 +231,15 @@ contract ConfigRegistry is IConfigRegistry {
     // Internal
     // -------------------------------------------------------------------------
 
-    /// @dev Validate a issuer key set. Strictly ascending order also guarantees
+    /// @dev Validate an issuer key set. Strictly ascending order also guarantees
     ///      uniqueness and rejects zeros after the first slot.
-    ///      NOTE: it is possible to register a centralized issuer with a single key
-    ///      and threshold=1. This does not create a vector of attack, because
-    ///      even if the current issuer set is compromised, an attacker could perform
-    ///      any Config-related action immediately, regardless of any additional
-    ///      conditions on the number of keys or threshold.
+    ///      Threshold is issuer-owned governance policy, not a registry-wide safety
+    ///      floor. Registration and settings updates intentionally accept every
+    ///      structurally valid tuple (`0 < threshold <= keys.length`), including a
+    ///      centralized issuer with one key and threshold one. A current issuer
+    ///      quorum already has full authority over that issuer's Config, so forcing
+    ///      a majority ratio would restrict legitimate issuer policy without reducing
+    ///      a compromised quorum's authority.
     function _validateIssuerKeys(address[] memory keys, uint256 threshold_) internal pure {
         require(threshold_ > 0, InvalidThreshold());
         require(keys.length >= threshold_, NotEnoughIssuerKeys());
