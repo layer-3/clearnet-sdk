@@ -231,6 +231,29 @@ func DecodeScript(script []byte) (Marker, error) {
 // ScanOutputs deliberately says nothing about WHICH outputs are credited --
 // that requires the generic deposit address and the dust floor, neither of
 // which this package knows about.
+//
+// IMPORTANT: An error here means "this transaction is not attributed". It does NOT
+// mean "ignore this transaction", and a caller that treats it that way may lose
+// funds. In particular ErrNoMarker says only that no output carried a marker;
+// it says nothing about whether the transaction paid the vault.
+//
+// The caller owns the value side and MUST cross it with the result here:
+//
+//	value paid to the deposit address >= floor,  valid marker    -> credit the named account
+//	value paid to the deposit address >= floor,  any error here  -> UNATTRIBUTED INFLOW: the
+//	                                                                vault has funds nobody is
+//	                                                                credited for. Never drop it;
+//	                                                                it must be logged and routed
+//	                                                                to whatever destination the
+//	                                                                deposit policy defines, or it
+//	                                                                surfaces as reconciler drift.
+//	no qualifying value,                         valid marker    -> nothing was paid; inert
+//	no qualifying value,                         any error here  -> ordinary foreign traffic
+//
+// The distinction between the second row and the fourth is the whole reason
+// this function reports a specific error rather than a bool: an invalid or
+// absent marker on a *funded* transaction is an event the vault must account
+// for, while the same marker on an unfunded one is noise.
 func ScanOutputs(outs []Output) (Marker, error) {
 	type candidate struct {
 		marker Marker
