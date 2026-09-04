@@ -1,0 +1,719 @@
+{
+  "format": "yellow-custody-btc-deposit-marker",
+  "formatVersion": 1,
+  "adr": "custody docs/decisions/adr-023-generic-btc-deposit-address.md",
+  "notes": "GENERATED FILE - do not edit by hand. It is produced from the spec tables in vectors_test.go by `go test ./pkg/blockchain/btc/marker/ -update`, and TestVectorsFile fails CI when the two drift apart, so a hand-edit here is reverted on the next regeneration. Change the Go source instead. Language-neutral conformance vectors. Any implementation of the ADR-023 deposit marker MUST reproduce every encode case byte-for-byte and MUST classify every decode and scan case identically, including the error code. A change to this file is a FORMAT change: bump formatVersion. Two field-level rules: referenceHex is present only for version 0x02 -- version 0x01 carries no reference on the wire, and an all-zero one is what makes a 0x02 marker invalid, so the zero-reference rule MUST be conditioned on the version. And a scan case is a list of scriptPubKeys, not of outputs: output value is not an input to recognition, so it is absent from this contract entirely. An implementation whose own scan function happens to receive whole outputs MUST ignore their values - a transaction carrying one zero-value marker and one 1-sat marker is unattributed, not attributed.",
+  "validationOrderNotes": "validationOrder is the fixed precedence for decode failures. A scriptPubKey failing several checks reports the earliest listed. 'not_marker' means the scriptPubKey is ignored by the attribution rule; every later code means it is a marker candidate and its transaction is unattributed.",
+  "genericTag": {
+    "preimage": "yellow/btc/generic-deposit/v1",
+    "sha256Hex": "791019971cfb071da60191897acda17879f6866754c6bdbee1a312a4ee33a8ac"
+  },
+  "errorCodes": [
+    "not_marker",
+    "multiple_pushes",
+    "non_canonical_push",
+    "unknown_version",
+    "bad_length",
+    "zero_address",
+    "zero_reference",
+    "no_marker",
+    "multiple_markers"
+  ],
+  "validationOrder": [
+    "not_marker",
+    "multiple_pushes",
+    "non_canonical_push",
+    "unknown_version",
+    "bad_length",
+    "zero_address",
+    "zero_reference"
+  ],
+  "encode": [
+    {
+      "case": "v1_typical",
+      "notes": "ADR §2 baseline: 25-byte payload, 27-byte script.",
+      "marker": {
+        "version": 1,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "referenceHex": null
+      },
+      "payloadHex": "594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "scriptHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
+    },
+    {
+      "case": "v1_zero_address_refused",
+      "notes": "There is no account whose identifier is 0x000...0, so a marker naming it can only be a construction bug or a probe. Applies to both versions; refused by the writer as well as the reader.",
+      "marker": {
+        "version": 1,
+        "addressHex": "0000000000000000000000000000000000000000",
+        "referenceHex": null
+      },
+      "expectError": "zero_address"
+    },
+    {
+      "case": "v1_min_nonzero_address",
+      "notes": "Pins the boundary of the zero-address check.",
+      "marker": {
+        "version": 1,
+        "addressHex": "0000000000000000000000000000000000000001",
+        "referenceHex": null
+      },
+      "payloadHex": "594e4554010000000000000000000000000000000000000001",
+      "scriptHex": "6a19594e4554010000000000000000000000000000000000000001"
+    },
+    {
+      "case": "v1_max_address",
+      "notes": "All-ff address, valid.",
+      "marker": {
+        "version": 1,
+        "addressHex": "ffffffffffffffffffffffffffffffffffffffff",
+        "referenceHex": null
+      },
+      "payloadHex": "594e455401ffffffffffffffffffffffffffffffffffffffff",
+      "scriptHex": "6a19594e455401ffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "case": "v2_typical",
+      "notes": "ADR §2 sub-account: 57-byte payload, 59-byte script.",
+      "marker": {
+        "version": 2,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "referenceHex": "000000000000000000000000000000000000000000000000000000000000002a"
+      },
+      "payloadHex": "594e455402d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000000000002a",
+      "scriptHex": "6a39594e455402d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000000000002a"
+    },
+    {
+      "case": "v2_min_nonzero_reference",
+      "notes": "Pins the boundary of the zero-reference check.",
+      "marker": {
+        "version": 2,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "referenceHex": "0000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "payloadHex": "594e455402d8da6bf26964af9d7eed9e03e53415d37aa960450000000000000000000000000000000000000000000000000000000000000001",
+      "scriptHex": "6a39594e455402d8da6bf26964af9d7eed9e03e53415d37aa960450000000000000000000000000000000000000000000000000000000000000001"
+    },
+    {
+      "case": "v2_max_reference",
+      "notes": "All-ff reference, valid.",
+      "marker": {
+        "version": 2,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "referenceHex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "payloadHex": "594e455402d8da6bf26964af9d7eed9e03e53415d37aa96045ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "scriptHex": "6a39594e455402d8da6bf26964af9d7eed9e03e53415d37aa96045ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "case": "v2_zero_reference_refused",
+      "notes": "The writer enforces the same rule as the reader (ADR §2), so a construction bug cannot emit a marker this format rejects.",
+      "marker": {
+        "version": 2,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "referenceHex": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expectError": "zero_reference"
+    },
+    {
+      "case": "v2_zero_address_refused",
+      "notes": "Proves the all-zero-address rejection applies to Version2 too, not only Version1.",
+      "marker": {
+        "version": 2,
+        "addressHex": "0000000000000000000000000000000000000000",
+        "referenceHex": "000000000000000000000000000000000000000000000000000000000000002a"
+      },
+      "expectError": "zero_address"
+    },
+    {
+      "case": "unknown_version_refused",
+      "notes": "Version precedes length/address checks; address here is deliberately non-zero so this case tests only the version check.",
+      "marker": {
+        "version": 3,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "referenceHex": null
+      },
+      "expectError": "unknown_version"
+    }
+  ],
+  "decode": [
+    {
+      "case": "v1_typical",
+      "scriptHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      }
+    },
+    {
+      "case": "v2_typical",
+      "scriptHex": "6a39594e455402d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000000000002a",
+      "expect": {
+        "ok": true,
+        "version": 2,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "referenceHex": "000000000000000000000000000000000000000000000000000000000000002a"
+      }
+    },
+    {
+      "case": "v1_min_nonzero_address_roundtrip",
+      "notes": "boundary cases must decode, not only encode: 0x00...01 is the smallest address the zero-address check admits",
+      "scriptHex": "6a19594e4554010000000000000000000000000000000000000001",
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "addressHex": "0000000000000000000000000000000000000001"
+      }
+    },
+    {
+      "case": "v2_min_nonzero_reference_roundtrip",
+      "notes": "boundary cases must decode, not only encode: 0x00...01 is the smallest reference the zero-reference check admits",
+      "scriptHex": "6a39594e455402d8da6bf26964af9d7eed9e03e53415d37aa960450000000000000000000000000000000000000000000000000000000000000001",
+      "expect": {
+        "ok": true,
+        "version": 2,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "referenceHex": "0000000000000000000000000000000000000000000000000000000000000001"
+      }
+    },
+    {
+      "case": "unknown_version_25",
+      "notes": "version 0x03 on a 25-byte payload",
+      "scriptHex": "6a19594e455403d8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "expect": {
+        "ok": false,
+        "error": "unknown_version"
+      }
+    },
+    {
+      "case": "unknown_version_57",
+      "notes": "version 0x03 on a 57-byte payload -- pins the check order: version before length",
+      "scriptHex": "6a39594e455403d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000000000002a",
+      "expect": {
+        "ok": false,
+        "error": "unknown_version"
+      }
+    },
+    {
+      "case": "unknown_version_00",
+      "scriptHex": "6a19594e455400d8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "expect": {
+        "ok": false,
+        "error": "unknown_version"
+      }
+    },
+    {
+      "case": "v1_one_short",
+      "notes": "not zero_address, whatever the truncated address bytes are",
+      "scriptHex": "6a18594e455401d8da6bf26964af9d7eed9e03e53415d37aa960",
+      "expect": {
+        "ok": false,
+        "error": "bad_length"
+      }
+    },
+    {
+      "case": "v1_one_long",
+      "scriptHex": "6a1a594e455401d8da6bf26964af9d7eed9e03e53415d37aa9604500",
+      "expect": {
+        "ok": false,
+        "error": "bad_length"
+      }
+    },
+    {
+      "case": "v2_one_short",
+      "scriptHex": "6a38594e455402d8da6bf26964af9d7eed9e03e53415d37aa9604500000000000000000000000000000000000000000000000000000000000000",
+      "expect": {
+        "ok": false,
+        "error": "bad_length"
+      }
+    },
+    {
+      "case": "magic_only",
+      "notes": "payload is exactly YNET, 4 bytes, no version byte",
+      "scriptHex": "6a04594e4554",
+      "expect": {
+        "ok": false,
+        "error": "bad_length"
+      }
+    },
+    {
+      "case": "v2_all_zero_reference",
+      "scriptHex": "6a39594e455402d8da6bf26964af9d7eed9e03e53415d37aa960450000000000000000000000000000000000000000000000000000000000000000",
+      "expect": {
+        "ok": false,
+        "error": "zero_reference"
+      }
+    },
+    {
+      "case": "v1_pushdata1_encoding",
+      "notes": "Strict push rule: magic still matches, so this is a marker CANDIDATE and its transaction is unattributed -- it is NOT ignored.",
+      "scriptHex": "6a4c19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "expect": {
+        "ok": false,
+        "error": "non_canonical_push"
+      }
+    },
+    {
+      "case": "v1_pushdata2_encoding",
+      "scriptHex": "6a4d1900594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "expect": {
+        "ok": false,
+        "error": "non_canonical_push"
+      }
+    },
+    {
+      "case": "v2_pushdata4_encoding",
+      "scriptHex": "6a4e39000000594e455402d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000000000002a",
+      "expect": {
+        "ok": false,
+        "error": "non_canonical_push"
+      }
+    },
+    {
+      "case": "v1_all_zero_address",
+      "scriptHex": "6a19594e4554010000000000000000000000000000000000000000",
+      "expect": {
+        "ok": false,
+        "error": "zero_address"
+      }
+    },
+    {
+      "case": "v2_all_zero_address",
+      "notes": "the Version2 half of the all-zero-address rejection",
+      "scriptHex": "6a39594e4554020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002a",
+      "expect": {
+        "ok": false,
+        "error": "zero_address"
+      }
+    },
+    {
+      "case": "wrong_magic",
+      "scriptHex": "6a19594e455501d8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "expect": {
+        "ok": false,
+        "error": "not_marker"
+      }
+    },
+    {
+      "case": "p2wsh_not_op_return",
+      "scriptHex": "00200000000000000000000000000000000000000000000000000000000000000000",
+      "expect": {
+        "ok": false,
+        "error": "not_marker"
+      }
+    },
+    {
+      "case": "bare_op_return_no_push",
+      "scriptHex": "6a",
+      "expect": {
+        "ok": false,
+        "error": "not_marker"
+      }
+    },
+    {
+      "case": "withdrawal_id_op_return_is_not_a_marker",
+      "notes": "ADR §9: the deposit parser must not collide with extractWithdrawalID. A 32-byte push is neither 25 nor 57.",
+      "scriptHex": "6a200101010101010101010101010101010101010101010101010101010101010101",
+      "expect": {
+        "ok": false,
+        "error": "not_marker"
+      }
+    },
+    {
+      "case": "below_magic_length",
+      "notes": "payload YNE, 3 bytes",
+      "scriptHex": "6a03594e45",
+      "expect": {
+        "ok": false,
+        "error": "not_marker"
+      }
+    },
+    {
+      "case": "empty_script",
+      "scriptHex": "",
+      "expect": {
+        "ok": false,
+        "error": "not_marker"
+      }
+    },
+    {
+      "case": "p2pkh_arbitrary_script",
+      "scriptHex": "76a9140000000000000000000000000000000088ac",
+      "expect": {
+        "ok": false,
+        "error": "not_marker"
+      }
+    },
+    {
+      "case": "non_magic_pushdata1_is_still_ignored",
+      "notes": "Ordering proof paired with v1_pushdata1_encoding: canonicality is judged only after the magic matches.",
+      "scriptHex": "6a4c19594e455501d8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "expect": {
+        "ok": false,
+        "error": "not_marker"
+      }
+    },
+    {
+      "case": "multiple_pushes",
+      "notes": "OP_RETURN + valid v1 push + a second 4-byte push",
+      "scriptHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa960450401020304",
+      "expect": {
+        "ok": false,
+        "error": "multiple_pushes"
+      }
+    },
+    {
+      "case": "trailing_op_return_byte",
+      "notes": "trailing 0x6a is not a push opcode at all, yet the marker before it must not be honoured",
+      "scriptHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa960456a",
+      "expect": {
+        "ok": false,
+        "error": "multiple_pushes"
+      }
+    },
+    {
+      "case": "trailing_op_1",
+      "notes": "trailing OP_1 pushes no data, so a push-counting reader sees one push and wrongly accepts",
+      "scriptHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa9604551",
+      "expect": {
+        "ok": false,
+        "error": "multiple_pushes"
+      }
+    },
+    {
+      "case": "trailing_truncated_push_opcode",
+      "notes": "trailing 0x19 declares 25 bytes that are not present",
+      "scriptHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa9604519",
+      "expect": {
+        "ok": false,
+        "error": "multiple_pushes"
+      }
+    },
+    {
+      "case": "trailing_two_op_0",
+      "notes": "two trailing OP_0s",
+      "scriptHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa960450000",
+      "expect": {
+        "ok": false,
+        "error": "multiple_pushes"
+      }
+    },
+    {
+      "case": "junk_push_before_marker_is_not_a_candidate",
+      "notes": "OP_RETURN + a 1-byte push + a well-formed v1 marker push. Recognition tests the FIRST push only, so this is not_marker (ignored), not a candidate that fails validation.",
+      "scriptHex": "6a010019594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "expect": {
+        "ok": false,
+        "error": "not_marker"
+      }
+    },
+    {
+      "case": "precedence_not_marker_over_multiple_pushes",
+      "notes": "validation precedence: not_marker wins over the later check named in the case",
+      "scriptHex": "6a19594e455501d8da6bf26964af9d7eed9e03e53415d37aa960450401020304",
+      "expect": {
+        "ok": false,
+        "error": "not_marker"
+      }
+    },
+    {
+      "case": "precedence_not_marker_over_non_canonical",
+      "notes": "validation precedence: not_marker wins over the later check named in the case",
+      "scriptHex": "6a4c19594e455501d8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "expect": {
+        "ok": false,
+        "error": "not_marker"
+      }
+    },
+    {
+      "case": "precedence_multiple_pushes_over_non_canonical",
+      "notes": "validation precedence: multiple_pushes wins over the later check named in the case",
+      "scriptHex": "6a4c19594e455401d8da6bf26964af9d7eed9e03e53415d37aa960450401020304",
+      "expect": {
+        "ok": false,
+        "error": "multiple_pushes"
+      }
+    },
+    {
+      "case": "precedence_multiple_pushes_over_unknown_version",
+      "notes": "validation precedence: multiple_pushes wins over the later check named in the case",
+      "scriptHex": "6a19594e455403d8da6bf26964af9d7eed9e03e53415d37aa960450401020304",
+      "expect": {
+        "ok": false,
+        "error": "multiple_pushes"
+      }
+    },
+    {
+      "case": "precedence_multiple_pushes_over_bad_length",
+      "notes": "validation precedence: multiple_pushes wins over the later check named in the case",
+      "scriptHex": "6a18594e455401d8da6bf26964af9d7eed9e03e53415d37aa9600401020304",
+      "expect": {
+        "ok": false,
+        "error": "multiple_pushes"
+      }
+    },
+    {
+      "case": "precedence_multiple_pushes_over_zero_address",
+      "notes": "validation precedence: multiple_pushes wins over the later check named in the case",
+      "scriptHex": "6a19594e45540100000000000000000000000000000000000000000401020304",
+      "expect": {
+        "ok": false,
+        "error": "multiple_pushes"
+      }
+    },
+    {
+      "case": "precedence_multiple_pushes_over_zero_reference",
+      "notes": "validation precedence: multiple_pushes wins over the later check named in the case",
+      "scriptHex": "6a39594e455402d8da6bf26964af9d7eed9e03e53415d37aa9604500000000000000000000000000000000000000000000000000000000000000000401020304",
+      "expect": {
+        "ok": false,
+        "error": "multiple_pushes"
+      }
+    },
+    {
+      "case": "precedence_non_canonical_over_unknown_version",
+      "notes": "validation precedence: non_canonical_push wins over the later check named in the case",
+      "scriptHex": "6a4c19594e455403d8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "expect": {
+        "ok": false,
+        "error": "non_canonical_push"
+      }
+    },
+    {
+      "case": "precedence_non_canonical_over_bad_length",
+      "notes": "validation precedence: non_canonical_push wins over the later check named in the case",
+      "scriptHex": "6a4c18594e455401d8da6bf26964af9d7eed9e03e53415d37aa960",
+      "expect": {
+        "ok": false,
+        "error": "non_canonical_push"
+      }
+    },
+    {
+      "case": "precedence_non_canonical_over_zero_address",
+      "notes": "validation precedence: non_canonical_push wins over the later check named in the case",
+      "scriptHex": "6a4c19594e4554010000000000000000000000000000000000000000",
+      "expect": {
+        "ok": false,
+        "error": "non_canonical_push"
+      }
+    },
+    {
+      "case": "precedence_non_canonical_over_zero_reference",
+      "notes": "validation precedence: non_canonical_push wins over the later check named in the case",
+      "scriptHex": "6a4c39594e455402d8da6bf26964af9d7eed9e03e53415d37aa960450000000000000000000000000000000000000000000000000000000000000000",
+      "expect": {
+        "ok": false,
+        "error": "non_canonical_push"
+      }
+    },
+    {
+      "case": "precedence_unknown_version_over_bad_length",
+      "notes": "validation precedence: unknown_version wins over the later check named in the case",
+      "scriptHex": "6a0f594e455403ffffffffffffffffffff",
+      "expect": {
+        "ok": false,
+        "error": "unknown_version"
+      }
+    },
+    {
+      "case": "precedence_unknown_version_over_zero_address",
+      "notes": "validation precedence: unknown_version wins over the later check named in the case",
+      "scriptHex": "6a19594e4554030000000000000000000000000000000000000000",
+      "expect": {
+        "ok": false,
+        "error": "unknown_version"
+      }
+    },
+    {
+      "case": "precedence_unknown_version_over_zero_reference",
+      "notes": "validation precedence: unknown_version wins over the later check named in the case",
+      "scriptHex": "6a39594e455403d8da6bf26964af9d7eed9e03e53415d37aa960450000000000000000000000000000000000000000000000000000000000000000",
+      "expect": {
+        "ok": false,
+        "error": "unknown_version"
+      }
+    },
+    {
+      "case": "precedence_bad_length_over_zero_address",
+      "notes": "validation precedence: bad_length wins over the later check named in the case",
+      "scriptHex": "6a18594e45540100000000000000000000000000000000000000",
+      "expect": {
+        "ok": false,
+        "error": "bad_length"
+      }
+    },
+    {
+      "case": "precedence_bad_length_over_zero_reference",
+      "notes": "validation precedence: bad_length wins over the later check named in the case",
+      "scriptHex": "6a38594e455402d8da6bf26964af9d7eed9e03e53415d37aa9604500000000000000000000000000000000000000000000000000000000000000",
+      "expect": {
+        "ok": false,
+        "error": "bad_length"
+      }
+    },
+    {
+      "case": "precedence_zero_address_over_zero_reference",
+      "notes": "validation precedence: zero_address wins over the later check named in the case",
+      "scriptHex": "6a39594e45540200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expect": {
+        "ok": false,
+        "error": "zero_address"
+      }
+    }
+  ],
+  "scan": [
+    {
+      "case": "one_marker_two_value_outputs",
+      "notes": "ADR §3: one marker credits EVERY output paying the generic address.",
+      "scriptPubKeysHex": [
+        "0020",
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "0020"
+      ],
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      }
+    },
+    {
+      "case": "one_marker_one_value_output",
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "0020"
+      ],
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      }
+    },
+    {
+      "case": "values_only_no_marker",
+      "scriptPubKeysHex": [
+        "0020",
+        "0020"
+      ],
+      "expect": {
+        "ok": false,
+        "error": "no_marker"
+      }
+    },
+    {
+      "case": "two_identical_v1_markers",
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      ],
+      "expect": {
+        "ok": false,
+        "error": "multiple_markers"
+      }
+    },
+    {
+      "case": "one_v1_one_v2",
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a39594e455402d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000000000002a"
+      ],
+      "expect": {
+        "ok": false,
+        "error": "multiple_markers"
+      }
+    },
+    {
+      "case": "v1_plus_withdrawal_id_ignored",
+      "notes": "the foreign OP_RETURN is ignored, not counted. Load-bearing.",
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a200101010101010101010101010101010101010101010101010101010101010101"
+      ],
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      }
+    },
+    {
+      "case": "v1_plus_unknown_version_candidate",
+      "notes": "An invalid candidate still counts toward the exactly-one-marker rule, so the transaction is held rather than credited even though only one candidate is valid.",
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a19594e455403d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      ],
+      "expect": {
+        "ok": false,
+        "error": "multiple_markers"
+      }
+    },
+    {
+      "case": "marker_at_index_2",
+      "notes": "position-independence, ADR §3",
+      "scriptPubKeysHex": [
+        "0020",
+        "0020",
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      ],
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      }
+    },
+    {
+      "case": "lone_marker_no_value_output",
+      "notes": "A marker with nothing paying the vault still decodes: ScanOutputs answers the marker question only. Whether anything was paid is the caller's half of the rule.",
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      ],
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      }
+    },
+    {
+      "case": "empty_output_list",
+      "scriptPubKeysHex": [],
+      "expect": {
+        "ok": false,
+        "error": "no_marker"
+      }
+    },
+    {
+      "case": "v1_plus_non_canonical_candidate",
+      "notes": "A non-canonical push is an invalid candidate, not an ignored output, so it feeds the exactly-one-marker count like any other invalid candidate",
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a4c19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      ],
+      "expect": {
+        "ok": false,
+        "error": "multiple_markers"
+      }
+    },
+    {
+      "case": "lone_non_canonical_candidate",
+      "notes": "a lone invalid candidate reports its own error; it does not degrade to no_marker",
+      "scriptPubKeysHex": [
+        "6a4c19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
+      ],
+      "expect": {
+        "ok": false,
+        "error": "non_canonical_push"
+      }
+    },
+    {
+      "case": "v1_plus_zero_address_candidate",
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a19594e4554010000000000000000000000000000000000000000"
+      ],
+      "expect": {
+        "ok": false,
+        "error": "multiple_markers"
+      }
+    }
+  ]
+}
