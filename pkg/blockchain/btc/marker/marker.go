@@ -19,7 +19,7 @@ const (
 	PayloadLenV2 = len(Magic) + 1 + 20 + 32 // 57
 )
 
-// opReturn is the script opcode a marker output must begin with.
+// opReturn is the opcode every marker scriptPubKey must begin with.
 const opReturn = 0x6a
 
 // The three non-canonical data-push opcodes. A canonical push of a payload no
@@ -45,24 +45,14 @@ type Marker struct {
 	Reference [32]byte
 }
 
-// Output is one transaction output, reduced to the two fields the
-// attribution rule reads.
-//
-// ValueSats now is unused by the attribution rule, but it is kept on the
-// type anyway so a future reversal of that rule is not an API change.
-type Output struct {
-	ValueSats    int64
-	ScriptPubKey []byte
-}
-
 // ---- errors -----------------------------------------------------------
 
-// ErrNotMarker means the script is not a marker candidate at all.
-var ErrNotMarker = errors.New("marker: not a YNET marker output")
+// ErrNotMarker means the scriptPubKey is not a marker candidate at all.
+var ErrNotMarker = errors.New("marker: not a YNET marker script")
 
-// The remaining errors mean the output IS a marker candidate - its payload
-// begins with Magic - but is not a valid marker, which fails validation and
-// makes the whole transaction unattributed.
+// The remaining errors mean the scriptPubKey IS a marker candidate - its
+// payload begins with Magic - but is not a valid marker, which fails
+// validation and makes the whole transaction unattributed.
 var (
 	ErrMultiplePushes   = errors.New("marker: OP_RETURN carries more than one data push")
 	ErrNonCanonicalPush = errors.New("marker: payload is not a canonical direct push")
@@ -179,8 +169,8 @@ func DecodePayload(payload []byte) (Marker, error) {
 	return m, nil
 }
 
-// DecodeScript parses one output's scriptPubKey. ErrNotMarker means "ignore
-// this output"; any other error means "this transaction is unattributed".
+// DecodeScript parses one scriptPubKey. ErrNotMarker means "ignore this
+// scriptPubKey"; any other error means "this transaction is unattributed".
 // Callers MUST distinguish the two.
 func DecodeScript(script []byte) (Marker, error) {
 	if len(script) == 0 || script[0] != opReturn {
@@ -194,8 +184,8 @@ func DecodeScript(script []byte) (Marker, error) {
 		return Marker{}, ErrNotMarker
 	}
 
-	// From here on the output is a candidate: every outcome below makes the
-	// transaction unattributed.
+	// From here on the scriptPubKey is a candidate: every outcome below makes
+	// the transaction unattributed.
 
 	// The push must account for the whole script. Anything after the first push
 	// is an invalid candidate.
@@ -222,20 +212,20 @@ func DecodeScript(script []byte) (Marker, error) {
 
 // ---- transaction-scoped rule -----------------------------------------
 
-// ScanOutputs applies the attribution rule to one transaction's outputs:
-// exactly one marker candidate, and that candidate must be valid.
+// ScanOutputs applies the attribution rule to the scriptPubKeys of one
+// transaction: exactly one marker candidate, and that candidate must be valid.
 // Zero candidates yields ErrNoMarker; two or more yields ErrMultipleMarkers;
 // a single invalid candidate yields that candidate's validation error.
-// Outputs that are not candidates are ignored regardless of count.
+// scriptPubKeys that are not candidates are ignored regardless of count.
 //
-// ScanOutputs deliberately says nothing about WHICH outputs are credited --
-// that requires the generic deposit address and the dust floor, neither of
-// which this package knows about.
+// Pass every scriptPubKey in the transaction, in any order. The ones paying an
+// address rather than carrying a marker are not candidates and are ignored, so
+// the caller does not have to pre-filter.
 //
 // IMPORTANT: An error here means "this transaction is not attributed". It does NOT
 // mean "ignore this transaction", and a caller that treats it that way may lose
-// funds. In particular ErrNoMarker says only that no output carried a marker;
-// it says nothing about whether the transaction paid the vault.
+// funds. In particular ErrNoMarker says only that no scriptPubKey carried a
+// marker; it says nothing about whether the transaction paid the vault.
 //
 // The caller owns the value side and MUST cross it with the result here:
 //
@@ -254,14 +244,14 @@ func DecodeScript(script []byte) (Marker, error) {
 // this function reports a specific error rather than a bool: an invalid or
 // absent marker on a *funded* transaction is an event the vault must account
 // for, while the same marker on an unfunded one is noise.
-func ScanOutputs(outs []Output) (Marker, error) {
+func ScanOutputs(scriptPubKeys [][]byte) (Marker, error) {
 	type candidate struct {
 		marker Marker
 		err    error
 	}
 	var candidates []candidate
-	for _, o := range outs {
-		m, err := DecodeScript(o.ScriptPubKey)
+	for _, spk := range scriptPubKeys {
+		m, err := DecodeScript(spk)
 		if errors.Is(err, ErrNotMarker) {
 			continue
 		}

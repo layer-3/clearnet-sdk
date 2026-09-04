@@ -426,7 +426,7 @@ func TestValidationPrecedence(t *testing.T) {
 // 0x6a, say - would sail through to a successful decode, and an attacker
 // could smuggle an attributed transaction past a mirror implementation that
 // counts pushes rather than bytes. Reporting ErrMultiplePushes keeps such an
-// output a candidate, so the transaction is held rather than credited.
+// scriptPubKey a candidate, so the transaction is held rather than credited.
 //
 // The same four scripts are in vectors.json as the trailing_* decode cases,
 // so a mirror implementation is held to this reading too.
@@ -491,7 +491,7 @@ func v2Script(t *testing.T, addrHex, refHex string) []byte {
 func TestScanOutputs(t *testing.T) {
 	v1 := v1Script(t, testAddrHex)
 	v2 := v2Script(t, testAddrHex, "000000000000000000000000000000000000000000000000000000000000002a")
-	valueOut := []byte{0x00, 0x20} // stub non-OP_RETURN script, value output
+	valueOut := []byte{0x00, 0x20} // stub non-OP_RETURN scriptPubKey for a value output
 	withdrawalID := rawDirectPush(bytes.Repeat([]byte{0x01}, 32))
 	unknownVersion := rawDirectPush(withVersion(v1Payload(t, testAddrHex), 0x03))
 	nonCanonical := rawPushData1(v1Payload(t, testAddrHex))
@@ -501,23 +501,23 @@ func TestScanOutputs(t *testing.T) {
 
 	cases := []struct {
 		name    string
-		outputs []Output
+		outputs [][]byte
 		want    Marker
 		wantErr error
 	}{
-		{"S1_marker_plus_value", []Output{{0, v1}, {100000, valueOut}}, wantV1, nil},
-		{"S2_marker_plus_two_values", []Output{{100000, valueOut}, {0, v1}, {250000, valueOut}}, wantV1, nil},
-		{"S3_values_only", []Output{{1, valueOut}, {2, valueOut}}, Marker{}, ErrNoMarker},
-		{"S4_two_identical_v1", []Output{{0, v1}, {0, v1}}, Marker{}, ErrMultipleMarkers},
-		{"S5_v1_and_v2", []Output{{0, v1}, {0, v2}}, Marker{}, ErrMultipleMarkers},
-		{"S6_v1_and_withdrawal_id", []Output{{0, v1}, {0, withdrawalID}}, wantV1, nil},
-		{"S7_v1_and_unknown_version", []Output{{0, v1}, {0, unknownVersion}}, Marker{}, ErrMultipleMarkers},
-		{"S8_marker_at_index_2", []Output{{1, valueOut}, {2, valueOut}, {0, v1}}, wantV1, nil},
-		{"S9_nonzero_value_marker", []Output{{1, v1}}, wantV1, nil},
+		{"S1_marker_plus_value", [][]byte{v1, valueOut}, wantV1, nil},
+		{"S2_marker_plus_two_values", [][]byte{valueOut, v1, valueOut}, wantV1, nil},
+		{"S3_values_only", [][]byte{valueOut, valueOut}, Marker{}, ErrNoMarker},
+		{"S4_two_identical_v1", [][]byte{v1, v1}, Marker{}, ErrMultipleMarkers},
+		{"S5_v1_and_v2", [][]byte{v1, v2}, Marker{}, ErrMultipleMarkers},
+		{"S6_v1_and_withdrawal_id", [][]byte{v1, withdrawalID}, wantV1, nil},
+		{"S7_v1_and_unknown_version", [][]byte{v1, unknownVersion}, Marker{}, ErrMultipleMarkers},
+		{"S8_marker_at_index_2", [][]byte{valueOut, valueOut, v1}, wantV1, nil},
+		{"S9_lone_marker_no_value_output", [][]byte{v1}, wantV1, nil},
 		{"S10_empty", nil, Marker{}, ErrNoMarker},
-		{"S11_v1_and_non_canonical", []Output{{0, v1}, {0, nonCanonical}}, Marker{}, ErrMultipleMarkers},
-		{"S12_lone_non_canonical", []Output{{0, nonCanonical}}, Marker{}, ErrNonCanonicalPush},
-		{"S13_v1_and_zero_address", []Output{{0, v1}, {0, zeroAddress}}, Marker{}, ErrMultipleMarkers},
+		{"S11_v1_and_non_canonical", [][]byte{v1, nonCanonical}, Marker{}, ErrMultipleMarkers},
+		{"S12_lone_non_canonical", [][]byte{nonCanonical}, Marker{}, ErrNonCanonicalPush},
+		{"S13_v1_and_zero_address", [][]byte{v1, zeroAddress}, Marker{}, ErrMultipleMarkers},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

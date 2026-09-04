@@ -2,8 +2,8 @@
   "format": "yellow-custody-btc-deposit-marker",
   "formatVersion": 1,
   "adr": "custody docs/decisions/adr-023-generic-btc-deposit-address.md",
-  "notes": "Language-neutral conformance vectors. Any implementation of the ADR-023 deposit marker MUST reproduce every encode case byte-for-byte and MUST classify every decode and scan case identically, including the error code. A change to this file is a FORMAT change, not a test change: bump formatVersion.",
-  "validationOrderNotes": "validationOrder is the fixed precedence for decode failures. An output failing several checks reports the earliest listed. 'not_marker' means the output is ignored by the attribution rule; every later code means the output is a marker candidate and its transaction is unattributed.",
+  "notes": "Language-neutral conformance vectors. Any implementation of the ADR-023 deposit marker MUST reproduce every encode case byte-for-byte and MUST classify every decode and scan case identically, including the error code. A change to this file is a FORMAT change: bump formatVersion. Two field-level rules: referenceHex is present only for version 0x02 -- version 0x01 carries no reference on the wire, and an all-zero one is what makes a 0x02 marker invalid, so the zero-reference rule MUST be conditioned on the version. And a scan case is a list of scriptPubKeys, not of outputs: output value is not an input to recognition, so it is absent from this contract entirely. An implementation whose own scan function happens to receive whole outputs MUST ignore their values - a transaction carrying one zero-value marker and one 1-sat marker is unattributed, not attributed.",
+  "validationOrderNotes": "validationOrder is the fixed precedence for decode failures. A scriptPubKey failing several checks reports the earliest listed. 'not_marker' means the scriptPubKey is ignored by the attribution rule; every later code means it is a marker candidate and its transaction is unattributed.",
   "genericTag": {
     "preimage": "yellow/btc/generic-deposit/v1",
     "sha256Hex": "791019971cfb071da60191897acda17879f6866754c6bdbee1a312a4ee33a8ac"
@@ -143,8 +143,7 @@
       "expect": {
         "ok": true,
         "version": 1,
-        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
-        "referenceHex": "0000000000000000000000000000000000000000000000000000000000000000"
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
       }
     },
     {
@@ -164,8 +163,7 @@
       "expect": {
         "ok": true,
         "version": 1,
-        "addressHex": "0000000000000000000000000000000000000001",
-        "referenceHex": "0000000000000000000000000000000000000000000000000000000000000000"
+        "addressHex": "0000000000000000000000000000000000000001"
       }
     },
     {
@@ -568,57 +566,34 @@
     {
       "case": "one_marker_two_value_outputs",
       "notes": "ADR §3: one marker credits EVERY output paying the generic address.",
-      "outputs": [
-        {
-          "valueSats": 100000,
-          "scriptPubKeyHex": "0020"
-        },
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        },
-        {
-          "valueSats": 250000,
-          "scriptPubKeyHex": "0020"
-        }
+      "scriptPubKeysHex": [
+        "0020",
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "0020"
       ],
       "expect": {
         "ok": true,
         "version": 1,
-        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
-        "referenceHex": "0000000000000000000000000000000000000000000000000000000000000000"
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
       }
     },
     {
       "case": "one_marker_one_value_output",
-      "outputs": [
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        },
-        {
-          "valueSats": 100000,
-          "scriptPubKeyHex": "0020"
-        }
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "0020"
       ],
       "expect": {
         "ok": true,
         "version": 1,
-        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
-        "referenceHex": "0000000000000000000000000000000000000000000000000000000000000000"
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
       }
     },
     {
       "case": "values_only_no_marker",
-      "outputs": [
-        {
-          "valueSats": 1,
-          "scriptPubKeyHex": "0020"
-        },
-        {
-          "valueSats": 2,
-          "scriptPubKeyHex": "0020"
-        }
+      "scriptPubKeysHex": [
+        "0020",
+        "0020"
       ],
       "expect": {
         "ok": false,
@@ -627,15 +602,9 @@
     },
     {
       "case": "two_identical_v1_markers",
-      "outputs": [
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        },
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        }
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
       ],
       "expect": {
         "ok": false,
@@ -644,15 +613,9 @@
     },
     {
       "case": "one_v1_one_v2",
-      "outputs": [
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        },
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a39594e455402d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000000000002a"
-        }
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a39594e455402d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000000000002a"
       ],
       "expect": {
         "ok": false,
@@ -662,35 +625,22 @@
     {
       "case": "v1_plus_withdrawal_id_ignored",
       "notes": "the foreign OP_RETURN is ignored, not counted. Load-bearing.",
-      "outputs": [
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        },
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a200101010101010101010101010101010101010101010101010101010101010101"
-        }
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a200101010101010101010101010101010101010101010101010101010101010101"
       ],
       "expect": {
         "ok": true,
         "version": 1,
-        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
-        "referenceHex": "0000000000000000000000000000000000000000000000000000000000000000"
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
       }
     },
     {
       "case": "v1_plus_unknown_version_candidate",
       "notes": "An invalid candidate still counts toward the exactly-one-marker rule, so the transaction is held rather than credited even though only one candidate is valid.",
-      "outputs": [
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        },
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e455403d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        }
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a19594e455403d8da6bf26964af9d7eed9e03e53415d37aa96045"
       ],
       "expect": {
         "ok": false,
@@ -700,46 +650,32 @@
     {
       "case": "marker_at_index_2",
       "notes": "position-independence, ADR §3",
-      "outputs": [
-        {
-          "valueSats": 1,
-          "scriptPubKeyHex": "0020"
-        },
-        {
-          "valueSats": 2,
-          "scriptPubKeyHex": "0020"
-        },
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        }
+      "scriptPubKeysHex": [
+        "0020",
+        "0020",
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
       ],
       "expect": {
         "ok": true,
         "version": 1,
-        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
-        "referenceHex": "0000000000000000000000000000000000000000000000000000000000000000"
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
       }
     },
     {
-      "case": "nonzero_value_marker",
-      "notes": "value is not part of marker recognition",
-      "outputs": [
-        {
-          "valueSats": 1,
-          "scriptPubKeyHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        }
+      "case": "lone_marker_no_value_output",
+      "notes": "A marker with nothing paying the vault still decodes: ScanOutputs answers the marker question only. Whether anything was paid is the caller's half of the rule.",
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
       ],
       "expect": {
         "ok": true,
         "version": 1,
-        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045",
-        "referenceHex": "0000000000000000000000000000000000000000000000000000000000000000"
+        "addressHex": "d8da6bf26964af9d7eed9e03e53415d37aa96045"
       }
     },
     {
       "case": "empty_output_list",
-      "outputs": [],
+      "scriptPubKeysHex": [],
       "expect": {
         "ok": false,
         "error": "no_marker"
@@ -748,15 +684,9 @@
     {
       "case": "v1_plus_non_canonical_candidate",
       "notes": "A non-canonical push is an invalid candidate, not an ignored output, so it feeds the exactly-one-marker count like any other invalid candidate",
-      "outputs": [
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        },
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a4c19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        }
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a4c19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
       ],
       "expect": {
         "ok": false,
@@ -766,11 +696,8 @@
     {
       "case": "lone_non_canonical_candidate",
       "notes": "a lone invalid candidate reports its own error; it does not degrade to no_marker",
-      "outputs": [
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a4c19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        }
+      "scriptPubKeysHex": [
+        "6a4c19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
       ],
       "expect": {
         "ok": false,
@@ -779,15 +706,9 @@
     },
     {
       "case": "v1_plus_zero_address_candidate",
-      "outputs": [
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        },
-        {
-          "valueSats": 0,
-          "scriptPubKeyHex": "6a19594e4554010000000000000000000000000000000000000000"
-        }
+      "scriptPubKeysHex": [
+        "6a19594e455401d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        "6a19594e4554010000000000000000000000000000000000000000"
       ],
       "expect": {
         "ok": false,

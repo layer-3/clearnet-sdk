@@ -61,11 +61,11 @@ type encodeCaseJSON struct {
 }
 
 type decodeExpectJSON struct {
-	OK           bool   `json:"ok"`
-	Version      byte   `json:"version,omitempty"`
-	AddressHex   string `json:"addressHex,omitempty"`
-	ReferenceHex string `json:"referenceHex,omitempty"`
-	Error        string `json:"error,omitempty"`
+	OK           bool    `json:"ok"`
+	Version      byte    `json:"version,omitempty"`
+	AddressHex   string  `json:"addressHex,omitempty"`
+	ReferenceHex *string `json:"referenceHex,omitempty"`
+	Error        string  `json:"error,omitempty"`
 }
 
 type decodeCaseJSON struct {
@@ -75,16 +75,15 @@ type decodeCaseJSON struct {
 	Expect    decodeExpectJSON `json:"expect"`
 }
 
-type scanOutputJSON struct {
-	ValueSats       int64  `json:"valueSats"`
-	ScriptPubKeyHex string `json:"scriptPubKeyHex"`
-}
-
 type scanCaseJSON struct {
-	Case    string           `json:"case"`
-	Notes   string           `json:"notes,omitempty"`
-	Outputs []scanOutputJSON `json:"outputs"`
-	Expect  decodeExpectJSON `json:"expect"`
+	Case  string `json:"case"`
+	Notes string `json:"notes,omitempty"`
+	// ScriptPubKeysHex is every scriptPubKey of one transaction, in order.
+	// Output values are deliberately absent from the contract: they are not an
+	// input to the rule, so no conforming implementation can filter on what it
+	// is never given.
+	ScriptPubKeysHex []string         `json:"scriptPubKeysHex"`
+	Expect           decodeExpectJSON `json:"expect"`
 }
 
 // ---- error <-> stable string code -----------------------------------------
@@ -314,7 +313,7 @@ func decodeSpecs(t *testing.T) []decodeSpec {
 	// ---- recognition reads the first push only ---------------------------
 	//
 	// A junk push before a well-formed marker payload means there was never a
-	// candidate: the output is ignored, not held.
+	// candidate: the scriptPubKey is ignored, not held.
 	specs = append(specs, decodeSpec{
 		Case:    "junk_push_before_marker_is_not_a_candidate",
 		Notes:   "OP_RETURN + a 1-byte push + a well-formed v1 marker push. Recognition tests the FIRST push only, so this is not_marker (ignored), not a candidate that fails validation.",
@@ -453,9 +452,12 @@ func TestEncodeDecodePairing(t *testing.T) {
 // ---- scan cases -------------------------------------------------------------
 
 type scanSpec struct {
-	Case    string
-	Notes   string
-	Outputs []Output
+	Case  string
+	Notes string
+	// Outputs is every scriptPubKey of one transaction, in order. There is no
+	// value here: value is not an input to recognition, so the contract never
+	// hands one to an implementation that might filter on it.
+	Outputs [][]byte
 	WantOK  bool
 	Want    Marker
 	WantErr error
@@ -473,19 +475,19 @@ func scanSpecs(t *testing.T) []scanSpec {
 	wantV1 := Marker{Version: Version1, Address: mustAddr(t, testAddrHex)}
 
 	return []scanSpec{
-		{Case: "one_marker_two_value_outputs", Notes: "ADR §3: one marker credits EVERY output paying the generic address.", Outputs: []Output{{100000, valueOut}, {0, v1}, {250000, valueOut}}, WantOK: true, Want: wantV1},
-		{Case: "one_marker_one_value_output", Outputs: []Output{{0, v1}, {100000, valueOut}}, WantOK: true, Want: wantV1},
-		{Case: "values_only_no_marker", Outputs: []Output{{1, valueOut}, {2, valueOut}}, WantErr: ErrNoMarker},
-		{Case: "two_identical_v1_markers", Outputs: []Output{{0, v1}, {0, v1}}, WantErr: ErrMultipleMarkers},
-		{Case: "one_v1_one_v2", Outputs: []Output{{0, v1}, {0, v2}}, WantErr: ErrMultipleMarkers},
-		{Case: "v1_plus_withdrawal_id_ignored", Notes: "the foreign OP_RETURN is ignored, not counted. Load-bearing.", Outputs: []Output{{0, v1}, {0, withdrawalID}}, WantOK: true, Want: wantV1},
-		{Case: "v1_plus_unknown_version_candidate", Notes: "An invalid candidate still counts toward the exactly-one-marker rule, so the transaction is held rather than credited even though only one candidate is valid.", Outputs: []Output{{0, v1}, {0, unknownVersion}}, WantErr: ErrMultipleMarkers},
-		{Case: "marker_at_index_2", Notes: "position-independence, ADR §3", Outputs: []Output{{1, valueOut}, {2, valueOut}, {0, v1}}, WantOK: true, Want: wantV1},
-		{Case: "nonzero_value_marker", Notes: "value is not part of marker recognition", Outputs: []Output{{1, v1}}, WantOK: true, Want: wantV1},
+		{Case: "one_marker_two_value_outputs", Notes: "ADR §3: one marker credits EVERY output paying the generic address.", Outputs: [][]byte{valueOut, v1, valueOut}, WantOK: true, Want: wantV1},
+		{Case: "one_marker_one_value_output", Outputs: [][]byte{v1, valueOut}, WantOK: true, Want: wantV1},
+		{Case: "values_only_no_marker", Outputs: [][]byte{valueOut, valueOut}, WantErr: ErrNoMarker},
+		{Case: "two_identical_v1_markers", Outputs: [][]byte{v1, v1}, WantErr: ErrMultipleMarkers},
+		{Case: "one_v1_one_v2", Outputs: [][]byte{v1, v2}, WantErr: ErrMultipleMarkers},
+		{Case: "v1_plus_withdrawal_id_ignored", Notes: "the foreign OP_RETURN is ignored, not counted. Load-bearing.", Outputs: [][]byte{v1, withdrawalID}, WantOK: true, Want: wantV1},
+		{Case: "v1_plus_unknown_version_candidate", Notes: "An invalid candidate still counts toward the exactly-one-marker rule, so the transaction is held rather than credited even though only one candidate is valid.", Outputs: [][]byte{v1, unknownVersion}, WantErr: ErrMultipleMarkers},
+		{Case: "marker_at_index_2", Notes: "position-independence, ADR §3", Outputs: [][]byte{valueOut, valueOut, v1}, WantOK: true, Want: wantV1},
+		{Case: "lone_marker_no_value_output", Notes: "A marker with nothing paying the vault still decodes: ScanOutputs answers the marker question only. Whether anything was paid is the caller's half of the rule.", Outputs: [][]byte{v1}, WantOK: true, Want: wantV1},
 		{Case: "empty_output_list", Outputs: nil, WantErr: ErrNoMarker},
-		{Case: "v1_plus_non_canonical_candidate", Notes: "A non-canonical push is an invalid candidate, not an ignored output, so it feeds the exactly-one-marker count like any other invalid candidate", Outputs: []Output{{0, v1}, {0, nonCanonical}}, WantErr: ErrMultipleMarkers},
-		{Case: "lone_non_canonical_candidate", Notes: "a lone invalid candidate reports its own error; it does not degrade to no_marker", Outputs: []Output{{0, nonCanonical}}, WantErr: ErrNonCanonicalPush},
-		{Case: "v1_plus_zero_address_candidate", Outputs: []Output{{0, v1}, {0, zeroAddress}}, WantErr: ErrMultipleMarkers},
+		{Case: "v1_plus_non_canonical_candidate", Notes: "A non-canonical push is an invalid candidate, not an ignored output, so it feeds the exactly-one-marker count like any other invalid candidate", Outputs: [][]byte{v1, nonCanonical}, WantErr: ErrMultipleMarkers},
+		{Case: "lone_non_canonical_candidate", Notes: "a lone invalid candidate reports its own error; it does not degrade to no_marker", Outputs: [][]byte{nonCanonical}, WantErr: ErrNonCanonicalPush},
+		{Case: "v1_plus_zero_address_candidate", Outputs: [][]byte{v1, zeroAddress}, WantErr: ErrMultipleMarkers},
 	}
 }
 
@@ -523,8 +525,8 @@ func buildVectorsFile(t *testing.T) vectorsFile {
 		Format:               "yellow-custody-btc-deposit-marker",
 		FormatVersion:        1,
 		ADR:                  "custody docs/decisions/adr-023-generic-btc-deposit-address.md",
-		Notes:                "Language-neutral conformance vectors. Any implementation of the ADR-023 deposit marker MUST reproduce every encode case byte-for-byte and MUST classify every decode and scan case identically, including the error code. A change to this file is a FORMAT change, not a test change: bump formatVersion.",
-		ValidationOrderNotes: "validationOrder is the fixed precedence for decode failures. An output failing several checks reports the earliest listed. 'not_marker' means the output is ignored by the attribution rule; every later code means the output is a marker candidate and its transaction is unattributed.",
+		Notes:                "Language-neutral conformance vectors. Any implementation of the ADR-023 deposit marker MUST reproduce every encode case byte-for-byte and MUST classify every decode and scan case identically, including the error code. A change to this file is a FORMAT change, not a test change: bump formatVersion. Two field-level rules: referenceHex is present only for version 0x02 -- version 0x01 carries no reference on the wire, and an all-zero one is what makes a 0x02 marker invalid, so the zero-reference rule MUST be conditioned on the version. And a scan case is a list of scriptPubKeys, not of outputs: output value is not an input to recognition, so it is absent from this contract entirely. An implementation whose own scan function happens to receive whole outputs MUST ignore their values - a transaction carrying one zero-value marker and one 1-sat marker is unattributed, not attributed.",
+		ValidationOrderNotes: "validationOrder is the fixed precedence for decode failures. A scriptPubKey failing several checks reports the earliest listed. 'not_marker' means the scriptPubKey is ignored by the attribution rule; every later code means it is a marker candidate and its transaction is unattributed.",
 		GenericTag: genericTagJSON{
 			Preimage:  GenericDepositTagPreimage,
 			SHA256Hex: GenericDepositTagHex,
@@ -579,7 +581,7 @@ func buildVectorsFile(t *testing.T) vectorsFile {
 				OK:           true,
 				Version:      spec.Want.Version,
 				AddressHex:   hexEnc(spec.Want.Address[:]),
-				ReferenceHex: hexEnc(spec.Want.Reference[:]),
+				ReferenceHex: refHexFor(spec.Want),
 			}
 		} else {
 			dc.Expect = decodeExpectJSON{OK: false, Error: errCode(t, spec.WantErr)}
@@ -588,20 +590,20 @@ func buildVectorsFile(t *testing.T) vectorsFile {
 	}
 
 	for _, spec := range scanSpecs(t) {
-		// Outputs is initialised non-nil so an empty output list serialises
+		// ScriptPubKeysHex is initialised non-nil so an empty list serialises
 		// as [] rather than null: vectors.json is consumed by non-Go
 		// implementations, and a null where an array is declared is a
 		// gratuitous special case for every one of them.
-		sc := scanCaseJSON{Case: spec.Case, Notes: spec.Notes, Outputs: []scanOutputJSON{}}
-		for _, o := range spec.Outputs {
-			sc.Outputs = append(sc.Outputs, scanOutputJSON{ValueSats: o.ValueSats, ScriptPubKeyHex: hexEnc(o.ScriptPubKey)})
+		sc := scanCaseJSON{Case: spec.Case, Notes: spec.Notes, ScriptPubKeysHex: []string{}}
+		for _, spk := range spec.Outputs {
+			sc.ScriptPubKeysHex = append(sc.ScriptPubKeysHex, hexEnc(spk))
 		}
 		if spec.WantOK {
 			sc.Expect = decodeExpectJSON{
 				OK:           true,
 				Version:      spec.Want.Version,
 				AddressHex:   hexEnc(spec.Want.Address[:]),
-				ReferenceHex: hexEnc(spec.Want.Reference[:]),
+				ReferenceHex: refHexFor(spec.Want),
 			}
 		} else {
 			sc.Expect = decodeExpectJSON{OK: false, Error: errCode(t, spec.WantErr)}
@@ -610,6 +612,23 @@ func buildVectorsFile(t *testing.T) vectorsFile {
 	}
 
 	return vf
+}
+
+// refHexFor returns the reference hex for a decoded marker, or nil when the
+// version has no reference field on the wire.
+//
+// Version1 carries no reference, so its expectation must not name one. Emitting
+// the zero value here would put 64 zero bytes in a v1 success case - byte-identical
+// to the value that makes a v2 marker invalid - so a mirror applying the
+// zero-reference rule without conditioning on the version would contradict its
+// own conformance cases. The encode section already represents "no reference"
+// as null; this keeps the decode and scan sections consistent with it.
+func refHexFor(m Marker) *string {
+	if m.Version != Version2 {
+		return nil
+	}
+	h := hexEnc(m.Reference[:])
+	return &h
 }
 
 func hexEnc(b []byte) string {
