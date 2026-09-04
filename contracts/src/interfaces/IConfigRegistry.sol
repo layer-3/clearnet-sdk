@@ -8,7 +8,9 @@ pragma solidity 0.8.34;
 ///         `Config`'s address becomes the issuer's `issuerId`. Once
 ///         registered, the same quorum commits config checksums
 ///         (`setConfig` / `setConfigWithData`) and rotates its own key set
-///         (`updateIssuerSettings`).
+///         (`updateIssuerSettings`). Key-set size and threshold are selected by
+///         each issuer; the registry intentionally imposes no majority policy
+///         and permits any structurally valid tuple, including 1-of-1.
 interface IConfigRegistry {
     // -------------------------------------------------------------------------
     // Events
@@ -169,7 +171,10 @@ interface IConfigRegistry {
     ///         `setConfigWithData`, which is consumed on success so a
     ///         signature set authorises exactly one rotation — and a config
     ///         commit landing first invalidates a pending pre-signed
-    ///         rotation at that nonce, or vice versa.
+    ///         rotation at that nonce, or vice versa. The outgoing quorum may
+    ///         choose any structurally valid new key set and threshold,
+    ///         including a single key at threshold one; governance policy is
+    ///         issuer-owned rather than imposed by this generic registry.
     /// @dev    `expectedNonce` is the only replay guard, which is owned and
     ///         tracked by this registry itself.
     /// @param issuerId        The issuer whose issuer key set is rotating.

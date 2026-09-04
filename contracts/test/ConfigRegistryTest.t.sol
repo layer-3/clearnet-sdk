@@ -739,6 +739,21 @@ contract ConfigRegistryTest_setConfigWithData is ConfigRegistryTestBase {
 /// @notice Issuer key/threshold rotation: wholesale replacement, validation on the *new* set,
 ///         verification against the *outgoing* set, and the A -> B -> A replay case.
 contract ConfigRegistryTest_updateIssuerSettings is ConfigRegistryTestBase {
+    /// @dev Issuer threshold is policy, not a registry-wide majority floor. The
+    ///      current quorum may intentionally rotate to a centralized 1-of-1 policy.
+    function test_updateIssuerSettings_currentQuorumCanChooseSingleKeyThresholdOne() public {
+        (uint256[] memory newKeys, address[] memory newAddrs) = _makeSignerSet(29, 1);
+
+        _updateIssuerSettings(issuerId, newAddrs, 1, 0, issuerPrivKeys, THRESHOLD);
+
+        assertEq(registry.issuerKeys(issuerId), newAddrs);
+        assertEq(registry.threshold(issuerId), 1);
+        assertEq(registry.nonce(issuerId), 1);
+
+        _setConfig(issuerId, keccak256("k"), keccak256("v"), 1, newKeys, 1);
+        assertEq(Config(issuerId).latestConfigChecksum(keccak256("k")), keccak256("v"));
+    }
+
     function test_updateIssuerSettings_replacesKeysAndThreshold() public {
         (, address[] memory newAddrs) = _makeSignerSet(30, SIGNER_COUNT);
         uint256 newThreshold = 4;
