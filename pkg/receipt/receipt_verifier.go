@@ -478,6 +478,8 @@ const (
 
 type ReceiptLogicalID [32]byte
 
+// BurnReceiptLogicalID returns the idempotency identity for a burn receipt.
+// It is independent of the receipt proof and signer epoch.
 func BurnReceiptLogicalID(r *core.BurnReceipt) (ReceiptLogicalID, error) {
 	if r == nil {
 		return ReceiptLogicalID{}, errors.New("nil burn receipt")
@@ -488,6 +490,8 @@ func BurnReceiptLogicalID(r *core.BurnReceipt) (ReceiptLogicalID, error) {
 	return ReceiptLogicalID(crypto.Keccak256Hash(buf)), nil
 }
 
+// MintReceiptLogicalID returns the idempotency identity for a mint receipt.
+// It is independent of the receipt proof and signer epoch.
 func MintReceiptLogicalID(r *core.MintReceipt) (ReceiptLogicalID, error) {
 	if r == nil {
 		return ReceiptLogicalID{}, errors.New("nil mint receipt")

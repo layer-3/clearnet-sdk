@@ -33,22 +33,19 @@ type RegistrySignerSource struct {
 
 var _ core.ReceiptSignerSource = (*RegistrySignerSource)(nil)
 
-func NewRegistrySignerSource(registry common.Address, events ConfigRegistryEventReader, gates ...ReceiptSignerStateGate) (*RegistrySignerSource, error) {
+func NewRegistrySignerSource(registry common.Address, events ConfigRegistryEventReader, gate ReceiptSignerStateGate) (*RegistrySignerSource, error) {
 	if events == nil {
 		return nil, fmt.Errorf("registry signer source: nil event reader")
 	}
-	var gate ReceiptSignerStateGate
-	if len(gates) > 0 {
-		gate = gates[0]
+	if gate == nil {
+		return nil, fmt.Errorf("registry signer source: nil signer state gate")
 	}
 	return &RegistrySignerSource{registry: registry, events: events, gate: gate}, nil
 }
 
 func (s *RegistrySignerSource) LoadLatestReceiptSignerState(ctx context.Context, issuerID common.Address) (core.ReceiptSignerState, error) {
-	if s.gate != nil {
-		if err := s.gate.CheckReceiptSignerStateReady(ctx); err != nil {
-			return core.ReceiptSignerState{}, fmt.Errorf("registry signer source: signer state not ready: %w", err)
-		}
+	if err := s.gate.CheckReceiptSignerStateReady(ctx); err != nil {
+		return core.ReceiptSignerState{}, fmt.Errorf("registry signer source: signer state not ready: %w", err)
 	}
 	ev, ok, err := s.events.LatestConfigRegistryEvent(ctx, s.registry, issuerID, ConfigRegistrySignersKey)
 	if err != nil {

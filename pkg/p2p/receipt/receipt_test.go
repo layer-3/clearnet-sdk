@@ -2,6 +2,7 @@ package receipt
 
 import (
 	"context"
+	"io"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
+	"github.com/layer-3/clearnet-sdk/pkg/cborx"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	p2pproto "github.com/layer-3/clearnet-sdk/pkg/p2p/protocol"
@@ -97,6 +99,33 @@ func TestReceipt_HandlerError(t *testing.T) {
 	}
 	if ack.Code != p2pproto.ReceiptAckTemporaryFailure || ack.Reason == "" {
 		t.Fatalf("expected temporary_failure with a reason, got %+v", ack)
+	}
+}
+
+func TestReceipt_MalformedRequestReturnsCorruptAck(t *testing.T) {
+	srv, cli := newPair(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	NewServer(testHandler{}, nil).Register(srv)
+	stream, err := cli.NewStream(ctx, srv.ID(), protocol.ID(p2pproto.ProtocolBurnReceipt))
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer stream.Close()
+	if _, err := stream.Write([]byte{0x01, 0x01}); err != nil {
+		t.Fatalf("write malformed frame: %v", err)
+	}
+	if err := stream.CloseWrite(); err != nil {
+		t.Fatalf("close write: %v", err)
+	}
+	var ack p2pproto.ReceiptAck
+	var version cborx.Version
+	if err := cborx.ReadFrame(io.LimitReader(stream, maxReceiptBytes), cborx.MaxControlFrame, &version, &ack); err != nil {
+		t.Fatalf("read ack: %v", err)
+	}
+	if ack.Code != p2pproto.ReceiptAckCorrupt || ack.Reason == "" {
+		t.Fatalf("ack = %+v, want corrupt with reason", ack)
 	}
 }
 

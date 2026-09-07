@@ -62,6 +62,10 @@ func TestIntegration_ConfigRegistryReceipts(t *testing.T) {
 	verifyConfigCommitIdempotency(ctx, t, client, registryAddr, registry, deployer, issuer1)
 
 	store := newConfigEventStore()
+	signerStateGate, err := receipt.NewInMemoryReceiptSignerStateGate(receipt.ReceiptSignerStateConfigRegistryWatcher)
+	if err != nil {
+		t.Fatalf("signer state gate: %v", err)
+	}
 	forwarder, err := evm.NewConfigRegistryEventForwarder(
 		[]common.Address{issuer1.id, issuer2.id},
 		[][32]byte{receipt.ConfigRegistrySignersKey},
@@ -74,6 +78,7 @@ func TestIntegration_ConfigRegistryReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("watcher: %v", err)
 	}
+	watcher.SetOnlineTracker(receipt.ConfigRegistryWatcherReceiptSignerStateOnlineTracker{Tracker: signerStateGate})
 	watcher.SetCursorSource(store)
 	watcher.SetInitialLookback(100)
 	watcher.SetPollInterval(100 * time.Millisecond)
@@ -94,7 +99,7 @@ func TestIntegration_ConfigRegistryReceipts(t *testing.T) {
 		t.Fatalf("issuer2 initial signer epoch = %d, want 1", ev.Epoch)
 	}
 
-	src, err := receipt.NewRegistrySignerSource(registryAddr, store)
+	src, err := receipt.NewRegistrySignerSource(registryAddr, store, signerStateGate)
 	if err != nil {
 		t.Fatalf("registry signer source: %v", err)
 	}
@@ -108,6 +113,7 @@ func TestIntegration_ConfigRegistryReceipts(t *testing.T) {
 	verifyMalformedPayloadRecovery(ctx, t, client, registryAddr, deployer, store, src, issuer1)
 	verifySignerPayloadOverwrite(ctx, t, client, registryAddr, deployer, store, verifier, resolver, issuer1, issuer2)
 	stopWatch()
+	waitForSignerStateUnavailable(ctx, t, src, issuer2.id)
 	verifyWatcherResumeFromCursor(ctx, t, client, registryAddr, registry, deployer, store, issuer2)
 }
 
@@ -666,6 +672,22 @@ func waitForSignerEventWrites(ctx context.Context, t *testing.T, store *configEv
 		select {
 		case <-ctx.Done():
 			t.Fatalf("timed out waiting for signer event writes for issuer %s", issuer.Hex())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForSignerStateUnavailable(ctx context.Context, t *testing.T, src core.ReceiptSignerSource, issuer common.Address) {
+	t.Helper()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := src.LoadLatestReceiptSignerState(ctx, issuer); err != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for signer state gate to fail closed")
 		case <-ticker.C:
 		}
 	}

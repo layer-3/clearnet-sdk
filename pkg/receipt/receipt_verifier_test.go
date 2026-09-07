@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
+	p2pproto "github.com/layer-3/clearnet-sdk/pkg/p2p/protocol"
 )
 
 // stubSignerSource is a controllable SignerSource for tests.
@@ -131,6 +132,34 @@ func TestPrepareReceiptSignaturesGuards(t *testing.T) {
 			_, err := rv.PrepareBurnReceiptSignatures(context.Background(), makeReceipt(1))
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("PrepareBurnReceiptSignatures() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestWithdrawalIssuerResolutionMapsToVerificationAndAck(t *testing.T) {
+	cases := []struct {
+		name       string
+		resolution WithdrawalIssuerResolutionCode
+		verify     ReceiptVerificationCode
+		ack        p2pproto.ReceiptAckCode
+	}{
+		{"unknown withdrawal", WithdrawalIssuerUnknownWithdrawal, ReceiptVerificationUnknownWithdrawal, p2pproto.ReceiptAckRejected},
+		{"issuer unavailable", WithdrawalIssuerUnavailable, ReceiptVerificationIssuerUnavailable, p2pproto.ReceiptAckTemporaryFailure},
+		{"invalid issuer state", WithdrawalIssuerStateInvalid, ReceiptVerificationIssuerStateInvalid, p2pproto.ReceiptAckCorrupt},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rv := NewReceiptVerifier(&stubSignerSource{}, stubWithdrawalIssuerResolver{
+				issuerID: testIssuerID,
+				err:      &WithdrawalIssuerResolutionError{Code: tc.resolution, Err: errors.New("resolver detail")},
+			})
+			err := rv.VerifyBurnReceipt(context.Background(), makeReceipt(1))
+			if verificationCode(err) != tc.verify {
+				t.Fatalf("verification code = %v, want %v (err=%v)", verificationCode(err), tc.verify, err)
+			}
+			if got := ReceiptVerificationAckCode(err); got != tc.ack {
+				t.Fatalf("ack code = %s, want %s", got, tc.ack)
 			}
 		})
 	}

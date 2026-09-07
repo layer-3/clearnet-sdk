@@ -16,9 +16,9 @@ package receipt
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -46,6 +46,18 @@ type Server struct {
 	logger  log.Logger
 }
 
+type decodeError struct{ err error }
+
+func (e *decodeError) Error() string { return fmt.Sprintf("decode: %v", e.err) }
+func (e *decodeError) Unwrap() error { return e.err }
+
+func wrapDecodeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &decodeError{err: err}
+}
+
 var _ p2pproto.Registrar = (*Server)(nil)
 
 // NewServer returns a Server that delegates to handler.
@@ -68,7 +80,7 @@ func (s *Server) HandleBurnReceipt(stream network.Stream) {
 		var receipt core.BurnReceipt
 		var v cborx.Version
 		if err := cborx.ReadFrame(r, cborx.MaxControlFrame, &v, &receipt); err != nil {
-			return p2pproto.ReceiptAck{}, fmt.Errorf("decode: %w", err)
+			return p2pproto.ReceiptAck{}, wrapDecodeError(err)
 		}
 		return s.handler.OnBurnReceipt(ctx, &receipt)
 	})
@@ -80,7 +92,7 @@ func (s *Server) HandleMintReceipt(stream network.Stream) {
 		var receipt core.MintReceipt
 		var v cborx.Version
 		if err := cborx.ReadFrame(r, cborx.MaxControlFrame, &v, &receipt); err != nil {
-			return p2pproto.ReceiptAck{}, fmt.Errorf("decode: %w", err)
+			return p2pproto.ReceiptAck{}, wrapDecodeError(err)
 		}
 		return s.handler.OnMintReceipt(ctx, &receipt)
 	})
@@ -108,7 +120,8 @@ func (s *Server) serve(
 	if err != nil {
 		lg.Warn("handler error", "error", err)
 		code := p2pproto.ReceiptAckTemporaryFailure
-		if strings.HasPrefix(err.Error(), "decode:") {
+		var decodeErr *decodeError
+		if errors.As(err, &decodeErr) {
 			code = p2pproto.ReceiptAckCorrupt
 		}
 		writeAck(stream, p2pproto.ReceiptAck{Code: code, Reason: err.Error()}, lg)

@@ -15,8 +15,11 @@ import (
 //
 // Implementations must apply latest-only custody-to-clearnet ingress
 // verification before accepting a receipt and be idempotent by receipt logical
-// id (BurnReceipt: WithdrawalID; MintReceipt: AssetURI+TxID). Already-accepted
-// clearnet-internal propagation is outside this ingress verifier boundary.
+// id (BurnReceipt: WithdrawalID; MintReceipt: AssetURI+TxID). The SDK
+// ReceiptLogicalID helpers define these identities while excluding proof and
+// signer epoch. A handler should return ReceiptAckAlreadyAccepted when that
+// logical ID was accepted previously; already-accepted clearnet-internal
+// propagation is outside this ingress verifier boundary.
 // A consumer that handles only one kind still implements both methods; return a
 // reject ACK for the unhandled one.
 type ReceiptHandler interface {
