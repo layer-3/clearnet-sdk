@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/ethereum/go-ethereum/crypto"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain/btc/marker"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
@@ -62,7 +63,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 		pubkeys[i] = signers[i].PublicKey()
 	}
 	depositorSigner := genSecpSigner(t)
-	const account = "yellow://ynet/user/btc-itest"
+	accountBytes, account := depositorTestAccount(0x11)
 	cfg := Config{ConfirmationDepth: 1, FeeConfTarget: 6, FallbackFeeRate: 5, FeeCapSatPerVByte: 10_000}
 
 	assets := NewAssetResolver()
@@ -70,10 +71,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDepositor: %v", err)
 	}
-	depositAddr, _, err := DepositAddress(account, btcThreshold, pubkeys, net)
-	if err != nil {
-		t.Fatalf("DepositAddress: %v", err)
-	}
+	depositAddr, _ := genericDepositTestAddress(t, btcThreshold, pubkeys, net)
 
 	// Base vault address — the withdrawal pays change here, and the rotation
 	// sweep later spends it; watch it up front (rescan=false) so the change UTXO
@@ -103,6 +101,46 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	node.generateToAddress(ctx, t, 1, miner) // confirm the deposit UTXO
 	t.Logf("deposit tx %s -> %s", depRef, depositAddr.EncodeAddress())
 
+	rawDep, err := node.GetRawTransaction(ctx, depRef)
+	if err != nil {
+		t.Fatalf("GetRawTransaction(deposit): %v", err)
+	}
+	depositScript, err := PkScript(depositAddr)
+	if err != nil {
+		t.Fatalf("deposit PkScript: %v", err)
+	}
+	scriptPubKeys := make([][]byte, len(rawDep.Vouts))
+	var sawValueOutput bool
+	for i, vo := range rawDep.Vouts {
+		script, err := hex.DecodeString(vo.ScriptPubKeyHex)
+		if err != nil {
+			t.Fatalf("decode deposit vout %d scriptPubKey: %v", i, err)
+		}
+		scriptPubKeys[i] = script
+		if bytes.Equal(script, depositScript) {
+			sawValueOutput = true
+			if vo.ValueSats != 20_000_000 {
+				t.Fatalf("deposit value output = %d sats, want 20000000", vo.ValueSats)
+			}
+		}
+	}
+	if !sawValueOutput {
+		t.Fatal("deposit tx has no output paying the generic deposit address")
+	}
+	gotMarker, err := marker.ScanOutputs(scriptPubKeys)
+	if err != nil {
+		t.Fatalf("marker.ScanOutputs(deposit): %v", err)
+	}
+	if gotMarker.Version != marker.Version1 {
+		t.Fatalf("deposit marker version = %#x, want %#x (zero Ref)", gotMarker.Version, marker.Version1)
+	}
+	if gotMarker.Address != accountBytes {
+		t.Fatalf("deposit marker address = %x, want %x", gotMarker.Address, accountBytes)
+	}
+	if gotMarker.Reference != ([32]byte{}) {
+		t.Fatalf("deposit marker reference = %x, want zero", gotMarker.Reference)
+	}
+
 	// ── Withdrawal flow (quorum in-process) ───────────────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, btcSignerCount)
 	for i, s := range signers {
@@ -110,7 +148,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewWithdrawalFinalizer %d: %v", i, err)
 		}
-		if err := f.RegisterDepositAccounts(account); err != nil {
+		if err := f.RegisterDepositAccounts(marker.GenericDepositTagPreimage); err != nil {
 			t.Fatalf("register deposit account: %v", err)
 		}
 		finalizers[i] = f
@@ -209,7 +247,7 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	store := &memVaultStore{pubkeys: pubkeys, threshold: btcThreshold}
 	rotators := make([]*RotationFinalizer, btcSignerCount)
 	for i, s := range signers {
-		r, err := NewRotationFinalizer(net, node, s, store, cfg, assets, account)
+		r, err := NewRotationFinalizer(net, node, s, store, cfg, assets, marker.GenericDepositTagPreimage)
 		if err != nil {
 			t.Fatalf("NewRotationFinalizer %d: %v", i, err)
 		}
