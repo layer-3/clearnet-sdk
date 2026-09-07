@@ -14,6 +14,7 @@ import { normalizeVaultPubkeys, requireCompressedPublicKey } from "./address.js"
 import type {
   BitcoinDepositDestination,
   BitcoinDepositorConfig,
+  BitcoinExpectedDepositOutput,
   BitcoinNetwork,
   BitcoinSigner,
   NormalizedBitcoinConfig,
@@ -166,6 +167,50 @@ export function requireSubmitDepositOptions(options: unknown): SubmitDepositOpti
     );
   }
   return options;
+}
+
+/**
+ * Validates the expectedOutputs a caller passes to submitSignedDepositPsbt.
+ * Required, not optional: prepareDepositPsbt's expectedOutputs must round-trip
+ * back unmodified, and there is no default that would let a caller skip the
+ * check by omission - an absent, empty, or malformed array is rejected here
+ * rather than silently disabling output verification.
+ */
+export function requireExpectedDepositOutputs(
+  outputs: unknown,
+): readonly BitcoinExpectedDepositOutput[] {
+  if (!Array.isArray(outputs) || outputs.length === 0) {
+    throw new ClearnetSdkError(
+      "INVALID_INPUT",
+      "expectedOutputs is required and must be the non-empty array returned by prepareDepositPsbt",
+    );
+  }
+  return outputs.map((output, index) => {
+    if (!output || typeof output !== "object") {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        `expectedOutputs[${index}] must be an object`,
+      );
+    }
+    const candidate = output as Partial<BitcoinExpectedDepositOutput>;
+    if (
+      typeof candidate.script !== "string" ||
+      !/^[a-f0-9]+$/i.test(candidate.script) ||
+      candidate.script.length % 2 !== 0
+    ) {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        `expectedOutputs[${index}].script must be an even-length hex string`,
+      );
+    }
+    if (typeof candidate.amount !== "bigint" || candidate.amount < 0n) {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        `expectedOutputs[${index}].amount must be a non-negative bigint`,
+      );
+    }
+    return { script: candidate.script.toLowerCase(), amount: candidate.amount };
+  });
 }
 
 function requireNetwork(network: unknown): BitcoinNetwork {

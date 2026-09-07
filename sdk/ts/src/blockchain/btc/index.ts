@@ -6,6 +6,7 @@ export type {
   BitcoinCoreRpcClientConfig,
   BitcoinDepositDestination,
   BitcoinDepositorConfig,
+  BitcoinExpectedDepositOutput,
   BitcoinNetwork,
   BitcoinPreparedDepositPsbt,
   BitcoinPsbtSignerInfo,

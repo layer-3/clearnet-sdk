@@ -276,13 +276,17 @@ async function submitXverseDeposit(): Promise<void> {
       inputIndexesToSign: prepared.inputIndexesToSign,
       address: wallet.address,
     });
-    lastRef = await activeDepositor.submitSignedDepositPsbt(signedPsbt, {
-      onSubmitted(ref) {
-        lastRef = ref;
-        verifyButton.disabled = false;
-        writeLog(`Submitted Xverse tx ${ref}\nhash: ${ref}`);
+    lastRef = await activeDepositor.submitSignedDepositPsbt(
+      signedPsbt,
+      prepared.expectedOutputs,
+      {
+        onSubmitted(ref) {
+          lastRef = ref;
+          verifyButton.disabled = false;
+          writeLog(`Submitted Xverse tx ${ref}\nhash: ${ref}`);
+        },
       },
-    });
+    );
     depositor = activeDepositor;
     verifyButton.disabled = false;
     writeLog(

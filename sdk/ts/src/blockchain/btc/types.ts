@@ -86,6 +86,22 @@ export interface BitcoinPsbtSignerInfo {
 
 export type BitcoinWalletAddressType = "p2wpkh" | "p2sh";
 
+/**
+ * One output of the exact set prepareDepositPsbt built, as prepared - in
+ * order, script bytes and amount both required. submitSignedDepositPsbt
+ * compares a wallet-signed PSBT's finalized outputs against this set and
+ * rejects any mismatch, which is what detects a stripped or altered
+ * deposit-attribution marker (ADR-023 §3) before broadcast. Wallet
+ * finalization can change scriptSig/witness data and even the txid
+ * (nested-SegWit in particular), but must never change the output set itself.
+ */
+export interface BitcoinExpectedDepositOutput {
+  /** Output scriptPubKey, as lowercase hex. */
+  script: string;
+  /** Output value in satoshis. */
+  amount: bigint;
+}
+
 export interface BitcoinPreparedDepositPsbt {
   psbtHex: string;
   inputIndexesToSign: readonly number[];
@@ -99,6 +115,8 @@ export interface BitcoinPreparedDepositPsbt {
   depositAddress: string;
   feeSats: bigint;
   selectedUtxos: readonly BitcoinUnspent[];
+  /* The exact output set (order, script, amount) this PSBT was built with. */
+  expectedOutputs: readonly BitcoinExpectedDepositOutput[];
 }
 
 export interface NormalizedBitcoinConfig {

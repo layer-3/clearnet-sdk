@@ -255,9 +255,11 @@ describe("BitcoinVaultDepositor", () => {
     }
     const onSubmitted = vi.fn();
 
-    const txID = await depositor.submitSignedDepositPsbt(bytesToHex(tx.toPSBT()), {
-      onSubmitted,
-    });
+    const txID = await depositor.submitSignedDepositPsbt(
+      bytesToHex(tx.toPSBT()),
+      prepared.expectedOutputs,
+      { onSubmitted },
+    );
 
     expect(txID).toEqual(prepared.unsignedTxID);
     expect(rpc.sendRawTransaction).toHaveBeenCalledOnce();
@@ -297,7 +299,10 @@ describe("BitcoinVaultDepositor", () => {
       );
     }
 
-    const txID = await depositor.submitSignedDepositPsbt(bytesToHex(tx.toPSBT()));
+    const txID = await depositor.submitSignedDepositPsbt(
+      bytesToHex(tx.toPSBT()),
+      prepared.expectedOutputs,
+    );
 
     expect(prepared.fundingAddress).toBe(NESTED_SEGWIT_ADDRESS);
     expect(txID).toMatch(/^[a-f0-9]{64}$/);
@@ -306,6 +311,172 @@ describe("BitcoinVaultDepositor", () => {
       NESTED_SEGWIT_ADDRESS,
     ]);
     expect(rpc.sendRawTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("rejects submitSignedDepositPsbt when expectedOutputs is missing, empty, or malformed", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0b".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+    });
+    const depositor = createDepositor({ rpc, signer: undefined });
+    const prepared = await depositor.prepareDepositPsbt(
+      {
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT },
+      },
+      { publicKey: SIGNER_PUBKEY },
+    );
+    const signedPsbtHex = bytesToHex(signInputs(prepared).toPSBT());
+
+    await expect(
+      depositor.submitSignedDepositPsbt(
+        signedPsbtHex,
+        undefined as unknown as typeof prepared.expectedOutputs,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(
+      depositor.submitSignedDepositPsbt(signedPsbtHex, []),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(
+      depositor.submitSignedDepositPsbt(signedPsbtHex, [{ script: "zz", amount: 0n }]),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(
+      depositor.submitSignedDepositPsbt(signedPsbtHex, [
+        { script: "6a00", amount: -1n },
+      ]),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a signed PSBT with a stripped marker output", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0c".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+    });
+    const depositor = createDepositor({ rpc, signer: undefined });
+    const prepared = await depositor.prepareDepositPsbt(
+      {
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT },
+      },
+      { publicKey: SIGNER_PUBKEY },
+    );
+    // Marker output is expectedOutputs[1] (see prepareUnsignedDepositTx: deposit, marker, [change]).
+    const strippedOutputs = prepared.expectedOutputs.filter((_, index) => index !== 1);
+    const maliciousPsbtHex = signInputs(
+      prepared,
+      rebuildTransaction(prepared.psbtHex, strippedOutputs),
+    ).toPSBT();
+
+    await expect(
+      depositor.submitSignedDepositPsbt(
+        bytesToHex(maliciousPsbtHex),
+        prepared.expectedOutputs,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("output(s), expected"),
+    });
+    expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a signed PSBT with an altered marker script", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0d".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+    });
+    const depositor = createDepositor({ rpc, signer: undefined });
+    const prepared = await depositor.prepareDepositPsbt(
+      {
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT },
+      },
+      { publicKey: SIGNER_PUBKEY },
+    );
+    const alteredOutputs = prepared.expectedOutputs.map((output, index) =>
+      index === 1 ? { ...output, script: flipLastHexChar(output.script) } : output,
+    );
+    const maliciousPsbtHex = signInputs(
+      prepared,
+      rebuildTransaction(prepared.psbtHex, alteredOutputs),
+    ).toPSBT();
+
+    await expect(
+      depositor.submitSignedDepositPsbt(
+        bytesToHex(maliciousPsbtHex),
+        prepared.expectedOutputs,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("scriptPubKey does not match"),
+    });
+    expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a signed PSBT whose marker output carries a non-zero amount", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0e".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+    });
+    const depositor = createDepositor({ rpc, signer: undefined });
+    const prepared = await depositor.prepareDepositPsbt(
+      {
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT },
+      },
+      { publicKey: SIGNER_PUBKEY },
+    );
+    const alteredOutputs = prepared.expectedOutputs.map((output, index) =>
+      index === 1 ? { ...output, amount: 546n } : output,
+    );
+    const maliciousPsbtHex = signInputs(
+      prepared,
+      rebuildTransaction(prepared.psbtHex, alteredOutputs),
+    ).toPSBT();
+
+    await expect(
+      depositor.submitSignedDepositPsbt(
+        bytesToHex(maliciousPsbtHex),
+        prepared.expectedOutputs,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("amount does not match"),
+    });
+    expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a signed PSBT with an altered value-output amount", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0f".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+    });
+    const depositor = createDepositor({ rpc, signer: undefined });
+    const prepared = await depositor.prepareDepositPsbt(
+      {
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT },
+      },
+      { publicKey: SIGNER_PUBKEY },
+    );
+    const alteredOutputs = prepared.expectedOutputs.map((output, index) =>
+      index === 0 ? { ...output, amount: output.amount + 1n } : output,
+    );
+    const maliciousPsbtHex = signInputs(
+      prepared,
+      rebuildTransaction(prepared.psbtHex, alteredOutputs),
+    ).toPSBT();
+
+    await expect(
+      depositor.submitSignedDepositPsbt(
+        bytesToHex(maliciousPsbtHex),
+        prepared.expectedOutputs,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("amount does not match"),
+    });
+    expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
   });
 
   it("rejects PSBT preparation when wallet address and public key do not match", async () => {
@@ -663,6 +834,61 @@ async function signedPreparedTransaction(
   }
   tx.finalize();
   return tx;
+}
+
+/**
+ * Applies fake partial signatures to every input prepareDepositPsbt marked
+ * for wallet signing. Defaults to parsing `prepared.psbtHex` fresh, but a
+ * caller can pass an already-rebuilt (potentially output-tampered) Transaction
+ * instead - the signatures are never checked for validity by finalize(), so
+ * this is sufficient to reach a "wallet-signed" PSBT in either case.
+ */
+function signInputs(
+  prepared: { psbtHex: string; inputIndexesToSign: readonly number[] },
+  tx: Transaction = Transaction.fromPSBT(hexToBytes(prepared.psbtHex, "prepared.psbtHex")),
+): Transaction {
+  for (const index of prepared.inputIndexesToSign) {
+    tx.updateInput(
+      index,
+      {
+        partialSig: [[
+          hexToBytes(SIGNER_PUBKEY, "SIGNER_PUBKEY"),
+          concatBytes(fakeDerSignature(), new Uint8Array([SigHash.ALL])),
+        ]],
+      },
+      true,
+    );
+  }
+  return tx;
+}
+
+/**
+ * Simulates a wallet that re-derives the transaction with a different output
+ * set before signing (e.g. one that stripped or altered the marker output):
+ * same inputs as the original PSBT, but exactly the given outputs, in order.
+ */
+function rebuildTransaction(
+  originalPsbtHex: string,
+  outputs: readonly { script: string; amount: bigint }[],
+): Transaction {
+  const original = Transaction.fromPSBT(hexToBytes(originalPsbtHex, "originalPsbtHex"));
+  const rebuilt = new Transaction({ version: 1, allowUnknownOutputs: true });
+  for (let index = 0; index < original.inputsLength; index += 1) {
+    rebuilt.addInput(original.getInput(index));
+  }
+  for (const output of outputs) {
+    rebuilt.addOutput({
+      script: hexToBytes(output.script, "output.script"),
+      amount: output.amount,
+    });
+  }
+  return rebuilt;
+}
+
+function flipLastHexChar(hex: string): string {
+  const last = hex.at(-1) ?? "0";
+  const flipped = last === "0" ? "1" : "0";
+  return `${hex.slice(0, -1)}${flipped}`;
 }
 
 function fakeDerSignature(): Uint8Array {
