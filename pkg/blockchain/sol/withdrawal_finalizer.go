@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -288,16 +289,28 @@ func (f *WithdrawalFinalizer) buildExecuteIx(to, mint solana.PublicKey, amount u
 // executed flag). The txID is not recoverable from the PDA alone, so an empty
 // txID is returned with executed=true.
 func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID [32]byte) (string, bool, error) {
-	info, err := f.client.GetAccountInfoWithOpts(ctx, WithdrawalPDA(f.programID, withdrawalID), &rpc.GetAccountInfoOpts{Commitment: f.commitment})
+	return f.verifyExecution(ctx, withdrawalID, nil)
+}
+
+// VerifyExecutionAtSlot checks execution using a view no older than minContextSlot.
+// Reads use the finalizer's configured commitment. Expiry callers must configure
+// finalized commitment, establish that this slot is past the authorization
+// deadline, then require absence at this slot or later.
+func (f *WithdrawalFinalizer) VerifyExecutionAtSlot(ctx context.Context, withdrawalID [32]byte, minContextSlot uint64) (string, bool, error) {
+	return f.verifyExecution(ctx, withdrawalID, &minContextSlot)
+}
+
+func (f *WithdrawalFinalizer) verifyExecution(ctx context.Context, withdrawalID [32]byte, minContextSlot *uint64) (string, bool, error) {
+	info, err := f.client.GetAccountInfoWithOpts(ctx, WithdrawalPDA(f.programID, withdrawalID), &rpc.GetAccountInfoOpts{Commitment: f.commitment, MinContextSlot: minContextSlot})
 	if err != nil {
 		// solana-go returns an error for a missing account; treat as not-found.
-		if err == rpc.ErrNotFound {
+		if errors.Is(err, rpc.ErrNotFound) {
 			return "", false, nil
 		}
-		return "", false, nil
+		return "", false, fmt.Errorf("get withdrawal account: %w", err)
 	}
 	if info == nil || info.Value == nil {
-		return "", false, nil
+		return "", false, errors.New("get withdrawal account: unexpected nil result")
 	}
 	return "", true, nil
 }

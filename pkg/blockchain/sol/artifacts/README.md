@@ -29,19 +29,20 @@ Rewrites `../custody/*.go` from `custody.json`. Commit the result.
 
 ## Refresh the artifacts (only when the program changes)
 
-Both files come from `anchor build` in the repo that owns the Rust source.
-That source now lives in **custody** at `chains/sol/contract` (Anchor 0.31) —
-the custody program was moved out of clearnet. Requires the Solana + Anchor
-toolchain (`solana` / `cargo-build-sbf` + `anchor` 0.31 via avm) — needed only
-to refresh, never to run the tests:
+Both files come from the same source-generating `anchor build` in the repo that
+owns the Rust source. That source lives in **custody** at
+`chains/sol/contract`, which pins Anchor 1.1.2, Agave/Solana CLI 3.1.10,
+platform-tools v1.52, and both Rust compilers in an immutable container build.
+Docker is needed only to refresh the artifacts, never to run SDK tests:
 
 ```sh
-cd ../custody/chains/sol/contract
-anchor build
-cp target/idl/custody.json    <sdk>/pkg/blockchain/sol/artifacts/custody.json
-cp target/deploy/custody.so   <sdk>/pkg/blockchain/sol/artifacts/custody.so
-# then, in the SDK:
-make generate
+cd ../custody
+make solana-artifacts
 ```
 
-Review the `custody.json` + generated `../custody/*.go` diffs together.
+That target updates the custody-owned artifact copies, copies both files here,
+and regenerates `../custody/*.go`. Review all three outputs together.
+
+Use that Linux amd64 container even on macOS. Native builds with the same tool
+versions can embed different platform-tools library paths and produce a
+different `.so`; they are not the canonical artifacts checked by custody CI.
