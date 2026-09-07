@@ -21,6 +21,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/ethereum/go-ethereum/crypto"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain/btc/marker"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
@@ -349,6 +350,86 @@ func TestP2WPKHFeeUsesExactScriptsAndCheckedArithmetic(t *testing.T) {
 		if _, err := p2wpkhFee(tc.inputs, tc.outs, tc.rate); err == nil {
 			t.Fatalf("fee estimator accepted overflowing/invalid parameters: %+v", tc)
 		}
+	}
+}
+
+// TestP2WPKHSenderExtraOutputScriptIsPricedIntoFee: WithExtraOutputScript
+// must reach selectP2WPKH/evaluateP2WPKHPrefix (selection) as well as
+// buildTransaction (construction), not just the latter - otherwise the built
+// transaction silently under-pays. For no marker, a 27-byte v0x01 marker, and a
+// 59-byte v0x02 marker, the absolute fee Send actually pays is asserted to match
+// p2wpkhFee computed directly from the real output scripts, and to strictly grow
+// with the marker's serialized size.
+func TestP2WPKHSenderExtraOutputScriptIsPricedIntoFee(t *testing.T) {
+	backend := &p2wpkhTestBackend{feeRate: 1}
+	sender, _ := p2wpkhTestSender(t, backend)
+	recipient := p2wpkhTestRecipient(t, sender.net)
+	recipientAddr, err := btcutil.DecodeAddress(recipient, sender.net)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipientScript, err := txscript.PayToAddrScript(recipientAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v1Script, err := marker.EncodeScript(marker.Marker{Version: marker.Version1, Address: [20]byte{0xaa}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2Script, err := marker.EncodeScript(marker.Marker{Version: marker.Version2, Address: [20]byte{0xaa}, Reference: [32]byte{0x01}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v1Script) != 27 || len(v2Script) != 59 {
+		t.Fatalf("marker script lengths = (%d,%d), want (27,59)", len(v1Script), len(v2Script))
+	}
+
+	tests := []struct {
+		name   string
+		script []byte
+	}{
+		{"no marker", nil},
+		{"v0x01 marker", v1Script},
+		{"v0x02 marker", v2Script},
+	}
+	previousFee := int64(-1)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backend.utxos = []UnspentOutput{p2wpkhTestUTXO(sender, 1, 0, 100_000)}
+			outputScripts := [][]byte{recipientScript}
+			var opts []SendOption
+			if len(tc.script) > 0 {
+				outputScripts = append(outputScripts, tc.script)
+				opts = append(opts, WithExtraOutputScript(tc.script))
+			}
+			if _, err := sender.Send(context.Background(), recipient, 10_000, opts...); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			tx, err := decodeP2WPKHTestTx(backend.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tx.TxOut) != len(outputScripts)+1 {
+				t.Fatalf("outputs = %d, want %d (fixed outputs + change)", len(tx.TxOut), len(outputScripts)+1)
+			}
+			var total int64
+			for _, out := range tx.TxOut {
+				total += out.Value
+			}
+			gotFee := int64(100_000) - total
+			wantFee, err := p2wpkhFee(1, append(append([][]byte(nil), outputScripts...), sender.sourceScript), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotFee != wantFee {
+				t.Fatalf("%s absolute fee = %d, want exact %d", tc.name, gotFee, wantFee)
+			}
+			if previousFee >= 0 && gotFee <= previousFee {
+				t.Fatalf("%s fee %d did not grow past previous case's %d", tc.name, gotFee, previousFee)
+			}
+			previousFee = gotFee
+		})
 	}
 }
 

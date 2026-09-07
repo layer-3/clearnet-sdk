@@ -28,7 +28,8 @@ const ZERO_REF =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as Bytes32Hex;
 const NON_ZERO_REF =
   "0x0000000000000000000000000000000000000000000000000000000000000001" as Bytes32Hex;
-const ACCOUNT = "clearnet:bitcoin:account-a";
+// 20-byte hex Clearnet account address (ADR-023 §3)
+const ACCOUNT = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const PUBKEY_A =
   "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
 const PUBKEY_B =
@@ -51,17 +52,14 @@ describe("BitcoinVaultDepositor", () => {
     expect(BITCOIN_NATIVE_ASSET).toBe("");
   });
 
-  it("derives stable regtest addresses and txIDs from account and txid bytes", async () => {
+  it("derives a stable regtest depositor address, a stable generic deposit address, and txIDs from txid bytes", async () => {
     const depositor = createDepositor();
 
     await expect(depositor.depositorAddress()).resolves.toBe(
       "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
     );
-    expect(depositor.depositAddress(ACCOUNT)).toMatch(/^bcrt1q[023456789acdefghjklmnpqrstuvwxyz]+$/);
-    expect(depositor.depositAddress(ACCOUNT)).toBe(depositor.depositAddress(ACCOUNT));
-    expect(depositor.depositAddress("clearnet:bitcoin:account-b")).not.toBe(
-      depositor.depositAddress(ACCOUNT),
-    );
+    expect(depositor.depositAddress()).toMatch(/^bcrt1q[023456789acdefghjklmnpqrstuvwxyz]+$/);
+    expect(depositor.depositAddress()).toBe(depositor.depositAddress());
 
     expect(depositor.txIDFromTxid(DISPLAY_TXID)).toBe(DISPLAY_TXID);
   });
@@ -102,7 +100,14 @@ describe("BitcoinVaultDepositor", () => {
       depositor.submitDeposit({
         asset: BITCOIN_NATIVE_ASSET,
         amount: "1",
-        destination: { account: ACCOUNT, ref: NON_ZERO_REF },
+        destination: { account: "not-a-hex-address" },
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    await expect(
+      depositor.submitDeposit({
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "1",
+        destination: { account: ACCOUNT, ref: "0xnothex" as Bytes32Hex },
       }),
     ).rejects.toMatchObject({ code: "INVALID_REFERENCE" });
     await expect(
@@ -171,6 +176,23 @@ describe("BitcoinVaultDepositor", () => {
     expect(rpc.sendRawTransaction).toHaveBeenCalledWith(expect.stringMatching(/^[a-f0-9]+$/));
     expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(txID);
     expect(signer.getPublicKeyCompressed).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a non-zero destination.ref instead of rejecting it", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0a".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+      sendRawTransaction: undefined,
+    });
+    const depositor = createDepositor({ rpc, signer: createSigner() });
+
+    await expect(
+      depositor.submitDeposit({
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT, ref: NON_ZERO_REF },
+      }),
+    ).resolves.toMatch(/^[a-f0-9]{64}$/);
+    expect(rpc.sendRawTransaction).toHaveBeenCalledOnce();
   });
 
   it("prepares an unsigned PSBT for wallet signing without a configured local signer", async () => {
@@ -419,11 +441,17 @@ describe("BitcoinVaultDepositor", () => {
     }
   });
 
-  it("uses address-type-aware fee estimates", () => {
-    expect(estimateDepositFeeSats(1, 1n, "p2wpkh")).toBe(153n);
-    expect(estimateDepositFeeSats(2, 5n, "p2wpkh")).toBe(1105n);
-    expect(estimateDepositFeeSats(1, 1n, "p2sh")).toBe(177n);
-    expect(estimateDepositFeeSats(2, 5n, "p2sh")).toBe(1345n);
+  it("uses address-type-aware fee estimates that account for the marker output (DoD item 18)", () => {
+    // hasReference defaults to false: a 27-byte v0x01 marker adds 36 vbytes
+    // (85 base + 36 marker + 68 * inputs) * feeRate.
+    expect(estimateDepositFeeSats(1, 1n, "p2wpkh")).toBe(189n);
+    expect(estimateDepositFeeSats(2, 5n, "p2wpkh")).toBe(1285n);
+    expect(estimateDepositFeeSats(1, 1n, "p2sh")).toBe(213n);
+    expect(estimateDepositFeeSats(2, 5n, "p2sh")).toBe(1525n);
+
+    // hasReference: true selects the 59-byte v0x02 marker (68 vbytes) instead.
+    expect(estimateDepositFeeSats(1, 1n, "p2wpkh", true)).toBe(221n);
+    expect(estimateDepositFeeSats(2, 5n, "p2wpkh", true)).toBe(1445n);
   });
 
   it("estimates at least the finalized signed transaction vsize", async () => {

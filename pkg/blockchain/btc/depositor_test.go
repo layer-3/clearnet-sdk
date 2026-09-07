@@ -9,10 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain/btc/marker"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
@@ -90,7 +92,42 @@ func depositorTestVaultKeys(t *testing.T) (sign.Signer, [][]byte) {
 	return depositorSigner, vaultKeys
 }
 
-func TestDepositorUsesGenericSenderAndPreservesTaggedDestination(t *testing.T) {
+// depositorTestAccount returns a 20-byte clearnet account plus its hex encoding,
+// the shape SubmitDeposit's dest.Account requires.
+func depositorTestAccount(b byte) ([20]byte, string) {
+	var addr [20]byte
+	addr[0], addr[19] = b, b^0xff
+	return addr, hex.EncodeToString(addr[:])
+}
+
+// genericDepositTestAddress derives the single generic P2WSH deposit address
+// independently of the depositor's own genericDepositTarget helper: it starts
+// from marker.GenericDepositTagHex and rebuilds the address through the same
+// shared primitives DepositAddress uses.
+func genericDepositTestAddress(t *testing.T, threshold int, vaultKeys [][]byte, net *chaincfg.Params) (btcutil.Address, []byte) {
+	t.Helper()
+	tag, err := hex.DecodeString(marker.GenericDepositTagHex)
+	if err != nil || len(tag) != 32 {
+		t.Fatalf("decode marker.GenericDepositTagHex: %v", err)
+	}
+	redeem, err := TaggedRedeemScript(tag, threshold, vaultKeys)
+	if err != nil {
+		t.Fatalf("TaggedRedeemScript: %v", err)
+	}
+	addr, err := VaultAddress(redeem, net)
+	if err != nil {
+		t.Fatalf("VaultAddress: %v", err)
+	}
+	script, err := PkScript(addr)
+	if err != nil {
+		t.Fatalf("PkScript: %v", err)
+	}
+	return addr, script
+}
+
+// TestDepositorSendsToGenericAddressWithVersion1Marker: the build transaction
+// pays the single generic deposit address and carries a zero-value marker output.
+func TestDepositorSendsToGenericAddressWithVersion1Marker(t *testing.T) {
 	ctx := context.Background()
 	net := &chaincfg.RegressionNetParams
 	rpc := &depositorTestRPC{feeRate: defaultDepositorFallbackFeeRate}
@@ -112,7 +149,7 @@ func TestDepositorUsesGenericSenderAndPreservesTaggedDestination(t *testing.T) {
 		Confirmations: int64(defaultDepositorMinConfirmations),
 		ScriptPubKey:  hex.EncodeToString(depositor.sender.sourceScript),
 	}}
-	account := "clearnet:account:alice"
+	accountAddr, account := depositorTestAccount(0xaa)
 	txID, err := depositor.SubmitDeposit(ctx, "", decimal.RequireFromString("0.0001"), core.DepositDestination{Account: account})
 	if err != nil {
 		t.Fatalf("SubmitDeposit: %v", err)
@@ -128,34 +165,39 @@ func TestDepositorUsesGenericSenderAndPreservesTaggedDestination(t *testing.T) {
 	if txID != tx.TxHash().String() {
 		t.Fatalf("SubmitDeposit txid = %s, local = %s", txID, tx.TxHash())
 	}
-	wantAddress, _, err := DepositAddress(account, 2, vaultKeys, net)
+
+	wantAddress, wantScript := genericDepositTestAddress(t, 2, vaultKeys, net)
+	wantMarkerScript, err := marker.EncodeScript(marker.Marker{Version: marker.Version1, Address: accountAddr})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantScript, err := PkScript(wantAddress)
+	if len(wantMarkerScript) != 27 {
+		t.Fatalf("v1 marker script length = %d, want 27", len(wantMarkerScript))
+	}
+
+	if len(tx.TxOut) != 3 {
+		t.Fatalf("outputs = %d, want 3 (value, marker, change)", len(tx.TxOut))
+	}
+	if tx.TxOut[0].Value != 10_000 || !bytes.Equal(tx.TxOut[0].PkScript, wantScript) {
+		t.Fatalf("deposit output = %#v, want 10000 sats to generic %s", tx.TxOut[0], wantAddress)
+	}
+	if tx.TxOut[1].Value != 0 || !bytes.Equal(tx.TxOut[1].PkScript, wantMarkerScript) {
+		t.Fatalf("marker output = %#v, want zero-value %x", tx.TxOut[1], wantMarkerScript)
+	}
+
+	// The exact fee is asserted against p2wpkhFee itself rather than a
+	// hand-derived constant, so this test also pins that the marker output
+	// reached the fee path and not just the builder.
+	wantFee, err := p2wpkhFee(1, [][]byte{wantScript, wantMarkerScript, depositor.sender.sourceScript}, defaultDepositorFallbackFeeRate)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tx.TxOut) != 2 || tx.TxOut[0].Value != 10_000 || !bytes.Equal(tx.TxOut[0].PkScript, wantScript) {
-		t.Fatalf("deposit output = %#v, want 10000 sats to tagged %s", tx.TxOut, wantAddress)
+	wantChange := int64(50_000) - int64(10_000) - wantFee
+	if tx.TxOut[2].Value != wantChange || !bytes.Equal(tx.TxOut[2].PkScript, depositor.sender.sourceScript) {
+		t.Fatalf("change output = (%d,%x), want (%d,%x)", tx.TxOut[2].Value, tx.TxOut[2].PkScript, wantChange, depositor.sender.sourceScript)
 	}
-	// One P2WPKH input, a 34-byte P2WSH recipient, and a 22-byte P2WPKH
-	// change output have a conservative vsize of 153. At the fixture's 5
-	// sat/vB rate, the new sender therefore pays exactly 765 sats and returns
-	// 39,235 sats. The old custody P2WSH estimator would have charged 1,085
-	// sats for this two-output shape, which is the intentional wire difference
-	// introduced by the refactor.
-	const wantFee = int64(765)
-	const wantChange = int64(39_235)
-	if tx.TxOut[1].Value != wantChange || !bytes.Equal(tx.TxOut[1].PkScript, depositor.sender.sourceScript) {
-		t.Fatalf("change output = (%d,%x), want (%d,%x)", tx.TxOut[1].Value, tx.TxOut[1].PkScript, wantChange, depositor.sender.sourceScript)
-	}
-	if got := int64(50_000) - tx.TxOut[0].Value - tx.TxOut[1].Value; got != wantFee {
+	if got := int64(50_000) - tx.TxOut[0].Value - tx.TxOut[1].Value - tx.TxOut[2].Value; got != wantFee {
 		t.Fatalf("absolute deposit fee = %d, want %d", got, wantFee)
-	}
-	legacyP2WSHFee := EstimateFeeSats(1, 2, defaultDepositorFallbackFeeRate)
-	if legacyP2WSHFee != 1_085 || legacyP2WSHFee == wantFee {
-		t.Fatalf("legacy P2WSH estimate = %d, want distinct 1085", legacyP2WSHFee)
 	}
 	if len(tx.TxIn) != 1 || tx.TxIn[0].PreviousOutPoint != (wire.OutPoint{Hash: fundingHash, Index: 7}) {
 		t.Fatalf("deposit inputs = %#v, want funding outpoint", tx.TxIn)
@@ -168,6 +210,91 @@ func TestDepositorUsesGenericSenderAndPreservesTaggedDestination(t *testing.T) {
 	}
 	if rpc.feeTarget != defaultDepositorFeeConfirmationTarget || rpc.feeFallback != defaultDepositorFallbackFeeRate {
 		t.Fatalf("legacy fee args = (%d,%d)", rpc.feeTarget, rpc.feeFallback)
+	}
+}
+
+// TestDepositorMarkerRoundTripsThroughMarkerPackage: for both marker versions,
+// the script the depositor builds decodes back through marker.DecodeScript /
+// marker.ScanOutputs to the same marker.Marker, and a non-zero dest.Ref selects
+// the 59-byte 0x02 shape.
+func TestDepositorMarkerRoundTripsThroughMarkerPackage(t *testing.T) {
+	ctx := context.Background()
+	net := &chaincfg.RegressionNetParams
+	rpc := &depositorTestRPC{feeRate: defaultDepositorFallbackFeeRate}
+	signer, vaultKeys := depositorTestVaultKeys(t)
+	depositor, err := NewDepositor(net, rpc, signer, vaultKeys, 2, Config{}, NewAssetResolver())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fundingHash chainhash.Hash
+	fundingHash[0] = 0x45
+	rpc.unspent = []Unspent{{
+		TxID:          fundingHash.String(),
+		AmountSats:    50_000,
+		Confirmations: int64(defaultDepositorMinConfirmations),
+		ScriptPubKey:  hex.EncodeToString(depositor.sender.sourceScript),
+	}}
+	accountAddr, account := depositorTestAccount(0xcc)
+
+	tests := []struct {
+		name       string
+		ref        [32]byte
+		wantVer    byte
+		wantLength int
+	}{
+		{"zero ref selects v0x01", [32]byte{}, marker.Version1, 27},
+		{"non-zero ref selects v0x02", [32]byte{0x01}, marker.Version2, 59},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rpc.broadcastHex = ""
+			if _, err := depositor.SubmitDeposit(ctx, "", decimal.RequireFromString("0.0001"), core.DepositDestination{Account: account, Ref: tc.ref}); err != nil {
+				t.Fatalf("SubmitDeposit: %v", err)
+			}
+			raw, err := hex.DecodeString(rpc.broadcastHex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := decodeP2WPKHTestTx(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var scriptPubKeys [][]byte
+			var markerScript []byte
+			var markerValue int64 = -1
+			for _, out := range tx.TxOut {
+				scriptPubKeys = append(scriptPubKeys, out.PkScript)
+				if _, decodeErr := marker.DecodeScript(out.PkScript); decodeErr == nil {
+					markerScript, markerValue = out.PkScript, out.Value
+				}
+			}
+			if markerScript == nil {
+				t.Fatal("built transaction carries no marker candidate")
+			}
+			if markerValue != 0 {
+				t.Fatalf("marker output value = %d, want 0", markerValue)
+			}
+			if len(markerScript) != tc.wantLength {
+				t.Fatalf("marker script length = %d, want %d", len(markerScript), tc.wantLength)
+			}
+
+			want := marker.Marker{Version: tc.wantVer, Address: accountAddr, Reference: tc.ref}
+			decoded, err := marker.DecodeScript(markerScript)
+			if err != nil {
+				t.Fatalf("marker.DecodeScript: %v", err)
+			}
+			if decoded != want {
+				t.Fatalf("DecodeScript = %+v, want %+v", decoded, want)
+			}
+			scanned, err := marker.ScanOutputs(scriptPubKeys)
+			if err != nil {
+				t.Fatalf("marker.ScanOutputs: %v", err)
+			}
+			if scanned != want {
+				t.Fatalf("ScanOutputs = %+v, want %+v", scanned, want)
+			}
+		})
 	}
 }
 
@@ -260,11 +387,12 @@ func TestDepositorBroadcastAlreadyAcceptedIsIdempotent(t *testing.T) {
 				ScriptPubKey:  hex.EncodeToString(depositor.sender.sourceScript),
 			}}
 
+			_, account := depositorTestAccount(0x99)
 			got, err := depositor.SubmitDeposit(
 				context.Background(),
 				"",
 				decimal.RequireFromString("0.0001"),
-				core.DepositDestination{Account: "clearnet:account:idempotent"},
+				core.DepositDestination{Account: account},
 			)
 			raw, decodeErr := hex.DecodeString(rpc.broadcastHex)
 			if decodeErr != nil {
@@ -310,7 +438,8 @@ func TestDepositorSubmitValidationRemainsDepositSpecific(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	dest := core.DepositDestination{Account: "clearnet:account:bob"}
+	_, account := depositorTestAccount(0xbb)
+	dest := core.DepositDestination{Account: account}
 	tests := []struct {
 		name   string
 		asset  string
@@ -318,11 +447,11 @@ func TestDepositorSubmitValidationRemainsDepositSpecific(t *testing.T) {
 		dest   core.DepositDestination
 		text   string
 	}{
+		{"invalid account", "", decimal.New(1, 0), core.DepositDestination{Account: "not-hex"}, "hex address"},
 		{"non-native asset", "not-btc", decimal.New(1, 0), dest, "native BTC"},
 		{"zero amount", "", decimal.New(0, 0), dest, "not positive"},
 		{"negative amount", "", decimal.New(-1, 0), dest, "not positive"},
 		{"fractional satoshi", "", decimal.RequireFromString("0.000000001"), dest, "amount"},
-		{"reference", "", decimal.New(1, 0), core.DepositDestination{Account: dest.Account, Ref: [32]byte{1}}, "reference"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

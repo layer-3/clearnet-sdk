@@ -7,6 +7,7 @@ import type {
   BitcoinDepositorConfig,
   BitcoinNetwork,
   BitcoinSigner,
+  Bytes32Hex,
 } from "@yellow-org/clearnet-sdk";
 
 import {
@@ -104,7 +105,7 @@ async function setupAndFund(): Promise<void> {
     const miningAddress = await walletRpc<string>("getnewaddress", ["", "bech32"]);
     await rootRpc("generatetoaddress", [101, miningAddress]);
     const fundingAddress = await activeDepositor.depositorAddress();
-    const depositAddress = activeDepositor.depositAddress(readInput("account"));
+    const depositAddress = activeDepositor.depositAddress();
     await importAddress(fundingAddress);
     await importAddress(depositAddress);
     const fundTxid = await walletRpc<string>("sendtoaddress", [
@@ -135,13 +136,11 @@ async function submitLocalDeposit(): Promise<void> {
   try {
     const activeDepositor = getLocalDepositor();
     const ref = readOptional("reference");
-    if (ref !== undefined) {
-      throw new Error("Bitcoin deposits do not support a reference value");
-    }
     lastRef = await activeDepositor.submitDeposit(
       {
         destination: {
           account: readInput("account"),
+          ...(ref === undefined ? {} : { ref: ref as Bytes32Hex }),
         },
         asset: readInput("asset") || BITCOIN_NATIVE_ASSET,
         amount: readInput("amount"),
@@ -252,13 +251,11 @@ async function submitXverseDeposit(): Promise<void> {
     assertWalletAddressMatchesNetwork(wallet.address);
     const activeDepositor = getWalletDepositor();
     const ref = readOptional("reference");
-    if (ref !== undefined) {
-      throw new Error("Bitcoin deposits do not support a reference value");
-    }
     const prepared = await activeDepositor.prepareDepositPsbt(
       {
         destination: {
           account: readInput("account"),
+          ...(ref === undefined ? {} : { ref: ref as Bytes32Hex }),
         },
         asset: readInput("asset") || BITCOIN_NATIVE_ASSET,
         amount: readInput("amount"),

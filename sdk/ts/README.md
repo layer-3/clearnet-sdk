@@ -4,8 +4,8 @@ TypeScript SDK for Clearnet integration. This package currently exposes EVM,
 Solana, XRPL, and Bitcoin vault depositors. EVM supports native ETH and ERC-20
 deposits. Solana supports native SOL and SPL token deposits. XRPL supports
 native XRP and issued-currency deposits. Bitcoin supports native BTC deposits.
-Deposits credit a `destination` account. EVM, Solana, and XRPL can also carry an
-optional ADR-015 opaque reference; Bitcoin deposits reject non-zero references.
+Deposits credit a `destination` account. EVM, Solana, XRPL, and Bitcoin can
+also carry an optional ADR-015 opaque reference.
 
 The package is ESM-first. EVM callers use `viem` clients and primitives. Solana
 and XRPL callers provide SDK-owned signer adapters around their wallet or local
@@ -28,11 +28,13 @@ npm ci
 
 Bitcoin deposits use `BitcoinVaultDepositor`. Native BTC uses
 `BITCOIN_NATIVE_ASSET`, which is an empty string, and deposit amounts are
-positive decimal BTC strings. The depositor spends from a P2WPKH address derived
-from the signer public key and pays the per-account P2WSH deposit address
-derived from the configured vault keys. The SDK signs digest bytes through a
-caller-provided `BitcoinSigner` so local keys, HSMs, or wallet adapters can live
-outside the core depositor.
+positive decimal BTC strings. The depositor spends from a P2WPKH address
+derived from the signer public key and pays the one generic P2WSH deposit
+address derived from the configured vault keys (ADR-023): every deposit pays
+the same address, and `destination.account` is instead carried as a raw
+20-byte address in a zero-value `OP_RETURN` marker output alongside it. The
+SDK signs digest bytes through a caller-provided `BitcoinSigner` so local
+keys, HSMs, or wallet adapters can live outside the core depositor.
 
 ```ts
 import {
@@ -82,10 +84,10 @@ const depositor = new BitcoinVaultDepositor({
 });
 
 console.log(await depositor.depositorAddress()); // fund this P2WPKH address
-console.log(depositor.depositAddress("yellow://ynet/user/btc-a1"));
+console.log(depositor.depositAddress()); // the same generic address for every deposit
 
 const ref = await depositor.submitDeposit({
-  destination: { account: "yellow://ynet/user/btc-a1" },
+  destination: { account: "000000000000000000000000000000000000a1a1" },
   asset: BITCOIN_NATIVE_ASSET,
   amount: "0.0002",
 });
@@ -364,8 +366,10 @@ For EVM, the reference is passed to `Custody.deposit(...)` as `bytes32`. For
 Solana, it is encoded into `deposit_sol` or `deposit_spl` as `[u8; 32]`. For
 XRPL, it is appended after the 20-byte Clearnet account in the `ynet-account`
 payment memo. The SDK does not interpret it. Omitted references are sent as 32
-zero bytes. Bitcoin deposits do not attach a reference and reject non-zero
-`destination.ref` values.
+zero bytes. For Bitcoin, a non-zero reference selects the ADR-023 version
+`0x02` deposit marker (the `OP_RETURN` output carries the account and the
+reference); an omitted or all-zero reference selects version `0x01`, which
+carries no reference on the wire.
 
 ## Verify A Deposit
 
@@ -462,8 +466,8 @@ Bitcoin input fields:
 
 | Field | Type | Notes |
 |---|---|---|
-| `destination.account` | `string` | Opaque Clearnet account. The SDK hashes it to derive the per-account P2WSH address. |
-| `destination.ref` | `undefined \| 0x00...00` | Non-zero references are rejected. |
+| `destination.account` | `string` | 20-byte hex Clearnet account address. Every deposit pays the one generic P2WSH address (`depositAddress()`); the account is instead carried in the deposit's `OP_RETURN` marker output. |
+| `destination.ref` | `` `0x${string}` \| undefined `` | Optional 32-byte opaque reference. A non-zero value selects the ADR-023 version `0x02` marker; an omitted or all-zero value selects version `0x01`. |
 | `asset` | `string` | Use `BITCOIN_NATIVE_ASSET`, the empty string. Other asset values are rejected. |
 | `amount` | `string` | Positive decimal BTC amount that fits in signed 64-bit satoshis. |
 
@@ -704,7 +708,7 @@ Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 | `INVALID_ADDRESS` | EVM address, Solana public key, Solana mint, program ID, XRPL classic address, XRPL issued-currency key, or Clearnet account is invalid. |
 | `INVALID_AMOUNT` | `amount` is not positive, has the wrong type/precision, or exceeds the chain limit (`uint256` for EVM, `uint64` for Solana/XRPL native drops, signed 64-bit satoshis for Bitcoin). |
 | `INVALID_CONFIRMATIONS` | `minConfirmations` is negative, fractional, or an unsafe number. |
-| `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value, or Bitcoin received a non-zero reference. |
+| `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value. |
 | `INVALID_TX_ID` | `txID` is not valid for the chain: EVM transaction hash or `txHash/logIndex`, Solana 64-byte signature, XRPL 64-hex hash, or Bitcoin 64-hex txid. |
 | `MISSING_WALLET_ACCOUNT` | The EVM wallet account is missing/mismatched, or the Solana/XRPL signer is missing. |
 | `CHAIN_MISMATCH` | The configured chain or network does not match the RPC or wallet network, such as an EVM chain ID mismatch or unsupported Bitcoin network. |

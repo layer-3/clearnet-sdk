@@ -1,9 +1,7 @@
 import { ClearnetSdkError } from "../../core/errors.js";
+import { hexToBytes } from "../../core/bytes.js";
 import type { SubmitDepositOptions } from "../../core/types.js";
-import {
-  BYTES32_HEX_PATTERN,
-  ZERO_BYTES32_PATTERN,
-} from "../../core/validation.js";
+import { BYTES32_HEX_PATTERN } from "../../core/validation.js";
 import {
   BITCOIN_DEFAULT_FALLBACK_FEE_RATE_SAT_PER_VBYTE,
   BITCOIN_DEFAULT_FEE_TARGET_BLOCKS,
@@ -82,9 +80,35 @@ export function requireDepositDestination(
   return destination as BitcoinDepositDestination;
 }
 
-export function requireReference(reference: unknown): void {
+/**
+ * Parses destination.account into the raw 20-byte address ADR-023 carries in
+ * the deposit marker, matching the other three chains.
+ */
+export function requireClearnetAccount(account: unknown): Uint8Array {
+  if (typeof account !== "string") {
+    throw new ClearnetSdkError(
+      "INVALID_ADDRESS",
+      "destination.account must be a 20-byte hex address",
+    );
+  }
+  const trimmed = account.trim();
+  const hex = trimmed.toLowerCase().replace(/^0x/, "");
+  if (!/^[a-f0-9]+$/.test(hex) || hex.length !== 40) {
+    throw new ClearnetSdkError(
+      "INVALID_ADDRESS",
+      "destination.account must be a 20-byte hex address",
+    );
+  }
+  return hexToBytes(hex, "destination.account");
+}
+
+/**
+ * Parses destination.ref into 32 bytes, zero-filled when omitted.The caller
+ * selects the marker version from whether the returned bytes are all-zero.
+ */
+export function requireReference(reference: unknown): Uint8Array {
   if (reference === undefined || reference === "") {
-    return;
+    return new Uint8Array(32);
   }
   if (typeof reference !== "string" || !BYTES32_HEX_PATTERN.test(reference)) {
     throw new ClearnetSdkError(
@@ -92,12 +116,7 @@ export function requireReference(reference: unknown): void {
       "destination.ref must be a 32-byte hex value",
     );
   }
-  if (!ZERO_BYTES32_PATTERN.test(reference)) {
-    throw new ClearnetSdkError(
-      "INVALID_REFERENCE",
-      "Bitcoin deposits do not support non-zero destination.ref",
-    );
-  }
+  return hexToBytes(reference.slice(2), "destination.ref");
 }
 
 export function requireBitcoinAmount(amount: unknown): bigint {
