@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -106,7 +107,16 @@ func (s *Server) serve(
 	ack, err := dispatch(ctx, io.LimitReader(stream, maxReceiptBytes))
 	if err != nil {
 		lg.Warn("handler error", "error", err)
-		writeAck(stream, p2pproto.ReceiptAck{Accepted: false, Reason: err.Error()}, lg)
+		code := p2pproto.ReceiptAckTemporaryFailure
+		if strings.HasPrefix(err.Error(), "decode:") {
+			code = p2pproto.ReceiptAckCorrupt
+		}
+		writeAck(stream, p2pproto.ReceiptAck{Code: code, Reason: err.Error()}, lg)
+		return
+	}
+	if err := ack.Validate(); err != nil {
+		lg.Warn("handler returned invalid ack", "error", err)
+		writeAck(stream, p2pproto.ReceiptAck{Code: p2pproto.ReceiptAckTemporaryFailure, Reason: err.Error()}, lg)
 		return
 	}
 	writeAck(stream, ack, lg)

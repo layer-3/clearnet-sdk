@@ -9,13 +9,16 @@ import (
 
 // ReceiptHandler is the business seam a consumer implements to process inbound
 // receipts. The Server decodes the wire frame and calls the matching method;
-// the returned ReceiptAck is sent back to the peer. A non-nil error is
-// delivered to the peer as Accepted=false with the error string.
+// the returned ReceiptAck is validated and sent back to the peer. A non-nil
+// handler error is delivered as temporary_failure; malformed request decode is
+// delivered as corrupt when the server can still write an ACK.
 //
-// Implementations must be idempotent on the clearing layer's natural de-dupe
-// keys (BurnReceipt: BlockHash+EntryIndex; MintReceipt: AssetURI+TxID) so
-// client retries are safe. A consumer that handles only one kind
-// still implements both methods — return a reject ack for the unhandled one.
+// Implementations must apply latest-only custody-to-clearnet ingress
+// verification before accepting a receipt and be idempotent by receipt logical
+// id (BurnReceipt: WithdrawalID; MintReceipt: AssetURI+TxID). Already-accepted
+// clearnet-internal propagation is outside this ingress verifier boundary.
+// A consumer that handles only one kind still implements both methods; return a
+// reject ACK for the unhandled one.
 type ReceiptHandler interface {
 	OnBurnReceipt(ctx context.Context, r *core.BurnReceipt) (p2pproto.ReceiptAck, error)
 	OnMintReceipt(ctx context.Context, r *core.MintReceipt) (p2pproto.ReceiptAck, error)

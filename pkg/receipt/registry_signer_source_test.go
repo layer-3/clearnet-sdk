@@ -62,6 +62,7 @@ func TestRegistrySignerSource_Load(t *testing.T) {
 			Checksum: checksum(payload),
 			HasData:  true,
 			Data:     payload,
+			Epoch:    7,
 		},
 		ok:           true,
 		wantRegistry: registry,
@@ -71,12 +72,53 @@ func TestRegistrySignerSource_Load(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := src.LoadReceiptSigners(context.Background(), issuerID)
+	got, err := src.LoadLatestReceiptSignerState(context.Background(), issuerID)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if got.Threshold != 2 || len(got.Signers) != 3 {
+	if got.Epoch != 7 || got.Threshold != 2 || len(got.Signers) != 3 {
 		t.Fatalf("unexpected (signers=%d, threshold=%d)", len(got.Signers), got.Threshold)
+	}
+}
+
+func TestRegistrySignerSource_Gate(t *testing.T) {
+	registry := common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	issuerID := common.HexToAddress("0x00000000000000000000000000000000000000bb")
+	payload, err := MarshalSignerPayload([]common.Address{common.HexToAddress("0x0000000000000000000000000000000000000001")}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := NewInMemoryReceiptSignerStateGate(ReceiptSignerStateConfigRegistryWatcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := NewRegistrySignerSource(registry, fakeRegistryEventReader{
+		event: core.ConfigRegistryEvent{
+			Registry: registry,
+			IssuerID: issuerID,
+			Key:      ConfigRegistrySignersKey,
+			Checksum: checksum(payload),
+			HasData:  true,
+			Data:     payload,
+			Epoch:    11,
+		},
+		ok: true,
+	}, gate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.LoadLatestReceiptSignerState(context.Background(), issuerID); err == nil {
+		t.Fatal("offline gate unexpectedly allowed signer state load")
+	}
+	if err := gate.MarkReceiptSignerStateSubsystemOnline(context.Background(), ReceiptSignerStateConfigRegistryWatcher); err != nil {
+		t.Fatal(err)
+	}
+	got, err := src.LoadLatestReceiptSignerState(context.Background(), issuerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Epoch != 11 {
+		t.Fatalf("epoch = %d, want 11", got.Epoch)
 	}
 }
 
@@ -84,7 +126,7 @@ func TestRegistrySignerSource_NoEvent(t *testing.T) {
 	registry := common.HexToAddress("0x00000000000000000000000000000000000000aa")
 	issuerID := common.HexToAddress("0x00000000000000000000000000000000000000bb")
 	src, _ := NewRegistrySignerSource(registry, fakeRegistryEventReader{})
-	if _, err := src.LoadReceiptSigners(context.Background(), issuerID); err == nil {
+	if _, err := src.LoadLatestReceiptSignerState(context.Background(), issuerID); err == nil {
 		t.Fatal("expected error when no signer event is confirmed")
 	}
 }
@@ -107,7 +149,7 @@ func TestRegistrySignerSource_ChecksumMismatch(t *testing.T) {
 		},
 		ok: true,
 	})
-	if _, err := src.LoadReceiptSigners(context.Background(), issuerID); err == nil {
+	if _, err := src.LoadLatestReceiptSignerState(context.Background(), issuerID); err == nil {
 		t.Fatal("expected checksum-mismatch rejection")
 	}
 }
@@ -144,7 +186,7 @@ func TestRegistrySignerSource_Rejections(t *testing.T) {
 			ev := base
 			tc.mut(&ev)
 			src, _ := NewRegistrySignerSource(registry, fakeRegistryEventReader{event: ev, ok: true})
-			if _, err := src.LoadReceiptSigners(context.Background(), issuerID); err == nil {
+			if _, err := src.LoadLatestReceiptSignerState(context.Background(), issuerID); err == nil {
 				t.Fatal("expected load to fail")
 			}
 		})

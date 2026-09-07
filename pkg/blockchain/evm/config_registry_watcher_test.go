@@ -2,8 +2,10 @@ package evm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,6 +115,33 @@ func (h channelConfigRegistryHandler) HandleConfigRegistryEvent(_ context.Contex
 	return nil
 }
 
+type captureConfigRegistryWatcherOnlineTracker struct {
+	mu      sync.Mutex
+	online  int
+	offline []error
+}
+
+func (t *captureConfigRegistryWatcherOnlineTracker) MarkConfigRegistryWatcherOnline(context.Context) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.online++
+	return nil
+}
+
+func (t *captureConfigRegistryWatcherOnlineTracker) MarkConfigRegistryWatcherOffline(_ context.Context, reason error) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.offline = append(t.offline, reason)
+	return nil
+}
+
+func (t *captureConfigRegistryWatcherOnlineTracker) snapshot() (int, []error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	offline := append([]error(nil), t.offline...)
+	return t.online, offline
+}
+
 func TestConfigRegistryWatcher_InitCursorFromCursor(t *testing.T) {
 	registry := common.HexToAddress("0x000000000000000000000000000000000000beef")
 	handler := &captureConfigRegistryHandler{}
@@ -195,6 +224,81 @@ func TestConfigRegistryWatcher_WatchPollsImmediately(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Watch did not stop after context cancellation")
+	}
+}
+
+func TestConfigRegistryWatcher_OnlineTracker(t *testing.T) {
+	registry := common.HexToAddress("0x000000000000000000000000000000000000beef")
+	handler := &captureConfigRegistryHandler{}
+	tracker := &captureConfigRegistryWatcherOnlineTracker{}
+	w, err := newConfigRegistryWatcher(fakeHead{head: 20}, registry, &fakeConfigRegistryWatcherReader{}, 5, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetInitialLookback(20)
+	w.SetPollInterval(time.Hour)
+	w.SetOnlineTracker(tracker)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errs := make(chan error, 1)
+	go func() {
+		errs <- w.Watch(ctx)
+	}()
+	deadline := time.After(time.Second)
+	for {
+		online, _ := tracker.snapshot()
+		if online > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("watcher did not mark online")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	cancel()
+	if err := <-errs; err != nil {
+		t.Fatalf("Watch returned error: %v", err)
+	}
+	_, offline := tracker.snapshot()
+	if len(offline) < 2 {
+		t.Fatalf("offline marks = %d, want startup and stop", len(offline))
+	}
+
+	pollErr := errors.New("rpc down")
+	tracker = &captureConfigRegistryWatcherOnlineTracker{}
+	w, err = newConfigRegistryWatcher(fakeHead{head: 20}, registry, &fakeConfigRegistryWatcherReader{committedErr: pollErr}, 5, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetPollInterval(time.Hour)
+	w.SetOnlineTracker(tracker)
+	ctx, cancel = context.WithCancel(context.Background())
+	errs = make(chan error, 1)
+	go func() {
+		errs <- w.Watch(ctx)
+	}()
+	deadline = time.After(time.Second)
+	for {
+		_, offline = tracker.snapshot()
+		if len(offline) >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("watcher did not mark offline after poll failure")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	cancel()
+	if err := <-errs; err != nil {
+		t.Fatalf("Watch returned error after poll failure: %v", err)
+	}
+	_, offline = tracker.snapshot()
+	if !errors.Is(offline[1], pollErr) {
+		t.Fatalf("poll offline reason = %v, want %v", offline[1], pollErr)
 	}
 }
 

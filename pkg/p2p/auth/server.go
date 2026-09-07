@@ -157,9 +157,9 @@ func (s *Server) verify(ctx context.Context, stream network.Stream, remotePub li
 	if !strings.EqualFold(resp.Address, recovered.Hex()) {
 		return Result{}, fmt.Errorf("address mismatch: recovered %s, claimed %s", recovered.Hex(), resp.Address)
 	}
-	set, err := s.signers.LoadReceiptSigners(ctx, issuerID)
+	set, err := s.signers.LoadLatestReceiptSignerState(ctx, issuerID)
 	if err != nil {
-		return Result{}, fmt.Errorf("load receipt signers: %w", err)
+		return Result{}, fmt.Errorf("load latest receipt signer state: %w", err)
 	}
 	if !receiptSignerSetContains(set, recovered) {
 		return Result{}, fmt.Errorf("operator %s not in issuer %s signer set", recovered.Hex(), issuerID.Hex())
@@ -175,7 +175,7 @@ func operatorAuthDigest(nonce [32]byte, issuerID common.Address) []byte {
 	return ethcrypto.Keccak256(msg)
 }
 
-func receiptSignerSetContains(set core.ReceiptSignerSet, addr common.Address) bool {
+func receiptSignerSetContains(set core.ReceiptSignerState, addr common.Address) bool {
 	for _, s := range set.Signers {
 		if s == addr {
 			return true

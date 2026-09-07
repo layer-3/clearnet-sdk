@@ -47,7 +47,7 @@ func NewClient(h host.Host, peerID peer.ID, logger log.Logger) *Client {
 
 // SendBurnReceipt writes r on /ynp/burnreceipt/1.0.0 and returns the ack.
 // Transport-level errors (timeout, stream, decode) come back as a non-nil
-// error; an Accepted=false ack returns without error so the caller decides
+// error; server ACK codes return without rewriting so the caller decides
 // whether to retry.
 func (c *Client) SendBurnReceipt(ctx context.Context, r *core.BurnReceipt) (p2pproto.ReceiptAck, error) {
 	return c.submit(ctx, p2pproto.ProtocolBurnReceipt, r)
@@ -88,6 +88,9 @@ func (c *Client) submit(ctx context.Context, proto string, body cbg.CBORMarshale
 	var v cborx.Version
 	if err := cborx.ReadFrame(io.LimitReader(s, maxReceiptBytes), cborx.MaxControlFrame, &v, &ack); err != nil {
 		return p2pproto.ReceiptAck{}, fmt.Errorf("decode ack: %w", err)
+	}
+	if err := ack.Validate(); err != nil {
+		return p2pproto.ReceiptAck{}, fmt.Errorf("invalid ack: %w", err)
 	}
 	return ack, nil
 }

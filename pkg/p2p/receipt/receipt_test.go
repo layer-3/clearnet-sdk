@@ -38,11 +38,11 @@ func TestReceipt_BurnRoundTrip(t *testing.T) {
 	NewServer(testHandler{
 		burn: func(_ context.Context, r *core.BurnReceipt) (p2pproto.ReceiptAck, error) {
 			got = r
-			return p2pproto.ReceiptAck{Accepted: true}, nil
+			return p2pproto.ReceiptAck{Code: p2pproto.ReceiptAckAccepted}, nil
 		},
 	}, nil).Register(srv)
 
-	want := &core.BurnReceipt{Signatures: [][]byte{{0x1, 0x2}}}
+	want := &core.BurnReceipt{Proof: core.ReceiptProof{SignerEpoch: 7, Signatures: [][]byte{{0x1, 0x2}}}}
 	want.WithdrawalID[0] = 0xBE
 	want.TxID = "tx/ef"
 
@@ -50,7 +50,7 @@ func TestReceipt_BurnRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBurnReceipt: %v", err)
 	}
-	if !ack.Accepted {
+	if ack.Code != p2pproto.ReceiptAckAccepted {
 		t.Fatalf("ack not accepted: %+v", ack)
 	}
 	if got == nil || got.WithdrawalID != want.WithdrawalID || got.TxID != want.TxID {
@@ -65,7 +65,7 @@ func TestReceipt_MintRejected(t *testing.T) {
 
 	NewServer(testHandler{
 		mint: func(_ context.Context, _ *core.MintReceipt) (p2pproto.ReceiptAck, error) {
-			return p2pproto.ReceiptAck{Accepted: false, Reason: "duplicate"}, nil
+			return p2pproto.ReceiptAck{Code: p2pproto.ReceiptAckAlreadyAccepted}, nil
 		},
 	}, nil).Register(srv)
 
@@ -75,8 +75,8 @@ func TestReceipt_MintRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMintReceipt: %v", err)
 	}
-	if ack.Accepted || ack.Reason != "duplicate" {
-		t.Fatalf("ack = %+v, want rejected/duplicate", ack)
+	if ack.Code != p2pproto.ReceiptAckAlreadyAccepted {
+		t.Fatalf("ack = %+v, want already_accepted", ack)
 	}
 }
 
@@ -95,8 +95,8 @@ func TestReceipt_HandlerError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transport error: %v", err)
 	}
-	if ack.Accepted || ack.Reason == "" {
-		t.Fatalf("expected Accepted=false with a reason, got %+v", ack)
+	if ack.Code != p2pproto.ReceiptAckTemporaryFailure || ack.Reason == "" {
+		t.Fatalf("expected temporary_failure with a reason, got %+v", ack)
 	}
 }
 
@@ -112,7 +112,7 @@ func TestReceipt_HandleBurnReceiptDirect(t *testing.T) {
 	s := NewServer(testHandler{
 		burn: func(_ context.Context, _ *core.BurnReceipt) (p2pproto.ReceiptAck, error) {
 			called <- struct{}{}
-			return p2pproto.ReceiptAck{Accepted: true}, nil
+			return p2pproto.ReceiptAck{Code: p2pproto.ReceiptAckAccepted}, nil
 		},
 	}, nil)
 	srv.SetStreamHandler(protocol.ID(p2pproto.ProtocolBurnReceipt), s.HandleBurnReceipt)

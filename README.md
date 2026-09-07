@@ -77,6 +77,17 @@ Common entry points:
 - `pkg/blockchain/xrpl`: XRPL custody vault flows.
 - `pkg/blockchain/btc`: Bitcoin custody vault flows.
 
+Receipt signer epoch support is a breaking Go SDK change for coordinated
+Custody and Clearnet redeployments. Receipts carry `core.ReceiptProof` with a
+`SignerEpoch`, `receipt.MintReceiptDigest` and `receipt.BurnReceiptDigest`
+return logical digests only, and signers must sign
+`receipt.ReceiptAuthorizationDigest(epoch, logicalDigest)`. The existing
+receipt stream IDs remain unchanged while this protocol is evolving, so do not
+adopt a release containing this change until Custody and Clearnet are both ready
+for the new receipt wire/API contract. Burn receipt idempotency is by
+`WithdrawalID`; Clearnet acceptance must still verify that `WithdrawalID`
+matches the referenced block entry.
+
 Run the Go checks:
 
 ```sh

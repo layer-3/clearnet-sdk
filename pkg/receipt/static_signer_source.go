@@ -14,13 +14,14 @@ import (
 // construction time. It is useful for tests and deployments where signer
 // rotation is managed outside ConfigRegistry.
 type StaticSignerSource struct {
+	epoch     uint64
 	signers   []common.Address
 	threshold int
 }
 
 // NewStaticSignerSource validates the inputs and returns a source that
-// hands the same (signers, threshold) pair to every Load call.
-func NewStaticSignerSource(signers []common.Address, threshold int) (*StaticSignerSource, error) {
+// hands the same (epoch, signers, threshold) tuple to every Load call.
+func NewStaticSignerSource(epoch uint64, signers []common.Address, threshold int) (*StaticSignerSource, error) {
 	if len(signers) == 0 {
 		return nil, errors.New("custody signer set is empty")
 	}
@@ -39,13 +40,13 @@ func NewStaticSignerSource(signers []common.Address, threshold int) (*StaticSign
 		seen[s] = struct{}{}
 		out = append(out, s)
 	}
-	return &StaticSignerSource{signers: out, threshold: threshold}, nil
+	return &StaticSignerSource{epoch: epoch, signers: out, threshold: threshold}, nil
 }
 
 // Load returns the configured signers and threshold. The slice is copied
 // so callers can mutate it without affecting the source.
-func (s *StaticSignerSource) LoadReceiptSigners(_ context.Context, _ common.Address) (core.ReceiptSignerSet, error) {
+func (s *StaticSignerSource) LoadLatestReceiptSignerState(_ context.Context, _ common.Address) (core.ReceiptSignerState, error) {
 	out := make([]common.Address, len(s.signers))
 	copy(out, s.signers)
-	return core.ReceiptSignerSet{Signers: out, Threshold: s.threshold}, nil
+	return core.ReceiptSignerState{Epoch: s.epoch, Signers: out, Threshold: s.threshold}, nil
 }
