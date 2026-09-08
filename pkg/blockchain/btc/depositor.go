@@ -2,7 +2,6 @@ package btc
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -202,23 +201,15 @@ func (d *Depositor) genericDepositTarget(markerAddr [20]byte, ref [32]byte) (btc
 	return depositAddr, markerScript, nil
 }
 
-// parseClearnetAccount decodes a 20-byte clearnet account address from hex
-// (optionally a yellow://.../user/<hex> URI's last segment), tolerating
-// surrounding whitespace so it accepts exactly what the TS SDK's BTC
-// requireClearnetAccount does.
+// parseClearnetAccount decodes a 20-byte clearnet account address from a bare hex,
+// an optional case-insensitive "0x" prefix, a yellow://.../user/<hex> URI's
+// last segment, and surrounding whitespace.
 func parseClearnetAccount(account string) ([20]byte, error) {
-	seg := strings.TrimSpace(account)
-	if i := strings.LastIndex(seg, "/"); i >= 0 {
-		seg = seg[i+1:]
+	acct, err := core.ParseClearnetAccount(account)
+	if err != nil {
+		return [20]byte{}, fmt.Errorf("btc: %w", err)
 	}
-	seg = strings.TrimPrefix(strings.ToLower(seg), "0x")
-	b, err := hex.DecodeString(seg)
-	if err != nil || len(b) != 20 {
-		return [20]byte{}, fmt.Errorf("btc: account %q must be a 20-byte hex address (len=%d): %v", account, len(b), err)
-	}
-	var out [20]byte
-	copy(out[:], b)
-	return out, nil
+	return acct, nil
 }
 
 // VerifyDeposit reports the backend's on-chain status for the deposit txID.

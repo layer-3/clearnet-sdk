@@ -2,7 +2,6 @@ package sol
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -173,21 +172,15 @@ func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint
 	}
 }
 
-// parseClearnetAccount decodes a 20-byte clearnet account address from hex
-// (optionally a yellow://.../user/<hex> URI's last segment).
+// parseClearnetAccount decodes a 20-byte clearnet account address from a
+// bare hex, an optional case-insensitive "0x" prefix, or a yellow://.../user/<hex>
+// URI's last segment, and surrounding whitespace).
 func parseClearnetAccount(account string) ([20]byte, error) {
-	seg := account
-	if i := strings.LastIndex(seg, "/"); i >= 0 {
-		seg = seg[i+1:]
+	acct, err := core.ParseClearnetAccount(account)
+	if err != nil {
+		return [20]byte{}, fmt.Errorf("sol: %w", err)
 	}
-	seg = strings.TrimPrefix(strings.ToLower(seg), "0x")
-	b, err := hex.DecodeString(seg)
-	if err != nil || len(b) != 20 {
-		return [20]byte{}, fmt.Errorf("sol: account %q must be a 20-byte hex address (len=%d): %v", account, len(b), err)
-	}
-	var out [20]byte
-	copy(out[:], b)
-	return out, nil
+	return acct, nil
 }
 
 func txID(sig solana.Signature) string {

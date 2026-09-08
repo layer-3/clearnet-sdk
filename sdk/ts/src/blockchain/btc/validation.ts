@@ -1,3 +1,4 @@
+import { parseClearnetAccount } from "../../core/account.js";
 import { ClearnetSdkError } from "../../core/errors.js";
 import { hexToBytes } from "../../core/bytes.js";
 import type { SubmitDepositOptions } from "../../core/types.js";
@@ -83,28 +84,12 @@ export function requireDepositDestination(
 
 /**
  * Parses destination.account into the raw 20-byte address ADR-023 carries in
- * the deposit marker, matching the other three chains. Accepts a bare hex
- * address or a yellow://.../user/<hex> URI's last segment, tolerating
- * surrounding whitespace, so it accepts exactly what the Go SDK's BTC
- * parseClearnetAccount does.
+ * the deposit marker from a bare hex, an optional case-insensitive "0x" prefix,
+ * or a yellow://.../user/<hex> URI's last segment, and surrounding whitespace,
+ * then re-encodes it as a canonical lowercase EVM address for viem.
  */
 export function requireClearnetAccount(account: unknown): Uint8Array {
-  if (typeof account !== "string") {
-    throw new ClearnetSdkError(
-      "INVALID_ADDRESS",
-      "destination.account must be a 20-byte hex address",
-    );
-  }
-  const trimmed = account.trim();
-  const segment = trimmed.slice(trimmed.lastIndexOf("/") + 1);
-  const hex = segment.toLowerCase().replace(/^0x/, "");
-  if (!/^[a-f0-9]+$/.test(hex) || hex.length !== 40) {
-    throw new ClearnetSdkError(
-      "INVALID_ADDRESS",
-      "destination.account must be a 20-byte hex address",
-    );
-  }
-  return hexToBytes(hex, "destination.account");
+  return parseClearnetAccount(account);
 }
 
 /**

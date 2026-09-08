@@ -2,6 +2,7 @@ import { Buffer } from "buffer";
 
 import { isValidClassicAddress } from "xrpl";
 
+import { parseClearnetAccount } from "../../core/account.js";
 import { ClearnetSdkError } from "../../core/errors.js";
 import {
   BYTES32_HEX_PATTERN,
@@ -84,22 +85,12 @@ export function requireDepositDestination(
   return destination as XrplDepositDestination;
 }
 
+// requireClearnetAccount parses destination.account from a bare hex, an
+// optional case-insensitive "0x" prefix, or a yellow://.../user/<hex> URI's
+// last segment, and surrounding whitespace, then re-encodes it as a canonical
+// lowercase EVM address for viem.
 export function requireClearnetAccount(account: unknown): Uint8Array {
-  if (typeof account !== "string") {
-    throw new ClearnetSdkError(
-      "INVALID_ADDRESS",
-      "destination.account must be a 20-byte hex address",
-    );
-  }
-  const trimmed = account.trim();
-  const hex = trimmed.toLowerCase().replace(/^0x/, "");
-  if (!/^[a-f0-9]+$/.test(hex) || hex.length !== 40) {
-    throw new ClearnetSdkError(
-      "INVALID_ADDRESS",
-      "destination.account must be a 20-byte hex address",
-    );
-  }
-  return Uint8Array.from(Buffer.from(hex, "hex"));
+  return parseClearnetAccount(account);
 }
 
 export function requireReference(reference: unknown): Uint8Array {

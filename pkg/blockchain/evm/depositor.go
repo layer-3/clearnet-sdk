@@ -65,7 +65,10 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 		return "", fmt.Errorf("evm: amount: %w", err)
 	}
 	assetAddr := depositAssetAddress(assetAddress)
-	accountAddr := common.HexToAddress(dest.Account)
+	accountAddr, err := parseClearnetAccount(dest.Account)
+	if err != nil {
+		return "", err
+	}
 
 	if assetAddr == (common.Address{}) {
 		opts, _, err := signerTransactOpts(ctx, d.client, d.signer)
@@ -121,6 +124,17 @@ func normalizeDepositAssetAddress(assetAddress string) string {
 		return nativeAssetAddress
 	}
 	return assetAddress
+}
+
+// parseClearnetAccount decodes dest.Account into an EVM address from a
+// bare hex, an optional case-insensitive "0x" prefix, or a yellow://.../user/<hex>
+// URI's last segment, and surrounding whitespace.
+func parseClearnetAccount(account string) (common.Address, error) {
+	acct, err := core.ParseClearnetAccount(account)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("evm: %w", err)
+	}
+	return common.Address(acct), nil
 }
 
 // VerifyDeposit reports the on-chain status of the deposit txID. EVM deposit

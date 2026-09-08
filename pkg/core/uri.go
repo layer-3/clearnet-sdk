@@ -57,7 +57,7 @@ func (t AccountType) String() string {
 
 // UserURI returns the canonical URI for a user account.
 //
-//	yellow://ynet/user/0xd8da6bf26964af9d7eed9e03e53415d37aa96045
+// For example, yellow://ynet/user/0xd8da6bf26964af9d7eed9e03e53415d37aa96045
 func UserURI(address string) string {
 	return URIScheme + "://" + DefaultNetwork + "/user/" + strings.ToLower(address)
 }
@@ -78,7 +78,7 @@ func TreasuryURI(name string) string {
 
 // NodeURI returns the canonical URI for a validator node account.
 //
-//	yellow://ynet/node/<64-char lowercase hex nodeid>
+// For example, yellow://ynet/node/<64-char lowercase hex nodeid>
 func NodeURI(id NodeID) string {
 	return URIScheme + "://" + DefaultNetwork + "/node/" + hex.EncodeToString(id[:])
 }
@@ -93,6 +93,35 @@ func URIToAddress(uri string) (common.Address, error) {
 	}
 	hash := crypto.Keccak256([]byte(uri))
 	return common.BytesToAddress(hash[:20]), nil
+}
+
+// ParseClearnetAccount decodes the raw 20-byte address carried by a clearnet
+// account — the shape every chain depositor's SubmitDeposit accepts:
+//
+//   - a bare 40-character hex string, with or without a "0x"/"0X" prefix
+//   - the same, surrounded by whitespace
+//   - a yellow://ynet/user/<hex> URI (any case); the last "/"-delimited
+//     segment is taken as the address
+//
+// An ADR-015 sub-account URI (yellow://.../user/<addr>/tag/<ref>) is
+// rejected — its last segment is the 32-byte reference, not the address.
+func ParseClearnetAccount(account string) ([20]byte, error) {
+	seg := strings.TrimSpace(account)
+	if i := strings.LastIndex(seg, "/"); i >= 0 {
+		seg = seg[i+1:]
+	}
+	seg = strings.ToLower(seg)
+	seg = strings.TrimPrefix(seg, "0x")
+	b, err := hex.DecodeString(seg)
+	if err != nil || len(b) != 20 {
+		if strings.Contains(account, "/tag/") {
+			return [20]byte{}, fmt.Errorf("account %q must be a 20-byte hex address (len=%d); a yellow://.../user/<addr>/tag/<ref> URI must be split: pass <addr> as the account and <ref> as the reference", account, len(b))
+		}
+		return [20]byte{}, fmt.Errorf("account %q must be a 20-byte hex address (len=%d)", account, len(b))
+	}
+	var out [20]byte
+	copy(out[:], b)
+	return out, nil
 }
 
 // ServiceURI returns the canonical URI for a named service.

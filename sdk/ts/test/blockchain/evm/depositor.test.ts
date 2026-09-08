@@ -19,6 +19,7 @@ import type {
   VaultDepositor,
 } from "../../../src/index.js";
 import { custodyAbi } from "../../../src/blockchain/evm/abi.js";
+import { requireDepositDestination } from "../../../src/blockchain/evm/validation.js";
 
 const CHAIN_ID = 31_337;
 const CUSTODY_ADDRESS =
@@ -494,3 +495,44 @@ function transactionNotFound(name: string): Error {
   error.name = name;
   return error;
 }
+
+// Pins the exact accepted/rejected input set for
+// requireDepositDestination's destination.account decoding, bare hex, an
+// optional case-insensitive "0x" prefix, a yellow://.../user/<hex> URI's
+// last segment, and surrounding whitespace. It also pins that an
+// ADR-015 sub-account URI (yellow://.../user/<addr>/tag/<32-byte-ref>) is
+// rejected rather than silently parsed as the trailing 32-byte reference.
+describe("requireDepositDestination account parsing", () => {
+  const addrHex = "000102030405060708090a0b0c0d0e0f10111213";
+  const refHex =
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+  const want = `0x${addrHex}` as Address;
+
+  it.each([
+    ["bare hex", addrHex],
+    ["0x prefix", `0x${addrHex}`],
+    ["0X prefix", `0X${addrHex}`],
+    ["uppercase hex", addrHex.toUpperCase()],
+    ["whitespace padded", `  ${addrHex}  `],
+    ["tab/newline padded", `\t${addrHex}\n`],
+    ["yellow URI", `yellow://ynet/user/${addrHex}`],
+    ["whitespace padded yellow URI", `  yellow://ynet/user/${addrHex}  `],
+  ])("accepts %s", (_name, input) => {
+    expect(requireDepositDestination({ account: input }).account).toBe(want);
+  });
+
+  it.each([
+    ["empty string", ""],
+    ["non-hex", "not-a-hex-address"],
+    ["19 bytes", addrHex.slice(0, 38)],
+    ["21 bytes", `${addrHex}00`],
+    [
+      "ADR-015 sub-account URI (last segment is the 32-byte reference)",
+      `yellow://ynet/user/${addrHex}/tag/${refHex}`,
+    ],
+  ])("rejects %s", (_name, input) => {
+    expect(() => requireDepositDestination({ account: input })).toThrowError(
+      expect.objectContaining({ code: "INVALID_ADDRESS" }),
+    );
+  });
+});

@@ -129,17 +129,15 @@ const accountMemoType = "ynet-account"
 
 // accountMemo builds the ynet-account memo: MemoData is the 20-byte clearnet
 // account followed by the 32-byte ADR-015 reference (zero for no sub-account),
-// hex-encoded; MemoType is "ynet-account", hex-encoded.
+// hex-encoded; MemoType is "ynet-account", hex-encoded. The account is
+// decoded from a bare hex, an optional case-insensitive "0x" prefix, or a
+// yellow://.../user/<hex> URI's last segment, and surrounding whitespace).
 func accountMemo(dest core.DepositDestination) (types.MemoWrapper, error) {
-	raw := strings.TrimPrefix(strings.TrimSpace(dest.Account), "0x")
-	account, err := hex.DecodeString(raw)
+	account, err := core.ParseClearnetAccount(dest.Account)
 	if err != nil {
-		return types.MemoWrapper{}, fmt.Errorf("xrpl: account not hex: %w", err)
+		return types.MemoWrapper{}, fmt.Errorf("xrpl: %w", err)
 	}
-	if len(account) != 20 {
-		return types.MemoWrapper{}, fmt.Errorf("xrpl: account must be 20 bytes, got %d", len(account))
-	}
-	data := append(account, dest.Ref[:]...)
+	data := append(account[:], dest.Ref[:]...)
 	return types.MemoWrapper{Memo: types.Memo{
 		MemoType: hex.EncodeToString([]byte(accountMemoType)),
 		MemoData: hex.EncodeToString(data),

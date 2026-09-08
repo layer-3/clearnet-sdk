@@ -3,6 +3,7 @@ import { Buffer } from "buffer";
 import bs58 from "bs58";
 import { PublicKey } from "@solana/web3.js";
 
+import { parseClearnetAccount } from "../../core/account.js";
 import { ClearnetSdkError } from "../../core/errors.js";
 import type { Bytes32Hex, DepositDestination } from "../../core/types.js";
 import {
@@ -108,22 +109,12 @@ export function requireDepositDestination(
   return destination as DepositDestination;
 }
 
+// requireClearnetAccount parses destination.account (from a bare hex, an
+// optional case-insensitive "0x" prefix, or a yellow://.../user/<hex> URI's
+// last segment, and surrounding whitespace, then re-encodes it as a canonical
+// lowercase EVM address for viem.
 export function requireClearnetAccount(account: unknown): Uint8Array {
-  if (typeof account !== "string") {
-    throw new ClearnetSdkError(
-      "INVALID_ADDRESS",
-      "destination.account must be a 20-byte hex address",
-    );
-  }
-  const segment = account.slice(account.lastIndexOf("/") + 1);
-  const hex = segment.toLowerCase().replace(/^0x/, "");
-  if (!/^[a-f0-9]+$/.test(hex) || hex.length !== 40) {
-    throw new ClearnetSdkError(
-      "INVALID_ADDRESS",
-      "destination.account must be a 20-byte hex address",
-    );
-  }
-  return Uint8Array.from(Buffer.from(hex, "hex"));
+  return parseClearnetAccount(account);
 }
 
 export function requireReference(reference: unknown): Uint8Array {

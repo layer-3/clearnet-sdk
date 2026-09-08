@@ -1,6 +1,8 @@
 import { isAddress, zeroAddress, zeroHash } from "viem";
 import type { Account, Address, Hash } from "viem";
 
+import { parseClearnetAccount } from "../../core/account.js";
+import { bytesToHex } from "../../core/bytes.js";
 import { ClearnetSdkError } from "../../core/errors.js";
 import {
   BYTES32_HEX_PATTERN,
@@ -108,9 +110,17 @@ export function requireDepositDestination(
   }
   const fields = destination as Record<"account" | "ref", unknown>;
   return {
-    account: requireAddress(fields.account, "destination.account"),
+    account: requireClearnetAccountAddress(fields.account),
     ref: requireReference(fields.ref),
   };
+}
+
+// requireClearnetAccountAddress parses destination.account from a bare hex, an
+// optional case-insensitive "0x" prefix, or a yellow://.../user/<hex> URI's
+// last segment, and surrounding whitespace, then re-encodes it as a canonical
+// lowercase EVM address for viem.
+function requireClearnetAccountAddress(account: unknown): Address {
+  return `0x${bytesToHex(parseClearnetAccount(account))}` as Address;
 }
 
 export function requireChainId(chainId: number): number {
