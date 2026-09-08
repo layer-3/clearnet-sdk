@@ -7,7 +7,7 @@ import {Config} from "../src/Config.sol";
 import {ConfigRegistry} from "../src/ConfigRegistry.sol";
 import {IConfig} from "../src/interfaces/IConfig.sol";
 import {IConfigRegistry} from "../src/interfaces/IConfigRegistry.sol";
-import {ConfigRegistryDigests} from "../src/libraries/ConfigRegistryDigests.sol";
+import {TestDigests} from "./TestDigests.sol";
 
 import {SignerSetBase} from "./SignerSetBase.sol";
 
@@ -45,7 +45,7 @@ abstract contract ConfigRegistryTestBase is SignerSetBase {
         uint256[] memory signingKeys,
         uint256 signerCount
     ) internal view returns (bytes[] memory sigs) {
-        bytes32 digest = ConfigRegistryDigests.registrationDigest(address(registry), keys, threshold_);
+        bytes32 digest = TestDigests.registrationDigest(address(registry), keys, threshold_);
         sigs = _signDigestWithKeys(digest, signingKeys, signerCount);
     }
 
@@ -69,9 +69,7 @@ abstract contract ConfigRegistryTestBase is SignerSetBase {
         uint256[] memory signingKeys,
         uint256 signerCount
     ) internal view returns (bytes[] memory sigs) {
-        bytes32 digest = ConfigRegistryDigests.setConfigDigest(
-            address(registry), issuerId_, key, checksum, expectedNonce
-        );
+        bytes32 digest = TestDigests.setConfigDigest(address(registry), issuerId_, key, checksum, expectedNonce);
         sigs = _signDigestWithKeys(digest, signingKeys, signerCount);
     }
 
@@ -97,9 +95,7 @@ abstract contract ConfigRegistryTestBase is SignerSetBase {
         uint256[] memory signingKeys,
         uint256 signerCount
     ) internal view returns (bytes[] memory sigs) {
-        bytes32 digest = ConfigRegistryDigests.setConfigWithDataDigest(
-            address(registry), issuerId_, key, data, expectedNonce
-        );
+        bytes32 digest = TestDigests.setConfigWithDataDigest(address(registry), issuerId_, key, data, expectedNonce);
         sigs = _signDigestWithKeys(digest, signingKeys, signerCount);
     }
 
@@ -125,7 +121,7 @@ abstract contract ConfigRegistryTestBase is SignerSetBase {
         uint256[] memory signingKeys,
         uint256 signerCount
     ) internal view returns (bytes[] memory sigs) {
-        bytes32 digest = ConfigRegistryDigests.updateIssuerSettingsDigest(
+        bytes32 digest = TestDigests.updateIssuerSettingsDigest(
             address(registry), issuerId_, newKeys, newThreshold, expectedNonce
         );
         sigs = _signDigestWithKeys(digest, signingKeys, signerCount);
@@ -289,7 +285,7 @@ contract ConfigRegistryTest_registerIssuer is ConfigRegistryTestBase {
 
     function test_registerIssuer_differentRegistry_yieldsDifferentIssuerId() public {
         ConfigRegistry otherRegistry = new ConfigRegistry();
-        bytes32 digest = ConfigRegistryDigests.registrationDigest(address(otherRegistry), issuerSignerAddrs, THRESHOLD);
+        bytes32 digest = TestDigests.registrationDigest(address(otherRegistry), issuerSignerAddrs, THRESHOLD);
         bytes[] memory sigs = _signDigestWithKeys(digest, issuerPrivKeys, THRESHOLD);
         address otherIssuerId = otherRegistry.registerIssuer(issuerSignerAddrs, THRESHOLD, sigs);
 
@@ -324,7 +320,7 @@ contract ConfigRegistryTest_registerIssuer is ConfigRegistryTestBase {
         (uint256[] memory keys, address[] memory addrs) = _makeSignerSet(8, SIGNER_COUNT);
         addrs[0] = address(0);
 
-        bytes32 digest = ConfigRegistryDigests.registrationDigest(address(registry), addrs, THRESHOLD);
+        bytes32 digest = TestDigests.registrationDigest(address(registry), addrs, THRESHOLD);
         bytes[] memory sigs = _signDigestWithKeys(digest, keys, THRESHOLD);
 
         vm.expectRevert(IConfigRegistry.ZeroIssuerKey.selector);
@@ -337,7 +333,7 @@ contract ConfigRegistryTest_registerIssuer is ConfigRegistryTestBase {
         (addrs[0], addrs[1]) = (addrs[1], addrs[0]);
         (keys[0], keys[1]) = (keys[1], keys[0]);
 
-        bytes32 digest = ConfigRegistryDigests.registrationDigest(address(registry), addrs, THRESHOLD);
+        bytes32 digest = TestDigests.registrationDigest(address(registry), addrs, THRESHOLD);
         bytes[] memory sigs = _signDigestWithKeys(digest, keys, THRESHOLD);
 
         vm.expectRevert(IConfigRegistry.IssuerKeysNotSorted.selector);
@@ -349,7 +345,7 @@ contract ConfigRegistryTest_registerIssuer is ConfigRegistryTestBase {
         addrs[1] = addrs[0];
         keys[1] = keys[0];
 
-        bytes32 digest = ConfigRegistryDigests.registrationDigest(address(registry), addrs, THRESHOLD);
+        bytes32 digest = TestDigests.registrationDigest(address(registry), addrs, THRESHOLD);
         bytes[] memory sigs = _signDigestWithKeys(digest, keys, THRESHOLD);
 
         vm.expectRevert(IConfigRegistry.IssuerKeysNotSorted.selector);
@@ -373,7 +369,7 @@ contract ConfigRegistryTest_registerIssuer is ConfigRegistryTestBase {
 
     function test_registerIssuer_revert_ifSameSignerTwice() public {
         (uint256[] memory keys, address[] memory addrs) = _makeSignerSet(13, SIGNER_COUNT);
-        bytes32 digest = ConfigRegistryDigests.registrationDigest(address(registry), addrs, THRESHOLD);
+        bytes32 digest = TestDigests.registrationDigest(address(registry), addrs, THRESHOLD);
         bytes[] memory sigs = _signDigestWithKeys(digest, keys, THRESHOLD);
         sigs[1] = sigs[0]; // duplicate the first signer's signature into the second slot
 
@@ -385,7 +381,7 @@ contract ConfigRegistryTest_registerIssuer is ConfigRegistryTestBase {
         (uint256[] memory keys, address[] memory addrs) = _makeSignerSet(14, SIGNER_COUNT);
         (uint256[] memory outsiderKeys,) = _makeSignerSet(15, 1);
 
-        bytes32 digest = ConfigRegistryDigests.registrationDigest(address(registry), addrs, THRESHOLD);
+        bytes32 digest = TestDigests.registrationDigest(address(registry), addrs, THRESHOLD);
         // Sign with threshold - 1 real keys plus one outsider key; the outsider is not in `addrs`.
         bytes[] memory realSigs = _signDigestWithKeys(digest, keys, THRESHOLD - 1);
         bytes[] memory outsiderSigs = _signDigestWithKeys(digest, outsiderKeys, 1);
@@ -423,7 +419,7 @@ contract ConfigRegistryTest_registerIssuer is ConfigRegistryTestBase {
         (uint256[] memory keys, address[] memory addrs) = _makeSignerSet(18, SIGNER_COUNT);
 
         vm.chainId(block.chainid + 1);
-        bytes32 digest = ConfigRegistryDigests.registrationDigest(address(registry), addrs, THRESHOLD);
+        bytes32 digest = TestDigests.registrationDigest(address(registry), addrs, THRESHOLD);
         bytes[] memory sigs = _signDigestWithKeys(digest, keys, THRESHOLD);
         vm.chainId(block.chainid - 1);
 
@@ -573,7 +569,7 @@ contract ConfigRegistryTest_setConfig is ConfigRegistryTestBase {
         bytes32 key = keccak256("k");
         bytes32 checksum = keccak256("v");
         // Signed for issuer B's digest, submitted against issuer A (this contract's `issuerId`).
-        bytes32 digestForB = ConfigRegistryDigests.setConfigDigest(address(registry), issuerB, key, checksum, 0);
+        bytes32 digestForB = TestDigests.setConfigDigest(address(registry), issuerB, key, checksum, 0);
         bytes[] memory sigs = _signDigestWithKeys(digestForB, keysB, THRESHOLD);
 
         vm.expectRevert(IConfigRegistry.NotAnIssuerKey.selector);
@@ -584,7 +580,7 @@ contract ConfigRegistryTest_setConfig is ConfigRegistryTestBase {
         bytes32 key = keccak256("k");
         bytes32 checksum = keccak256("v");
         bytes32 wrongTagDigest =
-            ConfigRegistryDigests.setConfigWithDataDigest(address(registry), issuerId, key, abi.encode(checksum), 0);
+            TestDigests.setConfigWithDataDigest(address(registry), issuerId, key, abi.encode(checksum), 0);
         bytes[] memory sigs = _signDigestWithKeys(wrongTagDigest, issuerPrivKeys, THRESHOLD);
 
         vm.expectRevert();
@@ -717,7 +713,7 @@ contract ConfigRegistryTest_setConfigWithData is ConfigRegistryTestBase {
         address issuerB = _registerIssuer(addrsB, THRESHOLD, keysB, THRESHOLD);
 
         bytes32 key = keccak256("k");
-        bytes32 digestForB = ConfigRegistryDigests.setConfigWithDataDigest(address(registry), issuerB, key, "v", 0);
+        bytes32 digestForB = TestDigests.setConfigWithDataDigest(address(registry), issuerB, key, "v", 0);
         bytes[] memory sigs = _signDigestWithKeys(digestForB, keysB, THRESHOLD);
 
         vm.expectRevert(IConfigRegistry.NotAnIssuerKey.selector);
@@ -726,8 +722,7 @@ contract ConfigRegistryTest_setConfigWithData is ConfigRegistryTestBase {
 
     function test_setConfigWithData_revert_ifSignedForSetConfig() public {
         bytes32 key = keccak256("k");
-        bytes32 wrongTagDigest =
-            ConfigRegistryDigests.setConfigDigest(address(registry), issuerId, key, keccak256("v"), 0);
+        bytes32 wrongTagDigest = TestDigests.setConfigDigest(address(registry), issuerId, key, keccak256("v"), 0);
         bytes[] memory sigs = _signDigestWithKeys(wrongTagDigest, issuerPrivKeys, THRESHOLD);
 
         vm.expectRevert();

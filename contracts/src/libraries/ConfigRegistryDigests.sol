@@ -1,62 +1,50 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
-/// @title ConfigRegistryDigests
-/// @notice Pure digest-construction formulas for every signed message
-///         `ConfigRegistry` verifies (`registerIssuer`, `setConfig`,
-///         `setConfigWithData`, `updateIssuerSettings`).
+/// @notice EIP-712 struct hashes; ConfigRegistry applies its own domain.
 library ConfigRegistryDigests {
-    /// @notice Digest for `registerIssuer`: self-referential over the
-    ///         claimed key set, proving control of it.
-    function registrationDigest(address registry, address[] memory issuerKeys, uint256 threshold)
+    bytes32 internal constant REGISTER_ISSUER_TYPEHASH =
+        keccak256("RegisterIssuer(address[] issuerKeys,uint256 threshold)");
+    bytes32 internal constant SET_CONFIG_TYPEHASH =
+        keccak256("SetConfig(address issuerId,bytes32 key,bytes32 checksum,uint256 expectedNonce)");
+    bytes32 internal constant SET_CONFIG_WITH_DATA_TYPEHASH =
+        keccak256("SetConfigWithData(address issuerId,bytes32 key,bytes data,uint256 expectedNonce)");
+    bytes32 internal constant UPDATE_ISSUER_SETTINGS_TYPEHASH = keccak256(
+        "UpdateIssuerSettings(address issuerId,address[] newIssuerKeys,uint256 newThreshold,uint256 expectedNonce)"
+    );
+
+    function registrationStructHash(address[] memory issuerKeys, uint256 threshold) internal pure returns (bytes32) {
+        return keccak256(abi.encode(REGISTER_ISSUER_TYPEHASH, keccak256(abi.encodePacked(issuerKeys)), threshold));
+    }
+
+    function setConfigStructHash(address issuerId, bytes32 key, bytes32 checksum, uint256 expectedNonce)
         internal
-        view
+        pure
         returns (bytes32)
     {
-        return keccak256(
-            abi.encode(block.chainid, registry, "registerIssuer", keccak256(abi.encode(issuerKeys, threshold)))
-        );
+        return keccak256(abi.encode(SET_CONFIG_TYPEHASH, issuerId, key, checksum, expectedNonce));
     }
 
-    /// @notice Digest for `setConfig`. Binds `key` (which key is being
-    ///         written) and `expectedNonce`.
-    function setConfigDigest(address registry, address issuerId, bytes32 key, bytes32 checksum, uint256 expectedNonce)
+    function setConfigWithDataStructHash(address issuerId, bytes32 key, bytes memory data, uint256 expectedNonce)
         internal
-        view
+        pure
         returns (bytes32)
     {
-        return keccak256(abi.encode(block.chainid, registry, "setConfig", issuerId, key, checksum, expectedNonce));
+        return keccak256(abi.encode(SET_CONFIG_WITH_DATA_TYPEHASH, issuerId, key, keccak256(data), expectedNonce));
     }
 
-    /// @notice Digest for `setConfigWithData`. Binds the raw `data` bytes
-    ///         rather than a pre-computed checksum.
-    function setConfigWithDataDigest(
-        address registry,
-        address issuerId,
-        bytes32 key,
-        bytes memory data,
-        uint256 expectedNonce
-    ) internal view returns (bytes32) {
-        return keccak256(abi.encode(block.chainid, registry, "setConfigWithData", issuerId, key, data, expectedNonce));
-    }
-
-    /// @notice Digest for `updateIssuerSettings`. Binds the pre-hashed proposed
-    ///         key set/threshold and the current per-issuer `nonce`, verified
-    ///         against the issuer's *current* (outgoing) key set.
-    function updateIssuerSettingsDigest(
-        address registry,
+    function updateIssuerSettingsStructHash(
         address issuerId,
         address[] memory newIssuerKeys,
         uint256 newThreshold,
         uint256 expectedNonce
-    ) internal view returns (bytes32) {
+    ) internal pure returns (bytes32) {
         return keccak256(
             abi.encode(
-                block.chainid,
-                registry,
-                "updateIssuerSettings",
+                UPDATE_ISSUER_SETTINGS_TYPEHASH,
                 issuerId,
-                keccak256(abi.encode(newIssuerKeys, newThreshold)),
+                keccak256(abi.encodePacked(newIssuerKeys)),
+                newThreshold,
                 expectedNonce
             )
         );

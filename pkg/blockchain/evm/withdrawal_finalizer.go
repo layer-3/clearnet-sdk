@@ -11,7 +11,6 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
@@ -284,7 +283,7 @@ func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.Withdra
 }
 
 // digest computes the Custody.execute signing digest:
-// keccak256(abi.encode(chainId, vault, to, asset, amount, withdrawalId, deadline)).
+// EIP-712 Execute under the YellowCustody domain.
 func (f *WithdrawalFinalizer) digest(p evmPacked) (common.Hash, error) {
 	amount, ok := new(big.Int).SetString(p.Amount, 10)
 	if !ok {
@@ -294,15 +293,10 @@ func (f *WithdrawalFinalizer) digest(p evmPacked) (common.Hash, error) {
 	if err != nil {
 		return common.Hash{}, err
 	}
-	return crypto.Keccak256Hash(
-		common.LeftPadBytes(new(big.Int).SetUint64(f.chainID).Bytes(), 32),
-		common.LeftPadBytes(f.vaultAddr.Bytes(), 32),
-		common.LeftPadBytes(common.HexToAddress(p.To).Bytes(), 32),
-		common.LeftPadBytes(common.HexToAddress(p.Asset).Bytes(), 32),
-		common.LeftPadBytes(amount.Bytes(), 32),
-		wid[:],
-		common.LeftPadBytes(new(big.Int).SetInt64(p.Deadline).Bytes(), 32),
-	), nil
+	if p.Deadline < 0 || amount.Sign() < 0 || amount.BitLen() > 256 {
+		return common.Hash{}, fmt.Errorf("invalid withdrawal uint256")
+	}
+	return ComputeWithdrawalDigest(f.chainID, f.vaultAddr, common.HexToAddress(p.To), common.HexToAddress(p.Asset), amount, wid, big.NewInt(p.Deadline)), nil
 }
 
 // applyFees sets EIP-1559 (or legacy) gas pricing on opts from fees, refusing to

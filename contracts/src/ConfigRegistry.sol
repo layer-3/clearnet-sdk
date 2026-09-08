@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 
@@ -26,7 +27,8 @@ import {ConfigRegistryDigests} from "./libraries/ConfigRegistryDigests.sol";
 ///         the same shared `nonce`. Key-set size and threshold are issuer-owned
 ///         governance policy: this generic registry intentionally permits any
 ///         structurally valid policy, including a single key at threshold one.
-contract ConfigRegistry is IConfigRegistry {
+contract ConfigRegistry is IConfigRegistry, EIP712 {
+    constructor() EIP712("YellowConfigRegistry", "1") {}
     using ECDSA for bytes32;
 
     // -------------------------------------------------------------------------
@@ -103,7 +105,7 @@ contract ConfigRegistry is IConfigRegistry {
         issuerId = computeIssuerId(issuerKeys_, threshold_);
         require(!isRegistered(issuerId), IssuerAlreadyRegistered());
 
-        bytes32 digest = ConfigRegistryDigests.registrationDigest(address(this), issuerKeys_, threshold_);
+        bytes32 digest = _hashTypedDataV4(ConfigRegistryDigests.registrationStructHash(issuerKeys_, threshold_));
         _verifyQuorum(digest, signatures, issuerKeys_, threshold_);
 
         bytes32 salt = keccak256(abi.encode(issuerKeys_, threshold_));
@@ -145,7 +147,8 @@ contract ConfigRegistry is IConfigRegistry {
         IssuerSettings storage settings = _issuers[issuerId];
         require(expectedNonce == settings.nonce, UnexpectedNonce(settings.nonce, expectedNonce));
 
-        bytes32 digest = ConfigRegistryDigests.setConfigDigest(address(this), issuerId, key, checksum, expectedNonce);
+        bytes32 digest =
+            _hashTypedDataV4(ConfigRegistryDigests.setConfigStructHash(issuerId, key, checksum, expectedNonce));
         _verifyQuorumStored(issuerId, digest, signatures);
 
         unchecked {
@@ -172,7 +175,7 @@ contract ConfigRegistry is IConfigRegistry {
         require(expectedNonce == settings.nonce, UnexpectedNonce(settings.nonce, expectedNonce));
 
         bytes32 digest =
-            ConfigRegistryDigests.setConfigWithDataDigest(address(this), issuerId, key, data, expectedNonce);
+            _hashTypedDataV4(ConfigRegistryDigests.setConfigWithDataStructHash(issuerId, key, data, expectedNonce));
         _verifyQuorumStored(issuerId, digest, signatures);
 
         unchecked {
@@ -212,8 +215,8 @@ contract ConfigRegistry is IConfigRegistry {
 
         _validateIssuerKeys(newIssuerKeys, newThreshold);
 
-        bytes32 digest = ConfigRegistryDigests.updateIssuerSettingsDigest(
-            address(this), issuerId, newIssuerKeys, newThreshold, expectedNonce
+        bytes32 digest = _hashTypedDataV4(
+            ConfigRegistryDigests.updateIssuerSettingsStructHash(issuerId, newIssuerKeys, newThreshold, expectedNonce)
         );
         _verifyQuorumStored(issuerId, digest, signatures);
 
