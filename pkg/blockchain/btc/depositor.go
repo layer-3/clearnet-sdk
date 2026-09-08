@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 
 	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain/btc/marker"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
@@ -25,10 +27,12 @@ const (
 	defaultDepositorMaxInputs                    = 100
 )
 
-// Depositor funds a per-account deposit address from the depositor's own
+// Depositor funds the single generic deposit address from the depositor's own
 // P2WPKH wallet (the key the supplied sign.Signer holds). It implements
 // core.VaultDepositor. The deposit address is derived from the vault's pubkeys
-// + threshold (the same address the withdrawal finalizer can later spend).
+// + threshold (the same address the withdrawal finalizer can later spend);
+// a second, zero-value OP_RETURN marker output attributes each
+// deposit to dest.Account (pkg/blockchain/btc/marker).
 type Depositor struct {
 	net          *chaincfg.Params
 	backend      DepositorBackend
@@ -133,19 +137,21 @@ func normalizeDepositAssetAddress(assetAddress string) string {
 	return assetAddress
 }
 
-// SubmitDeposit sends amount from the depositor's wallet to the per-account
-// deposit address for dest.Account. assetAddress must be "" for native BTC.
-// Builds, signs (P2WPKH), and broadcasts the funding tx. A
-// non-zero dest.Ref is rejected: the account is encoded in the deposit address
-// and a plain BTC send has no side-data channel for a sub-account (ADR-015 has
-// no BTC reference).
+// SubmitDeposit sends amount from the depositor's wallet to the single generic
+// deposit address (ADR-023 §3) and attributes the deposit to dest.Account (a
+// 20-byte hex clearnet address, optionally a URI whose last path segment is
+// that address) via a second, zero-value OP_RETURN marker output. A non-zero
+// dest.Ref selects marker version 0x02 (ADR-015 sub-account reference); a zero
+// Ref uses version 0x01. assetAddress must be "" for native BTC. Builds, signs
+// (P2WPKH), and broadcasts the funding tx.
 func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (string, error) {
+	markerAddr, err := parseClearnetAccount(dest.Account)
+	if err != nil {
+		return "", err
+	}
 	assetAddress = normalizeDepositAssetAddress(assetAddress)
 	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
 		return "", err
-	}
-	if dest.Ref != ([32]byte{}) {
-		return "", fmt.Errorf("btc: deposit reference not supported")
 	}
 	if amount.Sign() <= 0 {
 		return "", fmt.Errorf("btc: amount %s not positive", amount.String())
@@ -163,11 +169,47 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 	}
 	sats := baseUnits.Int64()
 
-	depositAddr, _, err := DepositAddress(dest.Account, d.threshold, d.vaultPubkeys, d.net)
+	depositAddr, markerScript, err := d.genericDepositTarget(markerAddr, dest.Ref)
 	if err != nil {
-		return "", fmt.Errorf("btc: derive deposit address: %w", err)
+		return "", err
 	}
-	return d.sender.Send(ctx, depositAddr.EncodeAddress(), sats)
+	return d.sender.Send(ctx, depositAddr.EncodeAddress(), sats, WithExtraOutputScript(markerScript))
+}
+
+// genericDepositTarget derives the single generic P2WSH deposit address
+// (ADR-023 §3: TaggedRedeemScript over marker.GenericDepositTag()) plus the
+// marker script attributing the deposit to markerAddr/ref. It selects
+// marker.Version1 for a zero ref and marker.Version2 otherwise.
+func (d *Depositor) genericDepositTarget(markerAddr [20]byte, ref [32]byte) (btcutil.Address, []byte, error) {
+	tag := marker.GenericDepositTag()
+	redeem, err := TaggedRedeemScript(tag[:], d.threshold, d.vaultPubkeys)
+	if err != nil {
+		return nil, nil, fmt.Errorf("btc: derive generic deposit redeem script: %w", err)
+	}
+	depositAddr, err := VaultAddress(redeem, d.net)
+	if err != nil {
+		return nil, nil, fmt.Errorf("btc: derive generic deposit address: %w", err)
+	}
+	version := marker.Version1
+	if ref != ([32]byte{}) {
+		version = marker.Version2
+	}
+	markerScript, err := marker.EncodeScript(marker.Marker{Version: version, Address: markerAddr, Reference: ref})
+	if err != nil {
+		return nil, nil, fmt.Errorf("btc: encode deposit marker: %w", err)
+	}
+	return depositAddr, markerScript, nil
+}
+
+// parseClearnetAccount decodes a 20-byte clearnet account address from a bare hex,
+// an optional case-insensitive "0x" prefix, a yellow://.../user/<hex> URI's
+// last segment, and surrounding whitespace.
+func parseClearnetAccount(account string) ([20]byte, error) {
+	acct, err := core.ParseClearnetAccount(account)
+	if err != nil {
+		return [20]byte{}, fmt.Errorf("btc: %w", err)
+	}
+	return acct, nil
 }
 
 // VerifyDeposit reports the backend's on-chain status for the deposit txID.

@@ -18,6 +18,7 @@ import type {
   VaultDepositor,
 } from "../../../src/index.js";
 import { estimateDepositFeeSats } from "../../../src/blockchain/btc/utxo.js";
+import { requireClearnetAccount } from "../../../src/blockchain/btc/validation.js";
 import {
   bytesToHex,
   concatBytes,
@@ -28,7 +29,8 @@ const ZERO_REF =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as Bytes32Hex;
 const NON_ZERO_REF =
   "0x0000000000000000000000000000000000000000000000000000000000000001" as Bytes32Hex;
-const ACCOUNT = "clearnet:bitcoin:account-a";
+// 20-byte hex Clearnet account address (ADR-023 §3)
+const ACCOUNT = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const PUBKEY_A =
   "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
 const PUBKEY_B =
@@ -51,17 +53,14 @@ describe("BitcoinVaultDepositor", () => {
     expect(BITCOIN_NATIVE_ASSET).toBe("");
   });
 
-  it("derives stable regtest addresses and txIDs from account and txid bytes", async () => {
+  it("derives a stable regtest depositor address, a stable generic deposit address, and txIDs from txid bytes", async () => {
     const depositor = createDepositor();
 
     await expect(depositor.depositorAddress()).resolves.toBe(
       "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
     );
-    expect(depositor.depositAddress(ACCOUNT)).toMatch(/^bcrt1q[023456789acdefghjklmnpqrstuvwxyz]+$/);
-    expect(depositor.depositAddress(ACCOUNT)).toBe(depositor.depositAddress(ACCOUNT));
-    expect(depositor.depositAddress("clearnet:bitcoin:account-b")).not.toBe(
-      depositor.depositAddress(ACCOUNT),
-    );
+    expect(depositor.depositAddress()).toMatch(/^bcrt1q[023456789acdefghjklmnpqrstuvwxyz]+$/);
+    expect(depositor.depositAddress()).toBe(depositor.depositAddress());
 
     expect(depositor.txIDFromTxid(DISPLAY_TXID)).toBe(DISPLAY_TXID);
   });
@@ -102,7 +101,14 @@ describe("BitcoinVaultDepositor", () => {
       depositor.submitDeposit({
         asset: BITCOIN_NATIVE_ASSET,
         amount: "1",
-        destination: { account: ACCOUNT, ref: NON_ZERO_REF },
+        destination: { account: "not-a-hex-address" },
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    await expect(
+      depositor.submitDeposit({
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "1",
+        destination: { account: ACCOUNT, ref: "0xnothex" as Bytes32Hex },
       }),
     ).rejects.toMatchObject({ code: "INVALID_REFERENCE" });
     await expect(
@@ -173,6 +179,23 @@ describe("BitcoinVaultDepositor", () => {
     expect(signer.getPublicKeyCompressed).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts a non-zero destination.ref instead of rejecting it", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0a".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+      sendRawTransaction: undefined,
+    });
+    const depositor = createDepositor({ rpc, signer: createSigner() });
+
+    await expect(
+      depositor.submitDeposit({
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT, ref: NON_ZERO_REF },
+      }),
+    ).resolves.toMatch(/^[a-f0-9]{64}$/);
+    expect(rpc.sendRawTransaction).toHaveBeenCalledOnce();
+  });
+
   it("prepares an unsigned PSBT for wallet signing without a configured local signer", async () => {
     const rpc = createRpc({
       listUnspent: [
@@ -233,9 +256,11 @@ describe("BitcoinVaultDepositor", () => {
     }
     const onSubmitted = vi.fn();
 
-    const txID = await depositor.submitSignedDepositPsbt(bytesToHex(tx.toPSBT()), {
-      onSubmitted,
-    });
+    const txID = await depositor.submitSignedDepositPsbt(
+      bytesToHex(tx.toPSBT()),
+      prepared.expectedOutputs,
+      { onSubmitted },
+    );
 
     expect(txID).toEqual(prepared.unsignedTxID);
     expect(rpc.sendRawTransaction).toHaveBeenCalledOnce();
@@ -275,7 +300,10 @@ describe("BitcoinVaultDepositor", () => {
       );
     }
 
-    const txID = await depositor.submitSignedDepositPsbt(bytesToHex(tx.toPSBT()));
+    const txID = await depositor.submitSignedDepositPsbt(
+      bytesToHex(tx.toPSBT()),
+      prepared.expectedOutputs,
+    );
 
     expect(prepared.fundingAddress).toBe(NESTED_SEGWIT_ADDRESS);
     expect(txID).toMatch(/^[a-f0-9]{64}$/);
@@ -284,6 +312,172 @@ describe("BitcoinVaultDepositor", () => {
       NESTED_SEGWIT_ADDRESS,
     ]);
     expect(rpc.sendRawTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("rejects submitSignedDepositPsbt when expectedOutputs is missing, empty, or malformed", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0b".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+    });
+    const depositor = createDepositor({ rpc, signer: undefined });
+    const prepared = await depositor.prepareDepositPsbt(
+      {
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT },
+      },
+      { publicKey: SIGNER_PUBKEY },
+    );
+    const signedPsbtHex = bytesToHex(signInputs(prepared).toPSBT());
+
+    await expect(
+      depositor.submitSignedDepositPsbt(
+        signedPsbtHex,
+        undefined as unknown as typeof prepared.expectedOutputs,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(
+      depositor.submitSignedDepositPsbt(signedPsbtHex, []),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(
+      depositor.submitSignedDepositPsbt(signedPsbtHex, [{ script: "zz", amount: 0n }]),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(
+      depositor.submitSignedDepositPsbt(signedPsbtHex, [
+        { script: "6a00", amount: -1n },
+      ]),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a signed PSBT with a stripped marker output", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0c".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+    });
+    const depositor = createDepositor({ rpc, signer: undefined });
+    const prepared = await depositor.prepareDepositPsbt(
+      {
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT },
+      },
+      { publicKey: SIGNER_PUBKEY },
+    );
+    // Marker output is expectedOutputs[1] (see prepareUnsignedDepositTx: deposit, marker, [change]).
+    const strippedOutputs = prepared.expectedOutputs.filter((_, index) => index !== 1);
+    const maliciousPsbtHex = signInputs(
+      prepared,
+      rebuildTransaction(prepared.psbtHex, strippedOutputs),
+    ).toPSBT();
+
+    await expect(
+      depositor.submitSignedDepositPsbt(
+        bytesToHex(maliciousPsbtHex),
+        prepared.expectedOutputs,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("output(s), expected"),
+    });
+    expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a signed PSBT with an altered marker script", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0d".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+    });
+    const depositor = createDepositor({ rpc, signer: undefined });
+    const prepared = await depositor.prepareDepositPsbt(
+      {
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT },
+      },
+      { publicKey: SIGNER_PUBKEY },
+    );
+    const alteredOutputs = prepared.expectedOutputs.map((output, index) =>
+      index === 1 ? { ...output, script: flipLastHexChar(output.script) } : output,
+    );
+    const maliciousPsbtHex = signInputs(
+      prepared,
+      rebuildTransaction(prepared.psbtHex, alteredOutputs),
+    ).toPSBT();
+
+    await expect(
+      depositor.submitSignedDepositPsbt(
+        bytesToHex(maliciousPsbtHex),
+        prepared.expectedOutputs,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("scriptPubKey does not match"),
+    });
+    expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a signed PSBT whose marker output carries a non-zero amount", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0e".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+    });
+    const depositor = createDepositor({ rpc, signer: undefined });
+    const prepared = await depositor.prepareDepositPsbt(
+      {
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT },
+      },
+      { publicKey: SIGNER_PUBKEY },
+    );
+    const alteredOutputs = prepared.expectedOutputs.map((output, index) =>
+      index === 1 ? { ...output, amount: 546n } : output,
+    );
+    const maliciousPsbtHex = signInputs(
+      prepared,
+      rebuildTransaction(prepared.psbtHex, alteredOutputs),
+    ).toPSBT();
+
+    await expect(
+      depositor.submitSignedDepositPsbt(
+        bytesToHex(maliciousPsbtHex),
+        prepared.expectedOutputs,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("amount does not match"),
+    });
+    expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a signed PSBT with an altered value-output amount", async () => {
+    const rpc = createRpc({
+      listUnspent: [utxo("0f".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+    });
+    const depositor = createDepositor({ rpc, signer: undefined });
+    const prepared = await depositor.prepareDepositPsbt(
+      {
+        asset: BITCOIN_NATIVE_ASSET,
+        amount: "0.0005",
+        destination: { account: ACCOUNT },
+      },
+      { publicKey: SIGNER_PUBKEY },
+    );
+    const alteredOutputs = prepared.expectedOutputs.map((output, index) =>
+      index === 0 ? { ...output, amount: output.amount + 1n } : output,
+    );
+    const maliciousPsbtHex = signInputs(
+      prepared,
+      rebuildTransaction(prepared.psbtHex, alteredOutputs),
+    ).toPSBT();
+
+    await expect(
+      depositor.submitSignedDepositPsbt(
+        bytesToHex(maliciousPsbtHex),
+        prepared.expectedOutputs,
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("amount does not match"),
+    });
+    expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
   });
 
   it("rejects PSBT preparation when wallet address and public key do not match", async () => {
@@ -419,11 +613,17 @@ describe("BitcoinVaultDepositor", () => {
     }
   });
 
-  it("uses address-type-aware fee estimates", () => {
-    expect(estimateDepositFeeSats(1, 1n, "p2wpkh")).toBe(153n);
-    expect(estimateDepositFeeSats(2, 5n, "p2wpkh")).toBe(1105n);
-    expect(estimateDepositFeeSats(1, 1n, "p2sh")).toBe(177n);
-    expect(estimateDepositFeeSats(2, 5n, "p2sh")).toBe(1345n);
+  it("uses address-type-aware fee estimates that account for the marker output (DoD item 18)", () => {
+    // hasReference defaults to false: a 27-byte v0x01 marker adds 36 vbytes
+    // (85 base + 36 marker + 68 * inputs) * feeRate.
+    expect(estimateDepositFeeSats(1, 1n, "p2wpkh")).toBe(189n);
+    expect(estimateDepositFeeSats(2, 5n, "p2wpkh")).toBe(1285n);
+    expect(estimateDepositFeeSats(1, 1n, "p2sh")).toBe(213n);
+    expect(estimateDepositFeeSats(2, 5n, "p2sh")).toBe(1525n);
+
+    // hasReference: true selects the 59-byte v0x02 marker (68 vbytes) instead.
+    expect(estimateDepositFeeSats(1, 1n, "p2wpkh", true)).toBe(221n);
+    expect(estimateDepositFeeSats(2, 5n, "p2wpkh", true)).toBe(1445n);
   });
 
   it("estimates at least the finalized signed transaction vsize", async () => {
@@ -566,6 +766,46 @@ describe("BitcoinVaultDepositor", () => {
   });
 });
 
+// Pins the exact accepted/rejected input set for requireClearnetAccount,
+// bare hex, an optional case-insensitive "0x" prefix, a yellow://.../user/<hex>
+// URI's last segment, and surrounding whitespace. It also pins that an ADR-015
+// sub-account URI (yellow://.../user/<addr>/tag/<32-byte-ref>) is rejected
+// rather than silently parsed as the trailing 32-byte reference.
+describe("requireClearnetAccount", () => {
+  const addrHex = "000102030405060708090a0b0c0d0e0f10111213";
+  const refHex =
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+  const want = hexToBytes(addrHex, "want");
+
+  it.each([
+    ["bare hex", addrHex],
+    ["0x prefix", `0x${addrHex}`],
+    ["0X prefix", `0X${addrHex}`],
+    ["uppercase hex", addrHex.toUpperCase()],
+    ["whitespace padded", `  ${addrHex}  `],
+    ["tab/newline padded", `\t${addrHex}\n`],
+    ["yellow URI", `yellow://ynet/user/${addrHex}`],
+    ["whitespace padded yellow URI", `  yellow://ynet/user/${addrHex}  `],
+  ])("accepts %s", (_name, input) => {
+    expect(requireClearnetAccount(input)).toEqual(want);
+  });
+
+  it.each([
+    ["empty string", ""],
+    ["non-hex", "not-a-hex-address"],
+    ["19 bytes", addrHex.slice(0, 38)],
+    ["21 bytes", `${addrHex}00`],
+    [
+      "ADR-015 sub-account URI (last segment is the 32-byte reference)",
+      `yellow://ynet/user/${addrHex}/tag/${refHex}`,
+    ],
+  ])("rejects %s", (_name, input) => {
+    expect(() => requireClearnetAccount(input)).toThrowError(
+      expect.objectContaining({ code: "INVALID_ADDRESS" }),
+    );
+  });
+});
+
 function baseConfig(
   overrides: Partial<BitcoinDepositorConfig> = {},
 ): BitcoinDepositorConfig {
@@ -635,6 +875,61 @@ async function signedPreparedTransaction(
   }
   tx.finalize();
   return tx;
+}
+
+/**
+ * Applies fake partial signatures to every input prepareDepositPsbt marked
+ * for wallet signing. Defaults to parsing `prepared.psbtHex` fresh, but a
+ * caller can pass an already-rebuilt (potentially output-tampered) Transaction
+ * instead - the signatures are never checked for validity by finalize(), so
+ * this is sufficient to reach a "wallet-signed" PSBT in either case.
+ */
+function signInputs(
+  prepared: { psbtHex: string; inputIndexesToSign: readonly number[] },
+  tx: Transaction = Transaction.fromPSBT(hexToBytes(prepared.psbtHex, "prepared.psbtHex")),
+): Transaction {
+  for (const index of prepared.inputIndexesToSign) {
+    tx.updateInput(
+      index,
+      {
+        partialSig: [[
+          hexToBytes(SIGNER_PUBKEY, "SIGNER_PUBKEY"),
+          concatBytes(fakeDerSignature(), new Uint8Array([SigHash.ALL])),
+        ]],
+      },
+      true,
+    );
+  }
+  return tx;
+}
+
+/**
+ * Simulates a wallet that re-derives the transaction with a different output
+ * set before signing (e.g. one that stripped or altered the marker output):
+ * same inputs as the original PSBT, but exactly the given outputs, in order.
+ */
+function rebuildTransaction(
+  originalPsbtHex: string,
+  outputs: readonly { script: string; amount: bigint }[],
+): Transaction {
+  const original = Transaction.fromPSBT(hexToBytes(originalPsbtHex, "originalPsbtHex"));
+  const rebuilt = new Transaction({ version: 1, allowUnknownOutputs: true });
+  for (let index = 0; index < original.inputsLength; index += 1) {
+    rebuilt.addInput(original.getInput(index));
+  }
+  for (const output of outputs) {
+    rebuilt.addOutput({
+      script: hexToBytes(output.script, "output.script"),
+      amount: output.amount,
+    });
+  }
+  return rebuilt;
+}
+
+function flipLastHexChar(hex: string): string {
+  const last = hex.at(-1) ?? "0";
+  const flipped = last === "0" ? "1" : "0";
+  return `${hex.slice(0, -1)}${flipped}`;
 }
 
 function fakeDerSignature(): Uint8Array {

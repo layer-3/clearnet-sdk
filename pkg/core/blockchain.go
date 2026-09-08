@@ -69,7 +69,6 @@ func (s DepositStatus) String() string {
 // alongside the account as side-data (a zero Ref means no sub-account). The
 // reference is never interpreted on-chain — it is emitted so deposits are
 // filterable per (Account, Ref); an observer folds it into the account URI.
-// Chains without a reference channel (BTC) reject a non-zero Ref.
 type DepositDestination struct {
 	Account string
 	Ref     [32]byte

@@ -16,7 +16,9 @@ const BTC_RPC_URL = env("BTC_RPC_URL", "http://127.0.0.1:18443");
 const BTC_RPC_USER = env("BTC_RPC_USER", "sdk");
 const BTC_RPC_PASS = env("BTC_RPC_PASS", "sdk");
 const BTC_RPC_WALLET = env("BTC_RPC_WALLET", "sdk");
-const ACCOUNT = `yellow://ynet/user/btc-ts-${Date.now()}`;
+// A 20-byte hex Clearnet account address (ADR-023 §3): the low 8 bytes vary
+// per run so concurrent integration runs don't collide.
+const ACCOUNT = `0000000000000000000000000000${Date.now().toString(16).padStart(12, "0")}`;
 
 describe("BitcoinVaultDepositor regtest integration", () => {
   const admin = new RawBitcoinRpc(BTC_RPC_URL, BTC_RPC_USER, BTC_RPC_PASS);
@@ -54,7 +56,7 @@ describe("BitcoinVaultDepositor regtest integration", () => {
       fallbackFeeRateSatPerVByte: 5,
     });
     const fundingAddress = await depositor.depositorAddress();
-    const depositAddress = depositor.depositAddress(ACCOUNT);
+    const depositAddress = depositor.depositAddress();
     await wallet.call("importaddress", [fundingAddress, "", false]);
     await wallet.call("importaddress", [depositAddress, "", false]);
     await wallet.call("sendtoaddress", [fundingAddress, 1.0]);

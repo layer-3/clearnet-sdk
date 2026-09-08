@@ -167,8 +167,25 @@ func p2wpkhWitnessScriptCode(publicKeyHash []byte) ([]byte, error) {
 // Address returns the sender's P2WPKH source and change address.
 func (s *P2WPKHSender) Address() string { return s.addressText }
 
+type SendOption func(*sendOptions)
+
+type sendOptions struct {
+	extraOutputScript []byte
+}
+
+// WithExtraOutputScript adds one additional, zero-value output carrying
+// script to the built transaction — for example, a
+// pkg/blockchain/btc/marker deposit marker — between the recipient and any
+// change output. It is threaded through fee estimation (selectP2WPKH,
+// evaluateP2WPKHPrefix, p2wpkhFee) as well as construction, so the built
+// transaction always pays for its actual size. A nil or empty script is
+// equivalent to omitting the option.
+func WithExtraOutputScript(script []byte) SendOption {
+	return func(o *sendOptions) { o.extraOutputScript = append([]byte(nil), script...) }
+}
+
 // Send builds, signs, and broadcasts a final, non-RBF P2WPKH transaction.
-func (s *P2WPKHSender) Send(ctx context.Context, recipient string, amountSats int64) (string, error) {
+func (s *P2WPKHSender) Send(ctx context.Context, recipient string, amountSats int64, opts ...SendOption) (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("btc: P2WPKH send context is required")
 	}
@@ -182,6 +199,13 @@ func (s *P2WPKHSender) Send(ctx context.Context, recipient string, amountSats in
 	if amountSats <= 0 {
 		return "", fmt.Errorf("btc: P2WPKH amount must be positive, got %d", amountSats)
 	}
+	var options sendOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
+		}
+	}
+	extraOutputScript := options.extraOutputScript
 	recipientAddr, err := btcutil.DecodeAddress(recipient, s.net)
 	if err != nil {
 		return "", fmt.Errorf("btc: decode P2WPKH recipient: %w", err)
@@ -227,11 +251,11 @@ func (s *P2WPKHSender) Send(ctx context.Context, recipient string, amountSats in
 		return "", err
 	}
 
-	selection, err := selectP2WPKH(validated, amountSats, feeRate, recipientScript, s.sourceScript, s.config)
+	selection, err := selectP2WPKH(validated, amountSats, feeRate, recipientScript, extraOutputScript, s.sourceScript, s.config)
 	if err != nil {
 		return "", err
 	}
-	tx, prevouts, err := s.buildTransaction(selection, recipientScript, amountSats, feeRate)
+	tx, prevouts, err := s.buildTransaction(selection, recipientScript, extraOutputScript, amountSats, feeRate)
 	if err != nil {
 		return "", err
 	}
@@ -326,7 +350,7 @@ type p2wpkhSelection struct {
 	withChange bool
 }
 
-func selectP2WPKH(candidates []validatedUTXO, amount, feeRate int64, recipientScript, changeScript []byte, cfg P2WPKHConfig) (p2wpkhSelection, error) {
+func selectP2WPKH(candidates []validatedUTXO, amount, feeRate int64, recipientScript, extraOutputScript, changeScript []byte, cfg P2WPKHConfig) (p2wpkhSelection, error) {
 	pool := append([]validatedUTXO(nil), candidates...)
 	sort.Slice(pool, func(i, j int) bool {
 		if pool[i].amountSats != pool[j].amountSats {
@@ -347,7 +371,7 @@ func selectP2WPKH(candidates []validatedUTXO, amount, feeRate int64, recipientSc
 			return p2wpkhSelection{}, fmt.Errorf("btc: P2WPKH input total overflows int64")
 		}
 		n := i + 1
-		selection, payable, err := evaluateP2WPKHPrefix(pool[:n], total, amount, feeRate, recipientScript, changeScript, cfg.DustThresholdSats)
+		selection, payable, err := evaluateP2WPKHPrefix(pool[:n], total, amount, feeRate, recipientScript, extraOutputScript, changeScript, cfg.DustThresholdSats)
 		if err != nil {
 			return p2wpkhSelection{}, err
 		}
@@ -362,12 +386,24 @@ func selectP2WPKH(candidates []validatedUTXO, amount, feeRate int64, recipientSc
 	return p2wpkhSelection{}, fmt.Errorf("%w: have %d sats, need %d sats plus fee at %d sat/vB", ErrP2WPKHInsufficientFunds, total, amount, feeRate)
 }
 
-func evaluateP2WPKHPrefix(inputs []validatedUTXO, total, amount, feeRate int64, recipientScript, changeScript []byte, dust int64) (p2wpkhSelection, bool, error) {
+// fixedP2WPKHOutputScripts returns the non-change outputs of a Send call, in
+// wire order: the recipient, then the extra output when present. Both
+// selection and construction build from this same slice so the fee estimate
+// always matches the assembled transaction.
+func fixedP2WPKHOutputScripts(recipientScript, extraOutputScript []byte) [][]byte {
+	if len(extraOutputScript) == 0 {
+		return [][]byte{recipientScript}
+	}
+	return [][]byte{recipientScript, extraOutputScript}
+}
+
+func evaluateP2WPKHPrefix(inputs []validatedUTXO, total, amount, feeRate int64, recipientScript, extraOutputScript, changeScript []byte, dust int64) (p2wpkhSelection, bool, error) {
 	if total < amount {
 		return p2wpkhSelection{}, false, nil
 	}
 	remainder := total - amount
-	changeFee, err := p2wpkhFee(len(inputs), [][]byte{recipientScript, changeScript}, feeRate)
+	fixedOutputs := fixedP2WPKHOutputScripts(recipientScript, extraOutputScript)
+	changeFee, err := p2wpkhFee(len(inputs), append(append([][]byte(nil), fixedOutputs...), changeScript), feeRate)
 	if err != nil {
 		return p2wpkhSelection{}, false, err
 	}
@@ -377,7 +413,7 @@ func evaluateP2WPKHPrefix(inputs []validatedUTXO, total, amount, feeRate int64, 
 			return p2wpkhSelection{inputs: append([]validatedUTXO(nil), inputs...), total: total, minimumFee: changeFee, withChange: true}, true, nil
 		}
 	}
-	noChangeFee, err := p2wpkhFee(len(inputs), [][]byte{recipientScript}, feeRate)
+	noChangeFee, err := p2wpkhFee(len(inputs), fixedOutputs, feeRate)
 	if err != nil {
 		return p2wpkhSelection{}, false, err
 	}
@@ -439,7 +475,7 @@ func p2wpkhFee(numInputs int, outputScripts [][]byte, feeRate int64) (int64, err
 	return fee, nil
 }
 
-func (s *P2WPKHSender) buildTransaction(selection p2wpkhSelection, recipientScript []byte, amount, feeRate int64) (*wire.MsgTx, *txscript.MultiPrevOutFetcher, error) {
+func (s *P2WPKHSender) buildTransaction(selection p2wpkhSelection, recipientScript, extraOutputScript []byte, amount, feeRate int64) (*wire.MsgTx, *txscript.MultiPrevOutFetcher, error) {
 	ordered := append([]validatedUTXO(nil), selection.inputs...)
 	sort.Slice(ordered, func(i, j int) bool {
 		if cmp := bytes.Compare(ordered[i].outpoint.Hash[:], ordered[j].outpoint.Hash[:]); cmp != 0 {
@@ -457,6 +493,9 @@ func (s *P2WPKHSender) buildTransaction(selection p2wpkhSelection, recipientScri
 		prevouts.AddPrevOut(input.outpoint, wire.NewTxOut(input.amountSats, append([]byte(nil), input.scriptPubKey...)))
 	}
 	tx.AddTxOut(wire.NewTxOut(amount, append([]byte(nil), recipientScript...)))
+	if len(extraOutputScript) > 0 {
+		tx.AddTxOut(wire.NewTxOut(0, append([]byte(nil), extraOutputScript...)))
+	}
 
 	actualFee := selection.total - amount
 	if selection.withChange {

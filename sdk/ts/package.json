@@ -29,7 +29,7 @@
     "test:evm": "vitest run test/blockchain/evm/depositor.test.ts",
     "test:sol": "vitest run test/blockchain/sol/depositor.test.ts",
     "test:xrpl": "vitest run test/blockchain/xrpl/depositor.test.ts",
-    "test:btc": "vitest run test/blockchain/btc/depositor.test.ts test/examples/bitcoin-deposit/xverse.test.ts",
+    "test:btc": "vitest run test/blockchain/btc/depositor.test.ts test/blockchain/btc/marker.test.ts test/examples/bitcoin-deposit/xverse.test.ts",
     "test:integration:evm": "vitest run test/blockchain/evm/depositor.integration.test.ts",
     "test:integration:sol": "vitest run test/blockchain/sol/depositor.integration.test.ts",
     "test:integration:xrpl": "vitest run test/blockchain/xrpl/depositor.integration.test.ts",

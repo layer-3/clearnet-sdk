@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -106,6 +107,9 @@ func sortedPubkeys(threshold int, pubkeys [][]byte) ([][]byte, error) {
 	for i, pk := range pubkeys {
 		if len(pk) != 33 {
 			return nil, fmt.Errorf("btc: pubkey %d is %d bytes, want 33 (compressed)", i, len(pk))
+		}
+		if _, err := btcec.ParsePubKey(pk); err != nil {
+			return nil, fmt.Errorf("btc: pubkey %d is not a valid compressed secp256k1 point: %w", i, err)
 		}
 		cp := make([]byte, 33)
 		copy(cp, pk)

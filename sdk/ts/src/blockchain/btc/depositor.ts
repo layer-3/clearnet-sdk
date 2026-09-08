@@ -21,9 +21,17 @@ import {
   requireCompressedPublicKey,
 } from "./address.js";
 import { BITCOIN_DUST_THRESHOLD_SATS } from "./constants.js";
+import {
+  encodeMarkerScript,
+  GENERIC_DEPOSIT_TAG_PREIMAGE,
+  isZeroBytes,
+  MARKER_VERSION_1,
+  MARKER_VERSION_2,
+} from "./marker.js";
 import { BitcoinRpcError } from "./types.js";
 import type {
   BitcoinDepositorConfig,
+  BitcoinExpectedDepositOutput,
   BitcoinPreparedDepositPsbt,
   BitcoinPsbtSignerInfo,
   BitcoinSigner,
@@ -39,7 +47,9 @@ import {
   requireConfiguredSigner,
   requireBitcoinAmount,
   requireBitcoinAsset,
+  requireClearnetAccount,
   requireDepositDestination,
+  requireExpectedDepositOutputs,
   requireReference,
   requireSubmitDepositOptions,
   signerPublicKey,
@@ -64,6 +74,7 @@ export class BitcoinVaultDepositor
     const publicKey = await signerPublicKey(signer);
     const prepared = await this.prepareUnsignedDepositTx({
       account: fields.account,
+      reference: fields.reference,
       amount: fields.amount,
       publicKey,
     });
@@ -87,6 +98,7 @@ export class BitcoinVaultDepositor
     }
     const prepared = await this.prepareUnsignedDepositTx({
       account: fields.account,
+      reference: fields.reference,
       amount: fields.amount,
       publicKey,
       addressType,
@@ -99,15 +111,18 @@ export class BitcoinVaultDepositor
       depositAddress: prepared.depositAddress,
       feeSats: prepared.feeSats,
       selectedUtxos: prepared.orderedUtxos,
+      expectedOutputs: prepared.expectedOutputs,
     };
   }
 
   async submitSignedDepositPsbt(
     psbtHex: string,
+    expectedOutputs: readonly BitcoinExpectedDepositOutput[],
     options: SubmitDepositOptions = {},
   ): Promise<string> {
     const submitOptions = requireSubmitDepositOptions(options);
-    const tx = finalizableTransactionFromPsbt(psbtHex);
+    const normalizedExpectedOutputs = requireExpectedDepositOutputs(expectedOutputs);
+    const tx = finalizableTransactionFromPsbt(psbtHex, normalizedExpectedOutputs);
     return this.broadcastTransaction(tx, submitOptions);
   }
 
@@ -143,10 +158,12 @@ export class BitcoinVaultDepositor
     );
   }
 
-  depositAddress(account: string): string {
+  depositAddress(): string {
+    // ADR-023: every deposit pays the one generic address, derived from the
+    // fixed tag preimage rather than a per-account tag.
     return depositAddress(
       this.config.network,
-      account,
+      GENERIC_DEPOSIT_TAG_PREIMAGE,
       this.config.threshold,
       this.config.vaultPubkeys,
     );
@@ -157,7 +174,8 @@ export class BitcoinVaultDepositor
   }
 
   private requireDepositFields(input: BitcoinSubmitDepositInput): {
-    account: string;
+    account: Uint8Array;
+    reference: Uint8Array | undefined;
     amount: bigint;
   } {
     const fields =
@@ -166,15 +184,18 @@ export class BitcoinVaultDepositor
         : {};
     const destination = requireDepositDestination(fields.destination);
     requireBitcoinAsset(fields.asset);
-    requireReference(destination.ref);
+    const account = requireClearnetAccount(destination.account);
+    const referenceBytes = requireReference(destination.ref);
     return {
-      account: destination.account,
+      account,
+      reference: isZeroBytes(referenceBytes) ? undefined : referenceBytes,
       amount: requireBitcoinAmount(decimalToBaseUnits(fields.amount, 8)),
     };
   }
 
   private async prepareUnsignedDepositTx(input: {
-    account: string;
+    account: Uint8Array;
+    reference: Uint8Array | undefined;
     amount: bigint;
     publicKey: Uint8Array;
     addressType?: BitcoinWalletAddressType;
@@ -197,24 +218,59 @@ export class BitcoinVaultDepositor
     const eligible = utxos.filter(
       (utxo) => utxo.scriptPubKey.toLowerCase() === fundingScriptHex,
     );
+    const hasReference = input.reference !== undefined;
     const selected = selectDepositUtxos(
       eligible,
       input.amount,
       feeRate,
       input.addressType,
+      hasReference,
     );
-    const tx = new Transaction({ version: 1 });
+    // scure/btc-signer 2.2.0 has no nulldata/OP_RETURN output coder: an
+    // OP_RETURN script normalizes to `type: 'unknown'`, and normalizeOutput()
+    // throws unless the transaction opts in. The flag is transaction-wide -
+    // it also disables the output-shape check for the value and change
+    // outputs below - which is acceptable only because the exact output set
+    // is pinned by test.
+    const tx = new Transaction({ version: 1, allowUnknownOutputs: true });
+    // See depositAddress() above: the generic address is derived by feeding
+    // the fixed tag preimage to the existing per-account helper.
     const deposit = depositPayment(
       this.config.network,
-      input.account,
+      GENERIC_DEPOSIT_TAG_PREIMAGE,
       this.config.threshold,
       this.config.vaultPubkeys,
     );
     tx.addOutput({ script: deposit.script, amount: input.amount });
+    const markerScript = encodeMarkerScript({
+      version: hasReference ? MARKER_VERSION_2 : MARKER_VERSION_1,
+      address: input.account,
+      reference: input.reference,
+    });
+    // Zero-value marker output (ADR §3). BITCOIN_DUST_THRESHOLD_SATS applies
+    // to the change output only -- an OP_RETURN output is provably unspendable
+    // so it is exempt from the relay-time dust rule entirely.
+    tx.addOutput({ script: markerScript, amount: 0n });
     const total = selected.utxos.reduce((sum, utxo) => sum + utxo.amountSats, 0n);
     const change = total - input.amount - selected.feeSats;
     if (change >= (this.config.dustThresholdSats ?? BITCOIN_DUST_THRESHOLD_SATS)) {
       tx.addOutput({ script: funding.script, amount: change });
+    }
+
+    // This is the exact output set (order, script, amount) a signed PSBT
+    // for this deposit must carry. submitSignedDepositPsbt compares against
+    // it verbatim, so it must be read off `tx` itself rather than recomputed,
+    // or the two could drift.
+    const expectedOutputs: BitcoinExpectedDepositOutput[] = [];
+    for (let index = 0; index < tx.outputsLength; index += 1) {
+      const output = tx.getOutput(index);
+      if (output.script === undefined || output.amount === undefined) {
+        throw new ClearnetSdkError(
+          "INVALID_INPUT",
+          `btc: prepared deposit output ${index} is missing a script or amount`,
+        );
+      }
+      expectedOutputs.push({ script: bytesToHex(output.script), amount: output.amount });
     }
 
     const orderedUtxos = [...selected.utxos].sort(compareUtxoForInputOrder);
@@ -240,6 +296,7 @@ export class BitcoinVaultDepositor
       fundingAddress: fundingAddressValue,
       depositAddress: deposit.address,
       feeSats: selected.feeSats,
+      expectedOutputs,
     };
   }
 
@@ -333,6 +390,7 @@ interface PreparedUnsignedDepositTx {
   fundingAddress: string;
   depositAddress: string;
   feeSats: bigint;
+  expectedOutputs: readonly BitcoinExpectedDepositOutput[];
 }
 
 function isAlreadyKnown(error: unknown): boolean {
@@ -407,22 +465,91 @@ function requireWalletAddressType(
   return addressType;
 }
 
-function finalizableTransactionFromPsbt(psbtHex: string): Transaction {
+function finalizableTransactionFromPsbt(
+  psbtHex: string,
+  expectedOutputs: readonly BitcoinExpectedDepositOutput[],
+): Transaction {
   if (typeof psbtHex !== "string" || psbtHex.trim() === "") {
     throw new ClearnetSdkError(
       "INVALID_INPUT",
       "signed PSBT must be an even-length hex string",
     );
   }
+  let tx: Transaction;
   try {
-    const tx = Transaction.fromPSBT(hexToBytes(psbtHex.trim(), "psbt"));
-    tx.finalize();
-    return tx;
+    tx = Transaction.fromPSBT(hexToBytes(psbtHex.trim(), "psbt"));
   } catch (error) {
     throw new ClearnetSdkError(
       "INVALID_INPUT",
       "signed PSBT must be finalizable",
       { cause: error },
     );
+  }
+  // Deliberately checked before finalize(): finalize() only assembles
+  // scriptSig/witness data from partialSig, it does not touch or validate the
+  // output set, so a wallet that stripped or altered the deposit-attribution
+  // marker (or any other output) and re-signed would finalize without error.
+  requireMatchingDepositOutputs(tx, expectedOutputs);
+  try {
+    tx.finalize();
+  } catch (error) {
+    throw new ClearnetSdkError(
+      "INVALID_INPUT",
+      "signed PSBT must be finalizable",
+      { cause: error },
+    );
+  }
+  return tx;
+}
+
+/** scriptPubKey opcode every ADR-023 marker output begins with (see marker.ts). */
+const OP_RETURN = 0x6a;
+
+/**
+ * Rejects a signed PSBT whose finalized output set does not match exactly
+ * what prepareDepositPsbt built: same count, same order, same script bytes,
+ * same amounts. This is the only check standing between a wallet that
+ * stripped or altered the zero-value marker output naming the depositor and
+ * an uncredited deposit.
+ */
+function requireMatchingDepositOutputs(
+  tx: Transaction,
+  expectedOutputs: readonly BitcoinExpectedDepositOutput[],
+): void {
+  if (tx.outputsLength !== expectedOutputs.length) {
+    throw new ClearnetSdkError(
+      "INVALID_INPUT",
+      `btc: signed PSBT has ${tx.outputsLength} output(s), expected ${expectedOutputs.length}`,
+    );
+  }
+  for (let index = 0; index < expectedOutputs.length; index += 1) {
+    const expected = expectedOutputs[index];
+    const output = tx.getOutput(index);
+    if (expected === undefined || output.script === undefined || output.amount === undefined) {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        `btc: signed PSBT output ${index} is missing a script or amount`,
+      );
+    }
+    if (bytesToHex(output.script) !== expected.script) {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        `btc: signed PSBT output ${index} scriptPubKey does not match the prepared deposit`,
+      );
+    }
+    if (output.amount !== expected.amount) {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        `btc: signed PSBT output ${index} amount does not match the prepared deposit`,
+      );
+    }
+    // Independent of the comparison above: an OP_RETURN output must always be
+    // zero-value (ADR §3), regardless of what the expected set says.
+    if (output.script[0] === OP_RETURN && output.amount !== 0n) {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        `btc: signed PSBT OP_RETURN output ${index} carries a non-zero amount`,
+      );
+    }
   }
 }

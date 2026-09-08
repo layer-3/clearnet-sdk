@@ -1,9 +1,8 @@
+import { parseClearnetAccount } from "../../core/account.js";
 import { ClearnetSdkError } from "../../core/errors.js";
+import { hexToBytes } from "../../core/bytes.js";
 import type { SubmitDepositOptions } from "../../core/types.js";
-import {
-  BYTES32_HEX_PATTERN,
-  ZERO_BYTES32_PATTERN,
-} from "../../core/validation.js";
+import { BYTES32_HEX_PATTERN } from "../../core/validation.js";
 import {
   BITCOIN_DEFAULT_FALLBACK_FEE_RATE_SAT_PER_VBYTE,
   BITCOIN_DEFAULT_FEE_TARGET_BLOCKS,
@@ -16,6 +15,7 @@ import { normalizeVaultPubkeys, requireCompressedPublicKey } from "./address.js"
 import type {
   BitcoinDepositDestination,
   BitcoinDepositorConfig,
+  BitcoinExpectedDepositOutput,
   BitcoinNetwork,
   BitcoinSigner,
   NormalizedBitcoinConfig,
@@ -82,9 +82,23 @@ export function requireDepositDestination(
   return destination as BitcoinDepositDestination;
 }
 
-export function requireReference(reference: unknown): void {
+/**
+ * Parses destination.account into the raw 20-byte address ADR-023 carries in
+ * the deposit marker from a bare hex, an optional case-insensitive "0x" prefix,
+ * or a yellow://.../user/<hex> URI's last segment, and surrounding whitespace,
+ * then re-encodes it as a canonical lowercase EVM address for viem.
+ */
+export function requireClearnetAccount(account: unknown): Uint8Array {
+  return parseClearnetAccount(account);
+}
+
+/**
+ * Parses destination.ref into 32 bytes, zero-filled when omitted.The caller
+ * selects the marker version from whether the returned bytes are all-zero.
+ */
+export function requireReference(reference: unknown): Uint8Array {
   if (reference === undefined || reference === "") {
-    return;
+    return new Uint8Array(32);
   }
   if (typeof reference !== "string" || !BYTES32_HEX_PATTERN.test(reference)) {
     throw new ClearnetSdkError(
@@ -92,12 +106,7 @@ export function requireReference(reference: unknown): void {
       "destination.ref must be a 32-byte hex value",
     );
   }
-  if (!ZERO_BYTES32_PATTERN.test(reference)) {
-    throw new ClearnetSdkError(
-      "INVALID_REFERENCE",
-      "Bitcoin deposits do not support non-zero destination.ref",
-    );
-  }
+  return hexToBytes(reference.slice(2), "destination.ref");
 }
 
 export function requireBitcoinAmount(amount: unknown): bigint {
@@ -147,6 +156,50 @@ export function requireSubmitDepositOptions(options: unknown): SubmitDepositOpti
     );
   }
   return options;
+}
+
+/**
+ * Validates the expectedOutputs a caller passes to submitSignedDepositPsbt.
+ * Required, not optional: prepareDepositPsbt's expectedOutputs must round-trip
+ * back unmodified, and there is no default that would let a caller skip the
+ * check by omission - an absent, empty, or malformed array is rejected here
+ * rather than silently disabling output verification.
+ */
+export function requireExpectedDepositOutputs(
+  outputs: unknown,
+): readonly BitcoinExpectedDepositOutput[] {
+  if (!Array.isArray(outputs) || outputs.length === 0) {
+    throw new ClearnetSdkError(
+      "INVALID_INPUT",
+      "expectedOutputs is required and must be the non-empty array returned by prepareDepositPsbt",
+    );
+  }
+  return outputs.map((output, index) => {
+    if (!output || typeof output !== "object") {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        `expectedOutputs[${index}] must be an object`,
+      );
+    }
+    const candidate = output as Partial<BitcoinExpectedDepositOutput>;
+    if (
+      typeof candidate.script !== "string" ||
+      !/^[a-f0-9]+$/i.test(candidate.script) ||
+      candidate.script.length % 2 !== 0
+    ) {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        `expectedOutputs[${index}].script must be an even-length hex string`,
+      );
+    }
+    if (typeof candidate.amount !== "bigint" || candidate.amount < 0n) {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        `expectedOutputs[${index}].amount must be a non-negative bigint`,
+      );
+    }
+    return { script: candidate.script.toLowerCase(), amount: candidate.amount };
+  });
 }
 
 function requireNetwork(network: unknown): BitcoinNetwork {

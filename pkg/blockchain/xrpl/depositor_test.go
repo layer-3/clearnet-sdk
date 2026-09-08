@@ -3,6 +3,7 @@ package xrpl
 import (
 	"bytes"
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
@@ -48,5 +49,64 @@ func TestAccountMemo_RejectsBadAccount(t *testing.T) {
 	}
 	if _, err := accountMemo(core.DepositDestination{Account: "not-hex"}); err == nil {
 		t.Error("non-hex account accepted")
+	}
+}
+
+// TestAccountMemo_ClearnetAccountInputSet pins the exact accepted/rejected
+// input set for accountMemo's account decoding (via
+// core.ParseClearnetAccount): bare hex, an optional case-insensitive "0x"
+// prefix, a yellow://.../user/<hex> URI's last segment, and surrounding
+// whitespace. It also pins that an ADR-015 sub-account URI
+// (yellow://.../user/<addr>/tag/<32-byte-ref>) is rejected rather than silently
+// parsed as the trailing 32-byte reference.
+func TestAccountMemo_ClearnetAccountInputSet(t *testing.T) {
+	const addrHex = "000102030405060708090a0b0c0d0e0f10111213"
+	const refHex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+	want, err := hex.DecodeString(addrHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wantAccount [20]byte
+	copy(wantAccount[:], want)
+
+	accept := []string{
+		addrHex,
+		"0x" + addrHex,
+		"0X" + addrHex,
+		strings.ToUpper(addrHex),
+		"  " + addrHex + "  ",
+		"\t" + addrHex + "\n",
+		"yellow://ynet/user/" + addrHex,
+		"  yellow://ynet/user/" + addrHex + "  ",
+	}
+	for _, in := range accept {
+		t.Run("accept/"+in, func(t *testing.T) {
+			mw, err := accountMemo(core.DepositDestination{Account: in})
+			if err != nil {
+				t.Fatalf("accountMemo(%q) error = %v, want nil", in, err)
+			}
+			data, err := hex.DecodeString(mw.Memo.MemoData)
+			if err != nil {
+				t.Fatalf("MemoData not hex: %v", err)
+			}
+			if !bytes.Equal(data[:20], wantAccount[:]) {
+				t.Fatalf("accountMemo(%q) account = %x, want %x", in, data[:20], wantAccount)
+			}
+		})
+	}
+
+	reject := []string{
+		"",
+		"not-hex",
+		addrHex[:38],   // 19 bytes
+		addrHex + "00", // 21 bytes
+		"yellow://ynet/user/" + addrHex + "/tag/" + refHex, // ADR-015 sub-account URI: last segment is the 32-byte reference, not the address.
+	}
+	for _, in := range reject {
+		t.Run("reject/"+in, func(t *testing.T) {
+			if _, err := accountMemo(core.DepositDestination{Account: in}); err == nil {
+				t.Fatalf("accountMemo(%q) error = nil, want error", in)
+			}
+		})
 	}
 }
