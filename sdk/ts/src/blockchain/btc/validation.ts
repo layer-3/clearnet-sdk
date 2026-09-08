@@ -83,7 +83,10 @@ export function requireDepositDestination(
 
 /**
  * Parses destination.account into the raw 20-byte address ADR-023 carries in
- * the deposit marker, matching the other three chains.
+ * the deposit marker, matching the other three chains. Accepts a bare hex
+ * address or a yellow://.../user/<hex> URI's last segment, tolerating
+ * surrounding whitespace, so it accepts exactly what the Go SDK's BTC
+ * parseClearnetAccount does.
  */
 export function requireClearnetAccount(account: unknown): Uint8Array {
   if (typeof account !== "string") {
@@ -93,7 +96,8 @@ export function requireClearnetAccount(account: unknown): Uint8Array {
     );
   }
   const trimmed = account.trim();
-  const hex = trimmed.toLowerCase().replace(/^0x/, "");
+  const segment = trimmed.slice(trimmed.lastIndexOf("/") + 1);
+  const hex = segment.toLowerCase().replace(/^0x/, "");
   if (!/^[a-f0-9]+$/.test(hex) || hex.length !== 40) {
     throw new ClearnetSdkError(
       "INVALID_ADDRESS",

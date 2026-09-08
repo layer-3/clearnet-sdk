@@ -203,9 +203,11 @@ func (d *Depositor) genericDepositTarget(markerAddr [20]byte, ref [32]byte) (btc
 }
 
 // parseClearnetAccount decodes a 20-byte clearnet account address from hex
-// (optionally a yellow://.../user/<hex> URI's last segment).
+// (optionally a yellow://.../user/<hex> URI's last segment), tolerating
+// surrounding whitespace so it accepts exactly what the TS SDK's BTC
+// requireClearnetAccount does.
 func parseClearnetAccount(account string) ([20]byte, error) {
-	seg := account
+	seg := strings.TrimSpace(account)
 	if i := strings.LastIndex(seg, "/"); i >= 0 {
 		seg = seg[i+1:]
 	}
