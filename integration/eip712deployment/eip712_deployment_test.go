@@ -1,4 +1,6 @@
-package evm
+//go:build integration
+
+package eip712deployment_test
 
 import (
 	"context"
@@ -12,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient/simulated"
+	evm "github.com/layer-3/clearnet-sdk/pkg/blockchain/evm"
 )
 
 // Deploy the committed bytecode and execute all six operations signed by the Go
@@ -55,7 +58,7 @@ func TestEIP712DeploymentAllOperations(t *testing.T) {
 			t.Fatal("reverted", tx.Hash())
 		}
 	}
-	sign := func(d [32]byte) [][]byte {
+	sign := func(d common.Hash) [][]byte {
 		out := make([][]byte, 2)
 		for i := range out {
 			sig, err := crypto.Sign(d[:], privateKeys[i])
@@ -67,22 +70,22 @@ func TestEIP712DeploymentAllOperations(t *testing.T) {
 		}
 		return out
 	}
-	vaultAddr, tx, vault, err := DeployCustody(auth, client, keys, big.NewInt(2))
+	vaultAddr, tx, vault, err := evm.DeployCustody(auth, client, keys, big.NewInt(2))
 	mined(tx, err)
-	registryAddr, tx, registry, err := DeployConfigRegistry(auth, client)
+	registryAddr, tx, registry, err := evm.DeployConfigRegistry(auth, client)
 	mined(tx, err)
 	vd, err := vault.Eip712Domain(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if vd.Name != CustodyDomainName || vd.Version != EIP712Version || vd.VerifyingContract != vaultAddr || vd.ChainId.Cmp(chain) != 0 {
+	if vd.Name != evm.CustodyDomainName || vd.Version != evm.EIP712Version || vd.VerifyingContract != vaultAddr || vd.ChainId.Cmp(chain) != 0 {
 		t.Fatal("vault domain mismatch")
 	}
 	rd, err := registry.Eip712Domain(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rd.Name != ConfigRegistryDomainName || rd.Version != EIP712Version || rd.VerifyingContract != registryAddr || rd.ChainId.Cmp(chain) != 0 {
+	if rd.Name != evm.ConfigRegistryDomainName || rd.Version != evm.EIP712Version || rd.VerifyingContract != registryAddr || rd.ChainId.Cmp(chain) != 0 {
 		t.Fatal("registry domain mismatch")
 	}
 	auth.Value = big.NewInt(1000)
@@ -91,12 +94,12 @@ func TestEIP712DeploymentAllOperations(t *testing.T) {
 	recipient := common.HexToAddress("0x1234")
 	wid := [32]byte{1}
 	deadline := big.NewInt(4000000000)
-	mined(vault.Execute(auth, recipient, common.Address{}, big.NewInt(100), wid, deadline, sign(ComputeWithdrawalDigest(1337, vaultAddr, recipient, common.Address{}, big.NewInt(100), wid, deadline))))
+	mined(vault.Execute(auth, recipient, common.Address{}, big.NewInt(100), wid, deadline, sign(evm.ComputeWithdrawalDigest(1337, vaultAddr, recipient, common.Address{}, big.NewInt(100), wid, deadline))))
 	balance, err := client.BalanceAt(ctx, recipient, nil)
 	if err != nil || balance.Cmp(big.NewInt(100)) != 0 {
 		t.Fatalf("withdrawal balance %v: %v", balance, err)
 	}
-	mined(vault.UpdateSigners(auth, keys, big.NewInt(2), sign(ComputeRotationDigest(1337, vaultAddr, keys, big.NewInt(2), big.NewInt(0)))))
+	mined(vault.UpdateSigners(auth, keys, big.NewInt(2), sign(evm.ComputeRotationDigest(1337, vaultAddr, keys, big.NewInt(2), big.NewInt(0)))))
 	nonce, err := vault.SignerNonce(nil)
 	if err != nil || nonce.Uint64() != 1 {
 		t.Fatal("vault rotation nonce", nonce, err)
@@ -105,18 +108,18 @@ func TestEIP712DeploymentAllOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mined(registry.RegisterIssuer(auth, keys, big.NewInt(2), sign(ComputeConfigRegistryRegistrationDigest(1337, registryAddr, keys, big.NewInt(2)))))
+	mined(registry.RegisterIssuer(auth, keys, big.NewInt(2), sign(evm.ComputeConfigRegistryRegistrationDigest(1337, registryAddr, keys, big.NewInt(2)))))
 	key := [32]byte{2}
 	checksum := [32]byte{3}
 	data := []byte("typed config")
-	mined(registry.SetConfig(auth, issuer, key, checksum, big.NewInt(0), sign(ComputeConfigRegistrySetConfigDigest(1337, registryAddr, issuer, key, checksum, big.NewInt(0)))))
-	mined(registry.SetConfigWithData(auth, issuer, key, data, big.NewInt(1), sign(ComputeConfigRegistrySetConfigWithDataDigest(1337, registryAddr, issuer, key, data, big.NewInt(1)))))
-	mined(registry.UpdateIssuerSettings(auth, issuer, keys, big.NewInt(2), big.NewInt(2), sign(ComputeConfigRegistryUpdateIssuerSettingsDigest(1337, registryAddr, issuer, keys, big.NewInt(2), big.NewInt(2)))))
+	mined(registry.SetConfig(auth, issuer, key, checksum, big.NewInt(0), sign(evm.ComputeConfigRegistrySetConfigDigest(1337, registryAddr, issuer, key, checksum, big.NewInt(0)))))
+	mined(registry.SetConfigWithData(auth, issuer, key, data, big.NewInt(1), sign(evm.ComputeConfigRegistrySetConfigWithDataDigest(1337, registryAddr, issuer, key, data, big.NewInt(1)))))
+	mined(registry.UpdateIssuerSettings(auth, issuer, keys, big.NewInt(2), big.NewInt(2), sign(evm.ComputeConfigRegistryUpdateIssuerSettingsDigest(1337, registryAddr, issuer, keys, big.NewInt(2), big.NewInt(2)))))
 	nonce, err = registry.Nonce(nil, issuer)
 	if err != nil || nonce.Uint64() != 3 {
 		t.Fatal("registry nonce", nonce, err)
 	}
-	config, err := NewConfig(issuer, client)
+	config, err := evm.NewConfig(issuer, client)
 	if err != nil {
 		t.Fatal(err)
 	}

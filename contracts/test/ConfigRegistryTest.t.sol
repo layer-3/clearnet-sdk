@@ -1004,3 +1004,56 @@ contract ConfigRegistryTest_nonce is ConfigRegistryTestBase {
         assertEq(registry.nonce(issuerId), 1);
     }
 }
+
+/// Every registry entrypoint must reject signatures for every other entrypoint.
+/// Calls use the same authorized roster and otherwise valid arguments, including
+/// an unregistered issuer for the registration target.
+contract ConfigRegistryTest_crossOperation is ConfigRegistryTestBase {
+    function test_allRegistryOperations_revert_ifSignedForAnotherOperation() public {
+        bytes32 key = keccak256("cross-operation-key");
+        bytes32 checksum = keccak256("cross-operation-value");
+        bytes memory data = "cross-operation-value";
+        for (uint256 target; target < 4; ++target) {
+            registry = new ConfigRegistry();
+            issuerId = registry.computeIssuerId(issuerSignerAddrs, THRESHOLD);
+            bytes32[] memory digests = new bytes32[](4);
+            digests[0] = TestDigests.registrationDigest(address(registry), issuerSignerAddrs, THRESHOLD);
+            digests[1] = TestDigests.setConfigDigest(address(registry), issuerId, key, checksum, 0);
+            digests[2] = TestDigests.setConfigWithDataDigest(address(registry), issuerId, key, data, 0);
+            digests[3] =
+                TestDigests.updateIssuerSettingsDigest(address(registry), issuerId, issuerSignerAddrs, THRESHOLD, 0);
+            if (target != 0) {
+                registry.registerIssuer(
+                    issuerSignerAddrs, THRESHOLD, _signDigestWithKeys(digests[0], issuerPrivKeys, THRESHOLD)
+                );
+            }
+            for (uint256 source; source < 4; ++source) {
+                if (source == target) continue;
+                bytes[] memory sigs = _signDigestWithKeys(digests[source], issuerPrivKeys, THRESHOLD);
+                vm.expectRevert();
+                _invoke(target, key, checksum, data, sigs);
+                assertEq(registry.nonce(issuerId), 0);
+                assertEq(registry.isRegistered(issuerId), target != 0);
+                if (target == 0) {
+                    assertEq(issuerId.code.length, 0);
+                } else {
+                    assertEq(registry.issuerKeys(issuerId), issuerSignerAddrs);
+                    assertEq(registry.threshold(issuerId), THRESHOLD);
+                    assertEq(Config(issuerId).configEpoch(key), 0);
+                }
+            }
+            // Same preconditions, correct signatures: prove rejections above
+            // were not caused by invalid issuer state or call arguments.
+            _invoke(target, key, checksum, data, _signDigestWithKeys(digests[target], issuerPrivKeys, THRESHOLD));
+            assertTrue(registry.isRegistered(issuerId));
+            assertEq(registry.nonce(issuerId), target == 0 ? 0 : 1);
+        }
+    }
+
+    function _invoke(uint256 target, bytes32 key, bytes32 checksum, bytes memory data, bytes[] memory sigs) internal {
+        if (target == 0) registry.registerIssuer(issuerSignerAddrs, THRESHOLD, sigs);
+        else if (target == 1) registry.setConfig(issuerId, key, checksum, 0, sigs);
+        else if (target == 2) registry.setConfigWithData(issuerId, key, data, 0, sigs);
+        else registry.updateIssuerSettings(issuerId, issuerSignerAddrs, THRESHOLD, 0, sigs);
+    }
+}

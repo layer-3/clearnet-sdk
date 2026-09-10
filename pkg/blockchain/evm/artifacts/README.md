@@ -103,3 +103,17 @@ make generate   # regenerate bindings from the refreshed files
 
 Review the resulting `.abi`/`.bin` and `*_abi.go` diffs together — an ABI
 change without a corresponding intentional code change is a red flag.
+
+## Validate release artifacts
+
+Run `make check-evm-artifacts CUSTODY_SOURCE=/path/to/custody` against the checkout
+recorded in `custody-source-revision`. When artifacts change, validate the SDK
+artifact commit in custody CI, then update `custody-source-revision` and
+`validated-sdk-revision` together to record that source and artifact pair.
+
+Before publishing, run `check-release-artifacts.yml` manually; release tags rerun
+it. It requires a successful custody parity run at the recorded source revision
+and unchanged artifacts from the validated SDK revision. Configure
+`CUSTODY_ACTIONS_READ_TOKEN` with Actions-read access to custody; the public SDK
+workflow reads result metadata only. If the result is older than the latest 100
+runs, rerun custody validation.

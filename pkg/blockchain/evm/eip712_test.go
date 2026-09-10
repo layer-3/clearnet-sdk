@@ -2,12 +2,14 @@ package evm
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"math/big"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -143,5 +145,51 @@ func TestEIP712EveryFieldAndArrayEncoding(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Public helpers keep their typed API and identify bad caller values precisely.
+func TestEIP712InvalidUint256NamesField(t *testing.T) {
+	address := common.HexToAddress("0x1")
+	keys := []common.Address{address}
+	good := big.NewInt(1)
+	cases := []struct {
+		field  string
+		digest func(*big.Int) common.Hash
+	}{
+		{"amount", func(n *big.Int) common.Hash {
+			return ComputeWithdrawalDigest(1, address, address, address, n, [32]byte{}, good)
+		}},
+		{"deadline", func(n *big.Int) common.Hash {
+			return ComputeWithdrawalDigest(1, address, address, address, good, [32]byte{}, n)
+		}},
+		{"newThreshold", func(n *big.Int) common.Hash { return ComputeRotationDigest(1, address, keys, n, good) }},
+		{"signerNonce", func(n *big.Int) common.Hash { return ComputeRotationDigest(1, address, keys, good, n) }},
+		{"threshold", func(n *big.Int) common.Hash { return ComputeConfigRegistryRegistrationDigest(1, address, keys, n) }},
+		{"expectedNonce", func(n *big.Int) common.Hash {
+			return ComputeConfigRegistrySetConfigDigest(1, address, address, [32]byte{}, [32]byte{}, n)
+		}},
+		{"expectedNonce", func(n *big.Int) common.Hash {
+			return ComputeConfigRegistrySetConfigWithDataDigest(1, address, address, [32]byte{}, nil, n)
+		}},
+		{"newThreshold", func(n *big.Int) common.Hash {
+			return ComputeConfigRegistryUpdateIssuerSettingsDigest(1, address, address, keys, n, good)
+		}},
+		{"expectedNonce", func(n *big.Int) common.Hash {
+			return ComputeConfigRegistryUpdateIssuerSettingsDigest(1, address, address, keys, good, n)
+		}},
+	}
+	for _, tc := range cases {
+		for _, invalid := range []*big.Int{nil, big.NewInt(-1), new(big.Int).Lsh(big.NewInt(1), 256)} {
+			t.Run(tc.field, func(t *testing.T) {
+				defer func() {
+					r := recover()
+					if r == nil || !strings.Contains(fmt.Sprint(r), "uint256 "+tc.field+":") {
+						t.Fatalf("panic = %v; want field %s", r, tc.field)
+					}
+				}()
+				tc.digest(invalid)
+			})
+		}
 	}
 }

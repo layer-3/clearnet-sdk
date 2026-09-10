@@ -23,6 +23,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: |
+            go.sum
+            integration/eip712deployment/go.sum
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
