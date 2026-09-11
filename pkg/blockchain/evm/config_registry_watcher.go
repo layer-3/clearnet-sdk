@@ -3,6 +3,7 @@ package evm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"sort"
@@ -33,6 +34,11 @@ type ConfigRegistryCursorSource interface {
 	LatestConfigRegistryCursor(ctx context.Context, registry common.Address) (core.ConfigRegistryCursor, bool, error)
 }
 
+type ConfigRegistryWatcherOnlineTracker interface {
+	MarkConfigRegistryWatcherOnline(ctx context.Context) error
+	MarkConfigRegistryWatcherOffline(ctx context.Context, reason error) error
+}
+
 // ConfigRegistryWatcherReader supplies decoded registry events over a block
 // range. The production adapter wraps the generated *ConfigRegistry binding;
 // tests inject fakes without constructing abigen iterators.
@@ -52,11 +58,12 @@ var _ blockNumberReader = (*ethclient.Client)(nil)
 // ConfigWithDataCommitted events with broad filters, normalizes them, and
 // delivers them to a handler. It keeps no signer/config business state.
 type ConfigRegistryWatcher struct {
-	client       blockNumberReader
-	registry     ConfigRegistryWatcherReader
-	registryAddr common.Address
-	handler      ConfigRegistryEventHandler
-	cursorSource ConfigRegistryCursorSource
+	client        blockNumberReader
+	registry      ConfigRegistryWatcherReader
+	registryAddr  common.Address
+	handler       ConfigRegistryEventHandler
+	cursorSource  ConfigRegistryCursorSource
+	onlineTracker ConfigRegistryWatcherOnlineTracker
 
 	confirmations  uint64
 	lookbackBlocks uint64
@@ -105,6 +112,12 @@ func (w *ConfigRegistryWatcher) SetLogger(l log.Logger) {
 
 func (w *ConfigRegistryWatcher) SetCursorSource(src ConfigRegistryCursorSource) {
 	w.cursorSource = src
+}
+
+func (w *ConfigRegistryWatcher) SetOnlineTracker(tracker ConfigRegistryWatcherOnlineTracker) {
+	// TODO(sdk): add per-poll timeouts and a freshness heartbeat/TTL so a
+	// successful but stale or wedged RPC cannot keep signer state ready forever.
+	w.onlineTracker = tracker
 }
 
 func (w *ConfigRegistryWatcher) SetInitialLookback(blocks uint64) {
@@ -173,6 +186,9 @@ func (w *ConfigRegistryWatcher) initCursor(ctx context.Context) error {
 }
 
 func (w *ConfigRegistryWatcher) Watch(ctx context.Context) error {
+	// TODO(sdk): reset started on normal cancellation if watcher restartability
+	// becomes part of the lifecycle contract; current callers construct a fresh
+	// watcher for a resumed stream.
 	w.mu.Lock()
 	if w.started {
 		w.mu.Unlock()
@@ -180,6 +196,21 @@ func (w *ConfigRegistryWatcher) Watch(ctx context.Context) error {
 	}
 	w.started = true
 	w.mu.Unlock()
+	if w.onlineTracker != nil {
+		if err := w.onlineTracker.MarkConfigRegistryWatcherOffline(ctx, errors.New("watcher starting")); err != nil {
+			w.mu.Lock()
+			w.started = false
+			w.mu.Unlock()
+			return fmt.Errorf("config registry watcher: mark starting offline: %w", err)
+		}
+	}
+	defer func() {
+		if w.onlineTracker != nil {
+			if err := w.onlineTracker.MarkConfigRegistryWatcherOffline(context.Background(), errors.New("watcher stopped")); err != nil {
+				w.logger.Warn("ConfigRegistryWatcher mark stopped offline failed", "error", err)
+			}
+		}
+	}()
 	if err := w.initCursor(ctx); err != nil {
 		w.mu.Lock()
 		w.started = false
@@ -191,6 +222,10 @@ func (w *ConfigRegistryWatcher) Watch(ctx context.Context) error {
 		return nil
 	}
 	if err := w.pollOnce(ctx); err != nil {
+		w.markConfigRegistryWatcherOffline(ctx, err)
+		w.logger.Debug("ConfigRegistryWatcher initial poll failed", "error", err)
+	} else if err := w.markConfigRegistryWatcherOnline(ctx); err != nil {
+		w.markConfigRegistryWatcherOffline(ctx, err)
 		w.logger.Debug("ConfigRegistryWatcher initial poll failed", "error", err)
 	}
 	ticker := time.NewTicker(w.pollInterval)
@@ -202,9 +237,32 @@ func (w *ConfigRegistryWatcher) Watch(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			if err := w.pollOnce(ctx); err != nil {
+				w.markConfigRegistryWatcherOffline(ctx, err)
+				w.logger.Debug("ConfigRegistryWatcher poll failed", "error", err)
+			} else if err := w.markConfigRegistryWatcherOnline(ctx); err != nil {
+				w.markConfigRegistryWatcherOffline(ctx, err)
 				w.logger.Debug("ConfigRegistryWatcher poll failed", "error", err)
 			}
 		}
+	}
+}
+
+func (w *ConfigRegistryWatcher) markConfigRegistryWatcherOnline(ctx context.Context) error {
+	if w.onlineTracker == nil {
+		return nil
+	}
+	if err := w.onlineTracker.MarkConfigRegistryWatcherOnline(ctx); err != nil {
+		return fmt.Errorf("mark watcher online: %w", err)
+	}
+	return nil
+}
+
+func (w *ConfigRegistryWatcher) markConfigRegistryWatcherOffline(ctx context.Context, reason error) {
+	if w.onlineTracker == nil || reason == nil {
+		return
+	}
+	if err := w.onlineTracker.MarkConfigRegistryWatcherOffline(ctx, reason); err != nil {
+		w.logger.Warn("ConfigRegistryWatcher mark offline failed", "error", err, "reason", reason)
 	}
 }
 

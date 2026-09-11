@@ -16,8 +16,12 @@ package receipt
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"os"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -34,8 +38,9 @@ import (
 // or hostile peer from streaming the server out of memory, and the deadline
 // bounds a single request end to end.
 const (
-	maxReceiptBytes    = 64 * 1024
-	streamReadDeadline = 10 * time.Second
+	maxReceiptBytes     = cborx.MaxControlFrame + binary.MaxVarintLen64
+	streamReadDeadline  = 10 * time.Second
+	streamWriteDeadline = 10 * time.Second
 )
 
 // Server handles inbound burn/mint receipt streams, delegating each decoded
@@ -43,6 +48,18 @@ const (
 type Server struct {
 	handler ReceiptHandler
 	logger  log.Logger
+}
+
+type decodeError struct{ err error }
+
+func (e *decodeError) Error() string { return fmt.Sprintf("decode: %v", e.err) }
+func (e *decodeError) Unwrap() error { return e.err }
+
+func wrapDecodeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &decodeError{err: err}
 }
 
 var _ p2pproto.Registrar = (*Server)(nil)
@@ -67,7 +84,7 @@ func (s *Server) HandleBurnReceipt(stream network.Stream) {
 		var receipt core.BurnReceipt
 		var v cborx.Version
 		if err := cborx.ReadFrame(r, cborx.MaxControlFrame, &v, &receipt); err != nil {
-			return p2pproto.ReceiptAck{}, fmt.Errorf("decode: %w", err)
+			return p2pproto.ReceiptAck{}, wrapDecodeError(err)
 		}
 		return s.handler.OnBurnReceipt(ctx, &receipt)
 	})
@@ -79,7 +96,7 @@ func (s *Server) HandleMintReceipt(stream network.Stream) {
 		var receipt core.MintReceipt
 		var v cborx.Version
 		if err := cborx.ReadFrame(r, cborx.MaxControlFrame, &v, &receipt); err != nil {
-			return p2pproto.ReceiptAck{}, fmt.Errorf("decode: %w", err)
+			return p2pproto.ReceiptAck{}, wrapDecodeError(err)
 		}
 		return s.handler.OnMintReceipt(ctx, &receipt)
 	})
@@ -103,16 +120,30 @@ func (s *Server) serve(
 		return
 	}
 
-	ack, err := dispatch(ctx, io.LimitReader(stream, maxReceiptBytes))
+	ack, err := dispatch(ctx, io.LimitReader(stream, int64(maxReceiptBytes)))
 	if err != nil {
 		lg.Warn("handler error", "error", err)
-		writeAck(stream, p2pproto.ReceiptAck{Accepted: false, Reason: err.Error()}, lg)
+		code := p2pproto.ReceiptAckTemporaryFailure
+		var decodeErr *decodeError
+		if errors.As(err, &decodeErr) && !transientDecodeError(err) {
+			code = p2pproto.ReceiptAckCorrupt
+		}
+		writeAck(stream, p2pproto.ReceiptAck{Code: code, Reason: err.Error()}, lg)
+		return
+	}
+	if err := ack.Validate(); err != nil {
+		lg.Warn("handler returned invalid ack", "error", err)
+		writeAck(stream, p2pproto.ReceiptAck{Code: p2pproto.ReceiptAckTemporaryFailure, Reason: err.Error()}, lg)
 		return
 	}
 	writeAck(stream, ack, lg)
 }
 
 func writeAck(stream network.Stream, ack p2pproto.ReceiptAck, logger log.Logger) {
+	if err := stream.SetWriteDeadline(time.Now().Add(streamWriteDeadline)); err != nil {
+		logger.Warn("set write deadline failed", "error", err)
+		return
+	}
 	var buf bytes.Buffer
 	if err := cborx.WriteFrame(&buf, cborx.V1, &ack); err != nil {
 		logger.Warn("encode ack failed", "error", err)
@@ -121,4 +152,16 @@ func writeAck(stream network.Stream, ack p2pproto.ReceiptAck, logger log.Logger)
 	if _, err := stream.Write(buf.Bytes()); err != nil {
 		logger.Warn("write ack failed", "error", err)
 	}
+}
+
+func transientDecodeError(err error) bool {
+	if errors.Is(err, cborx.ErrFrameTooLarge) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var timeout net.Error
+	return errors.As(err, &timeout) && timeout.Timeout()
 }

@@ -2,6 +2,7 @@ package receipt
 
 import (
 	"context"
+	"io"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
+	"github.com/layer-3/clearnet-sdk/pkg/cborx"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	p2pproto "github.com/layer-3/clearnet-sdk/pkg/p2p/protocol"
@@ -38,11 +40,11 @@ func TestReceipt_BurnRoundTrip(t *testing.T) {
 	NewServer(testHandler{
 		burn: func(_ context.Context, r *core.BurnReceipt) (p2pproto.ReceiptAck, error) {
 			got = r
-			return p2pproto.ReceiptAck{Accepted: true}, nil
+			return p2pproto.ReceiptAck{Code: p2pproto.ReceiptAckAccepted}, nil
 		},
 	}, nil).Register(srv)
 
-	want := &core.BurnReceipt{Signatures: [][]byte{{0x1, 0x2}}}
+	want := &core.BurnReceipt{Proof: core.ReceiptProof{SignerEpoch: 7, Signatures: [][]byte{{0x1, 0x2}}}}
 	want.WithdrawalID[0] = 0xBE
 	want.TxID = "tx/ef"
 
@@ -50,10 +52,10 @@ func TestReceipt_BurnRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBurnReceipt: %v", err)
 	}
-	if !ack.Accepted {
+	if ack.Code != p2pproto.ReceiptAckAccepted {
 		t.Fatalf("ack not accepted: %+v", ack)
 	}
-	if got == nil || got.WithdrawalID != want.WithdrawalID || got.TxID != want.TxID {
+	if got == nil || got.WithdrawalID != want.WithdrawalID || got.TxID != want.TxID || got.Proof.SignerEpoch != want.Proof.SignerEpoch || len(got.Proof.Signatures) != len(want.Proof.Signatures) || got.Proof.Signatures[0][0] != want.Proof.Signatures[0][0] {
 		t.Fatalf("server received %+v, want %+v", got, want)
 	}
 }
@@ -63,20 +65,27 @@ func TestReceipt_MintRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	var got *core.MintReceipt
 	NewServer(testHandler{
-		mint: func(_ context.Context, _ *core.MintReceipt) (p2pproto.ReceiptAck, error) {
-			return p2pproto.ReceiptAck{Accepted: false, Reason: "duplicate"}, nil
+		mint: func(_ context.Context, r *core.MintReceipt) (p2pproto.ReceiptAck, error) {
+			got = r
+			return p2pproto.ReceiptAck{Code: p2pproto.ReceiptAckAlreadyAccepted}, nil
 		},
 	}, nil).Register(srv)
 
-	ack, err := NewClient(cli, srv.ID(), nil).SendMintReceipt(ctx, &core.MintReceipt{
+	want := &core.MintReceipt{
 		TxID: "tx/1", Account: "yellow://x", AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0x0", Amount: decimal.NewFromInt(5),
-	})
+		Proof: core.ReceiptProof{SignerEpoch: 9, Signatures: [][]byte{{0x42, 0x43}}},
+	}
+	ack, err := NewClient(cli, srv.ID(), nil).SendMintReceipt(ctx, want)
 	if err != nil {
 		t.Fatalf("SendMintReceipt: %v", err)
 	}
-	if ack.Accepted || ack.Reason != "duplicate" {
-		t.Fatalf("ack = %+v, want rejected/duplicate", ack)
+	if ack.Code != p2pproto.ReceiptAckAlreadyAccepted {
+		t.Fatalf("ack = %+v, want already_accepted", ack)
+	}
+	if got == nil || got.Proof.SignerEpoch != want.Proof.SignerEpoch || len(got.Proof.Signatures) != 1 || got.Proof.Signatures[0][0] != want.Proof.Signatures[0][0] {
+		t.Fatalf("server received proof %+v, want %+v", got.Proof, want.Proof)
 	}
 }
 
@@ -95,8 +104,62 @@ func TestReceipt_HandlerError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transport error: %v", err)
 	}
-	if ack.Accepted || ack.Reason == "" {
-		t.Fatalf("expected Accepted=false with a reason, got %+v", ack)
+	if ack.Code != p2pproto.ReceiptAckTemporaryFailure || ack.Reason == "" {
+		t.Fatalf("expected temporary_failure with a reason, got %+v", ack)
+	}
+}
+
+func TestReceipt_TruncatedRequestReturnsTemporaryAck(t *testing.T) {
+	srv, cli := newPair(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	NewServer(testHandler{}, nil).Register(srv)
+	stream, err := cli.NewStream(ctx, srv.ID(), protocol.ID(p2pproto.ProtocolBurnReceipt))
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer stream.Close()
+	if _, err := stream.Write([]byte{0x01, 0x01}); err != nil {
+		t.Fatalf("write malformed frame: %v", err)
+	}
+	if err := stream.CloseWrite(); err != nil {
+		t.Fatalf("close write: %v", err)
+	}
+	var ack p2pproto.ReceiptAck
+	var version cborx.Version
+	if err := cborx.ReadFrame(io.LimitReader(stream, int64(maxReceiptBytes)), cborx.MaxControlFrame, &version, &ack); err != nil {
+		t.Fatalf("read ack: %v", err)
+	}
+	if ack.Code != p2pproto.ReceiptAckTemporaryFailure || ack.Reason == "" {
+		t.Fatalf("ack = %+v, want temporary_failure with reason", ack)
+	}
+}
+
+func TestReceipt_SchemaFailureReturnsCorruptAck(t *testing.T) {
+	srv, cli := newPair(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	NewServer(testHandler{}, nil).Register(srv)
+	stream, err := cli.NewStream(ctx, srv.ID(), protocol.ID(p2pproto.ProtocolBurnReceipt))
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer stream.Close()
+	// Frame length 2: version 1 followed by a scalar where BurnReceipt expects an array.
+	if _, err := stream.Write([]byte{0x02, 0x01, 0x01}); err != nil {
+		t.Fatalf("write schema-invalid frame: %v", err)
+	}
+	if err := stream.CloseWrite(); err != nil {
+		t.Fatalf("close write: %v", err)
+	}
+	var ack p2pproto.ReceiptAck
+	var version cborx.Version
+	if err := cborx.ReadFrame(io.LimitReader(stream, int64(maxReceiptBytes)), cborx.MaxControlFrame, &version, &ack); err != nil {
+		t.Fatalf("read ack: %v", err)
+	}
+	if ack.Code != p2pproto.ReceiptAckCorrupt || ack.Reason == "" {
+		t.Fatalf("ack = %+v, want corrupt with reason", ack)
 	}
 }
 
@@ -112,7 +175,7 @@ func TestReceipt_HandleBurnReceiptDirect(t *testing.T) {
 	s := NewServer(testHandler{
 		burn: func(_ context.Context, _ *core.BurnReceipt) (p2pproto.ReceiptAck, error) {
 			called <- struct{}{}
-			return p2pproto.ReceiptAck{Accepted: true}, nil
+			return p2pproto.ReceiptAck{Code: p2pproto.ReceiptAckAccepted}, nil
 		},
 	}, nil)
 	srv.SetStreamHandler(protocol.ID(p2pproto.ProtocolBurnReceipt), s.HandleBurnReceipt)

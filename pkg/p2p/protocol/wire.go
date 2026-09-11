@@ -44,18 +44,43 @@ type AuthResponse struct {
 	IssuerID  string
 }
 
-// ReceiptAck is the server's response to a burn/mint receipt submission.
+type ReceiptAckCode string
+
+const (
+	ReceiptAckAccepted               ReceiptAckCode = "accepted"
+	ReceiptAckAlreadyAccepted        ReceiptAckCode = "already_accepted"
+	ReceiptAckStaleEpoch             ReceiptAckCode = "stale_epoch"
+	ReceiptAckFutureEpoch            ReceiptAckCode = "future_epoch"
+	ReceiptAckSignerStateUnavailable ReceiptAckCode = "signer_state_unavailable"
+	ReceiptAckTemporaryFailure       ReceiptAckCode = "temporary_failure"
+	ReceiptAckRejected               ReceiptAckCode = "rejected"
+	ReceiptAckCorrupt                ReceiptAckCode = "corrupt"
+)
+
+// ReceiptAck is the server's response to a custody-to-clearnet receipt ingress
+// submission. Reason is diagnostic only and must be non-empty for rejected,
+// corrupt, and temporary_failure.
 //
-// Accepted is true when the server persisted the receipt or recognized it as a
-// duplicate of an already-persisted one (the receipt path is idempotent on the
-// natural keys the clearing layer de-dupes by, so retries are safe). Reason
-// carries a short diagnostic when Accepted is false; empty otherwise.
-//
-// Wire encoding: cborx V1 frame wrapping a 2-tuple (Accepted bool, Reason
-// string).
+// Wire encoding: cborx V1 frame wrapping a 2-tuple (Code string, Reason string).
 type ReceiptAck struct {
-	Accepted bool
-	Reason   string
+	Code   ReceiptAckCode
+	Reason string
+}
+
+func (t ReceiptAck) Validate() error {
+	switch t.Code {
+	case ReceiptAckAccepted, ReceiptAckAlreadyAccepted, ReceiptAckStaleEpoch, ReceiptAckFutureEpoch, ReceiptAckSignerStateUnavailable:
+		return nil
+	case ReceiptAckTemporaryFailure, ReceiptAckRejected, ReceiptAckCorrupt:
+		if t.Reason == "" {
+			return fmt.Errorf("ReceiptAck.%s requires reason", t.Code)
+		}
+		return nil
+	case "":
+		return fmt.Errorf("ReceiptAck.Code is empty")
+	default:
+		return fmt.Errorf("ReceiptAck.Code unknown: %s", t.Code)
+	}
 }
 
 var lengthBufAuthChallenge = []byte{0x81} // CBOR array, 1 element
@@ -189,11 +214,21 @@ func (t *ReceiptAck) MarshalCBOR(w io.Writer) error {
 		_, err := w.Write(cbg.CborNull)
 		return err
 	}
+	if err := t.Validate(); err != nil {
+		return err
+	}
 	cw := cbg.NewCborWriter(w)
 	if _, err := cw.Write(lengthBufReceiptAck); err != nil {
 		return err
 	}
-	if err := cbg.WriteBool(cw, t.Accepted); err != nil {
+	code := string(t.Code)
+	if len(code) > cbg.MaxLength {
+		return fmt.Errorf("ReceiptAck.Code too long (%d)", len(code))
+	}
+	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(code))); err != nil {
+		return err
+	}
+	if _, err := cw.WriteString(code); err != nil {
 		return err
 	}
 	if len(t.Reason) > cbg.MaxLength {
@@ -214,36 +249,30 @@ func (t *ReceiptAck) UnmarshalCBOR(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	// Accept >= 2 elements and skip any trailing fields: a real clearnode emits
-	// a wider ack (6 elements) and forward-compatible readers must not reject it.
-	// Only the first two — Accepted, Reason — are part of this contract.
+	// Accept >= 2 elements and skip any trailing fields for forward-compatible
+	// readers. Only the first two fields are part of this contract.
 	if maj != cbg.MajArray {
 		return fmt.Errorf("ReceiptAck: expected CBOR array, got major %d", maj)
 	}
 	if extra < 2 {
 		return fmt.Errorf("ReceiptAck: expected >=2 elements, got %d", extra)
 	}
-	// Accepted (CBOR simple value: 20 = false, 21 = true).
-	bmaj, bminor, err := cr.ReadHeader()
+	code, err := cbg.ReadString(cr)
 	if err != nil {
-		return err
+		return fmt.Errorf("ReceiptAck.Code: %w", err)
 	}
-	if bmaj != cbg.MajOther {
-		return fmt.Errorf("ReceiptAck.Accepted: expected bool, got major %d", bmaj)
-	}
-	switch bminor {
-	case 20:
-		t.Accepted = false
-	case 21:
-		t.Accepted = true
-	default:
-		return fmt.Errorf("ReceiptAck.Accepted: unexpected minor %d", bminor)
-	}
+	t.Code = ReceiptAckCode(code)
 	reason, err := cbg.ReadString(cr)
 	if err != nil {
 		return fmt.Errorf("ReceiptAck.Reason: %w", err)
 	}
 	t.Reason = reason
+	if !isKnownReceiptAckCode(t.Code) {
+		if t.Reason == "" {
+			t.Reason = fmt.Sprintf("unsupported receipt ACK code: %s", code)
+		}
+		t.Code = ReceiptAckTemporaryFailure
+	}
 	// Skip any trailing elements (ScanForLinks walks exactly one CBOR item per
 	// call, recursing into arrays/maps); the CID sink is a no-op.
 	noLink := func(cid.Cid) {}
@@ -252,5 +281,15 @@ func (t *ReceiptAck) UnmarshalCBOR(r io.Reader) error {
 			return fmt.Errorf("ReceiptAck: skip trailing element %d: %w", i, err)
 		}
 	}
-	return nil
+	return t.Validate()
+}
+
+func isKnownReceiptAckCode(code ReceiptAckCode) bool {
+	switch code {
+	case ReceiptAckAccepted, ReceiptAckAlreadyAccepted, ReceiptAckStaleEpoch, ReceiptAckFutureEpoch,
+		ReceiptAckSignerStateUnavailable, ReceiptAckTemporaryFailure, ReceiptAckRejected, ReceiptAckCorrupt:
+		return true
+	default:
+		return false
+	}
 }

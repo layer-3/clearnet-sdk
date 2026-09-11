@@ -2478,6 +2478,141 @@ func (t *BlockEntryRef) UnmarshalCBOR(r io.Reader) (err error) {
 	return nil
 }
 
+var lengthBufReceiptProof = []byte{130}
+
+func (t *ReceiptProof) MarshalCBOR(w io.Writer) error {
+	if t == nil {
+		_, err := w.Write(cbg.CborNull)
+		return err
+	}
+
+	cw := cbg.NewCborWriter(w)
+
+	if _, err := cw.Write(lengthBufReceiptProof); err != nil {
+		return err
+	}
+
+	// t.SignerEpoch (uint64) (uint64)
+
+	if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.SignerEpoch)); err != nil {
+		return err
+	}
+
+	// t.Signatures ([][]uint8) (slice)
+	if len(t.Signatures) > 8192 {
+		return xerrors.Errorf("Slice value in field t.Signatures was too long")
+	}
+
+	if err := cw.WriteMajorTypeHeader(cbg.MajArray, uint64(len(t.Signatures))); err != nil {
+		return err
+	}
+	for _, v := range t.Signatures {
+		if len(v) > 2097152 {
+			return xerrors.Errorf("Byte array in field v was too long")
+		}
+
+		if err := cw.WriteMajorTypeHeader(cbg.MajByteString, uint64(len(v))); err != nil {
+			return err
+		}
+
+		if _, err := cw.Write(v); err != nil {
+			return err
+		}
+
+	}
+	return nil
+}
+
+func (t *ReceiptProof) UnmarshalCBOR(r io.Reader) (err error) {
+	*t = ReceiptProof{}
+
+	cr := cbg.NewCborReader(r)
+
+	maj, extra, err := cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+	}()
+
+	if maj != cbg.MajArray {
+		return fmt.Errorf("cbor input should be of type array")
+	}
+
+	if extra != 2 {
+		return fmt.Errorf("cbor input had wrong number of fields")
+	}
+
+	// t.SignerEpoch (uint64) (uint64)
+
+	{
+
+		maj, extra, err = cr.ReadHeader()
+		if err != nil {
+			return err
+		}
+		if maj != cbg.MajUnsignedInt {
+			return fmt.Errorf("wrong type for uint64 field")
+		}
+		t.SignerEpoch = uint64(extra)
+
+	}
+	// t.Signatures ([][]uint8) (slice)
+
+	maj, extra, err = cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+
+	if extra > 8192 {
+		return fmt.Errorf("t.Signatures: array too large (%d)", extra)
+	}
+
+	if maj != cbg.MajArray {
+		return fmt.Errorf("expected cbor array")
+	}
+
+	if extra > 0 {
+		t.Signatures = make([][]uint8, extra)
+	}
+
+	for i := 0; i < int(extra); i++ {
+		{
+			var maj byte
+			var extra uint64
+			var err error
+			_ = maj
+			_ = extra
+			_ = err
+
+			maj, extra, err = cr.ReadHeader()
+			if err != nil {
+				return err
+			}
+
+			if extra > 2097152 {
+				return fmt.Errorf("t.Signatures[i]: byte array too large (%d)", extra)
+			}
+			if maj != cbg.MajByteString {
+				return fmt.Errorf("expected byte array")
+			}
+
+			if extra > 0 {
+				t.Signatures[i] = make([]uint8, extra)
+			}
+
+			if _, err := io.ReadFull(cr, t.Signatures[i]); err != nil {
+				return err
+			}
+
+		}
+	}
+	return nil
+}
+
 var lengthBufBurnReceipt = []byte{133}
 
 func (t *BurnReceipt) MarshalCBOR(w io.Writer) error {
@@ -2522,31 +2657,13 @@ func (t *BurnReceipt) MarshalCBOR(w io.Writer) error {
 		return err
 	}
 
-	// t.Signatures ([][]uint8) (slice)
-	if len(t.Signatures) > 8192 {
-		return xerrors.Errorf("Slice value in field t.Signatures was too long")
-	}
-
-	if err := cw.WriteMajorTypeHeader(cbg.MajArray, uint64(len(t.Signatures))); err != nil {
-		return err
-	}
-	for _, v := range t.Signatures {
-		if len(v) > 2097152 {
-			return xerrors.Errorf("Byte array in field v was too long")
-		}
-
-		if err := cw.WriteMajorTypeHeader(cbg.MajByteString, uint64(len(v))); err != nil {
-			return err
-		}
-
-		if _, err := cw.Write(v); err != nil {
-			return err
-		}
-
-	}
-
 	// t.Status (core.WithdrawalOutcome) (uint8)
 	if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.Status)); err != nil {
+		return err
+	}
+
+	// t.Proof (core.ReceiptProof) (struct)
+	if err := t.Proof.MarshalCBOR(cw); err != nil {
 		return err
 	}
 	return nil
@@ -2615,56 +2732,6 @@ func (t *BurnReceipt) UnmarshalCBOR(r io.Reader) (err error) {
 
 		t.TxID = string(sval)
 	}
-	// t.Signatures ([][]uint8) (slice)
-
-	maj, extra, err = cr.ReadHeader()
-	if err != nil {
-		return err
-	}
-
-	if extra > 8192 {
-		return fmt.Errorf("t.Signatures: array too large (%d)", extra)
-	}
-
-	if maj != cbg.MajArray {
-		return fmt.Errorf("expected cbor array")
-	}
-
-	if extra > 0 {
-		t.Signatures = make([][]uint8, extra)
-	}
-
-	for i := 0; i < int(extra); i++ {
-		{
-			var maj byte
-			var extra uint64
-			var err error
-			_ = maj
-			_ = extra
-			_ = err
-
-			maj, extra, err = cr.ReadHeader()
-			if err != nil {
-				return err
-			}
-
-			if extra > 2097152 {
-				return fmt.Errorf("t.Signatures[i]: byte array too large (%d)", extra)
-			}
-			if maj != cbg.MajByteString {
-				return fmt.Errorf("expected byte array")
-			}
-
-			if extra > 0 {
-				t.Signatures[i] = make([]uint8, extra)
-			}
-
-			if _, err := io.ReadFull(cr, t.Signatures[i]); err != nil {
-				return err
-			}
-
-		}
-	}
 	// t.Status (core.WithdrawalOutcome) (uint8)
 
 	maj, extra, err = cr.ReadHeader()
@@ -2678,6 +2745,15 @@ func (t *BurnReceipt) UnmarshalCBOR(r io.Reader) (err error) {
 		return fmt.Errorf("integer in input was too large for uint8 field")
 	}
 	t.Status = WithdrawalOutcome(extra)
+	// t.Proof (core.ReceiptProof) (struct)
+
+	{
+
+		if err := t.Proof.UnmarshalCBOR(cr); err != nil {
+			return xerrors.Errorf("unmarshaling t.Proof: %w", err)
+		}
+
+	}
 	return nil
 }
 
@@ -2736,27 +2812,9 @@ func (t *MintReceipt) MarshalCBOR(w io.Writer) error {
 		return err
 	}
 
-	// t.Signatures ([][]uint8) (slice)
-	if len(t.Signatures) > 8192 {
-		return xerrors.Errorf("Slice value in field t.Signatures was too long")
-	}
-
-	if err := cw.WriteMajorTypeHeader(cbg.MajArray, uint64(len(t.Signatures))); err != nil {
+	// t.Proof (core.ReceiptProof) (struct)
+	if err := t.Proof.MarshalCBOR(cw); err != nil {
 		return err
-	}
-	for _, v := range t.Signatures {
-		if len(v) > 2097152 {
-			return xerrors.Errorf("Byte array in field v was too long")
-		}
-
-		if err := cw.WriteMajorTypeHeader(cbg.MajByteString, uint64(len(v))); err != nil {
-			return err
-		}
-
-		if _, err := cw.Write(v); err != nil {
-			return err
-		}
-
 	}
 	return nil
 }
@@ -2823,55 +2881,14 @@ func (t *MintReceipt) UnmarshalCBOR(r io.Reader) (err error) {
 		}
 
 	}
-	// t.Signatures ([][]uint8) (slice)
+	// t.Proof (core.ReceiptProof) (struct)
 
-	maj, extra, err = cr.ReadHeader()
-	if err != nil {
-		return err
-	}
+	{
 
-	if extra > 8192 {
-		return fmt.Errorf("t.Signatures: array too large (%d)", extra)
-	}
-
-	if maj != cbg.MajArray {
-		return fmt.Errorf("expected cbor array")
-	}
-
-	if extra > 0 {
-		t.Signatures = make([][]uint8, extra)
-	}
-
-	for i := 0; i < int(extra); i++ {
-		{
-			var maj byte
-			var extra uint64
-			var err error
-			_ = maj
-			_ = extra
-			_ = err
-
-			maj, extra, err = cr.ReadHeader()
-			if err != nil {
-				return err
-			}
-
-			if extra > 2097152 {
-				return fmt.Errorf("t.Signatures[i]: byte array too large (%d)", extra)
-			}
-			if maj != cbg.MajByteString {
-				return fmt.Errorf("expected byte array")
-			}
-
-			if extra > 0 {
-				t.Signatures[i] = make([]uint8, extra)
-			}
-
-			if _, err := io.ReadFull(cr, t.Signatures[i]); err != nil {
-				return err
-			}
-
+		if err := t.Proof.UnmarshalCBOR(cr); err != nil {
+			return xerrors.Errorf("unmarshaling t.Proof: %w", err)
 		}
+
 	}
 	return nil
 }
