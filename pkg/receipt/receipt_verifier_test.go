@@ -365,6 +365,30 @@ func TestReceiptVerifier_EpochMismatchClassifiesBeforeSignatures(t *testing.T) {
 	}
 }
 
+func TestReceiptVerifier_MintEpochMismatchClassifiesBeforeSignatures(t *testing.T) {
+	key := mustGenerateKey(t)
+	source := &stubSignerSource{
+		epoch:     2,
+		signers:   []common.Address{crypto.PubkeyToAddress(key.PublicKey)},
+		threshold: 1,
+	}
+	rv := NewReceiptVerifier(source, nil)
+
+	stale := makeMintReceipt()
+	stale.Proof.SignerEpoch = 1
+	stale.Proof.Signatures = [][]byte{[]byte("not a signature")}
+	if err := rv.VerifyMintReceipt(context.Background(), stale); verificationCode(err) != ReceiptVerificationStaleEpoch {
+		t.Fatalf("stale VerifyMintReceipt() = %v, want stale_epoch", err)
+	}
+
+	future := makeMintReceipt()
+	future.Proof.SignerEpoch = 3
+	future.Proof.Signatures = [][]byte{[]byte("not a signature")}
+	if err := rv.VerifyMintReceipt(context.Background(), future); verificationCode(err) != ReceiptVerificationFutureEpoch {
+		t.Fatalf("future VerifyMintReceipt() = %v, want future_epoch", err)
+	}
+}
+
 func TestReceiptVerifier_ChangingSignerEpochInvalidatesSignature(t *testing.T) {
 	key := mustGenerateKey(t)
 	source := &stubSignerSource{

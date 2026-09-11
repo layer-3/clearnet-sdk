@@ -55,7 +55,7 @@ func TestReceipt_BurnRoundTrip(t *testing.T) {
 	if ack.Code != p2pproto.ReceiptAckAccepted {
 		t.Fatalf("ack not accepted: %+v", ack)
 	}
-	if got == nil || got.WithdrawalID != want.WithdrawalID || got.TxID != want.TxID {
+	if got == nil || got.WithdrawalID != want.WithdrawalID || got.TxID != want.TxID || got.Proof.SignerEpoch != want.Proof.SignerEpoch || len(got.Proof.Signatures) != len(want.Proof.Signatures) || got.Proof.Signatures[0][0] != want.Proof.Signatures[0][0] {
 		t.Fatalf("server received %+v, want %+v", got, want)
 	}
 }
@@ -65,20 +65,27 @@ func TestReceipt_MintRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	var got *core.MintReceipt
 	NewServer(testHandler{
-		mint: func(_ context.Context, _ *core.MintReceipt) (p2pproto.ReceiptAck, error) {
+		mint: func(_ context.Context, r *core.MintReceipt) (p2pproto.ReceiptAck, error) {
+			got = r
 			return p2pproto.ReceiptAck{Code: p2pproto.ReceiptAckAlreadyAccepted}, nil
 		},
 	}, nil).Register(srv)
 
-	ack, err := NewClient(cli, srv.ID(), nil).SendMintReceipt(ctx, &core.MintReceipt{
+	want := &core.MintReceipt{
 		TxID: "tx/1", Account: "yellow://x", AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0x0", Amount: decimal.NewFromInt(5),
-	})
+		Proof: core.ReceiptProof{SignerEpoch: 9, Signatures: [][]byte{{0x42, 0x43}}},
+	}
+	ack, err := NewClient(cli, srv.ID(), nil).SendMintReceipt(ctx, want)
 	if err != nil {
 		t.Fatalf("SendMintReceipt: %v", err)
 	}
 	if ack.Code != p2pproto.ReceiptAckAlreadyAccepted {
 		t.Fatalf("ack = %+v, want already_accepted", ack)
+	}
+	if got == nil || got.Proof.SignerEpoch != want.Proof.SignerEpoch || len(got.Proof.Signatures) != 1 || got.Proof.Signatures[0][0] != want.Proof.Signatures[0][0] {
+		t.Fatalf("server received proof %+v, want %+v", got.Proof, want.Proof)
 	}
 }
 

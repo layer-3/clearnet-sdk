@@ -36,9 +36,10 @@ type fakeConfigRegistryWatcherReader struct {
 	committedRanges []filterRange
 	withDataRanges  []filterRange
 
-	committedErr error
-	withDataErr  error
-	logsErr      error
+	committedErr     error
+	committedErrOnce error
+	withDataErr      error
+	logsErr          error
 }
 
 type filterRange struct {
@@ -47,6 +48,11 @@ type filterRange struct {
 }
 
 func (f *fakeConfigRegistryWatcherReader) FilterConfigCommittedEvents(_ context.Context, from, to uint64) ([]*ConfigRegistryConfigCommitted, error) {
+	if f.committedErrOnce != nil {
+		err := f.committedErrOnce
+		f.committedErrOnce = nil
+		return nil, err
+	}
 	if f.committedErr != nil {
 		return nil, f.committedErr
 	}
@@ -116,14 +122,19 @@ func (h channelConfigRegistryHandler) HandleConfigRegistryEvent(_ context.Contex
 }
 
 type captureConfigRegistryWatcherOnlineTracker struct {
-	mu      sync.Mutex
-	online  int
-	offline []error
+	mu         sync.Mutex
+	online     int
+	offline    []error
+	onlineErr  error
+	offlineErr error
 }
 
 func (t *captureConfigRegistryWatcherOnlineTracker) MarkConfigRegistryWatcherOnline(context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.onlineErr != nil {
+		return t.onlineErr
+	}
 	t.online++
 	return nil
 }
@@ -131,6 +142,9 @@ func (t *captureConfigRegistryWatcherOnlineTracker) MarkConfigRegistryWatcherOnl
 func (t *captureConfigRegistryWatcherOnlineTracker) MarkConfigRegistryWatcherOffline(_ context.Context, reason error) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.offlineErr != nil {
+		return t.offlineErr
+	}
 	t.offline = append(t.offline, reason)
 	return nil
 }
@@ -299,6 +313,80 @@ func TestConfigRegistryWatcher_OnlineTracker(t *testing.T) {
 	_, offline = tracker.snapshot()
 	if !errors.Is(offline[1], pollErr) {
 		t.Fatalf("poll offline reason = %v, want %v", offline[1], pollErr)
+	}
+}
+
+func TestConfigRegistryWatcher_OnlineTrackerRecoversAfterTransientPollFailure(t *testing.T) {
+	registry := common.HexToAddress("0x000000000000000000000000000000000000beef")
+	tracker := &captureConfigRegistryWatcherOnlineTracker{}
+	reader := &fakeConfigRegistryWatcherReader{committedErrOnce: errors.New("temporary rpc failure")}
+	w, err := newConfigRegistryWatcher(fakeHead{head: 20}, registry, reader, 5, &captureConfigRegistryHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetPollInterval(10 * time.Millisecond)
+	w.SetOnlineTracker(tracker)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan error, 1)
+	go func() { errs <- w.Watch(ctx) }()
+	deadline := time.After(time.Second)
+	for {
+		online, offline := tracker.snapshot()
+		if online > 0 && len(offline) >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("watcher did not recover: online=%d offline=%d", online, len(offline))
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	cancel()
+	if err := <-errs; err != nil {
+		t.Fatalf("Watch returned error: %v", err)
+	}
+}
+
+func TestConfigRegistryWatcher_OnlineTrackerErrors(t *testing.T) {
+	registry := common.HexToAddress("0x000000000000000000000000000000000000beef")
+	trackerErr := errors.New("tracker unavailable")
+	tracker := &captureConfigRegistryWatcherOnlineTracker{offlineErr: trackerErr}
+	w, err := newConfigRegistryWatcher(fakeHead{head: 20}, registry, &fakeConfigRegistryWatcherReader{}, 5, &captureConfigRegistryHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetOnlineTracker(tracker)
+	if err := w.Watch(context.Background()); !errors.Is(err, trackerErr) {
+		t.Fatalf("Watch error = %v, want %v", err, trackerErr)
+	}
+
+	tracker = &captureConfigRegistryWatcherOnlineTracker{onlineErr: trackerErr}
+	w, err = newConfigRegistryWatcher(fakeHead{head: 20}, registry, &fakeConfigRegistryWatcherReader{}, 5, &captureConfigRegistryHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetOnlineTracker(tracker)
+	ctx, cancel := context.WithCancel(context.Background())
+	errs := make(chan error, 1)
+	go func() { errs <- w.Watch(ctx) }()
+	deadline := time.After(time.Second)
+	for {
+		_, offline := tracker.snapshot()
+		if len(offline) > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("watcher did not record tracker online failure")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	cancel()
+	if err := <-errs; err != nil {
+		t.Fatalf("Watch returned error after online tracker failure: %v", err)
 	}
 }
 
