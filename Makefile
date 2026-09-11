@@ -49,7 +49,13 @@ ts-deps:
 # per chain; the TS suite covers EVM, Solana, XRPL, and Bitcoin deposits. See devnet/README.md.
 integration: ts-deps
 	go test -tags integration ./pkg/blockchain/... ./internal/integration -v
+	cd integration/eip712deployment && go test -tags integration -v ./...
 	npm --prefix sdk/ts run test:integration:evm
 	npm --prefix sdk/ts run test:integration:sol
 	npm --prefix sdk/ts run test:integration:xrpl
 	npm --prefix sdk/ts run test:integration:btc
+
+# Pre-release check against the explicitly recorded owning custody revision.
+.PHONY: check-evm-artifacts
+check-evm-artifacts:
+	./scripts/check-evm-artifacts.sh "$(CUSTODY_SOURCE)"

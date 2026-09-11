@@ -1,0 +1,370 @@
+[
+  {
+    "typedData": {
+      "types": {
+        "EIP712Domain": [
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "version",
+            "type": "string"
+          },
+          {
+            "name": "chainId",
+            "type": "uint256"
+          },
+          {
+            "name": "verifyingContract",
+            "type": "address"
+          }
+        ],
+        "Execute": [
+          {
+            "name": "to",
+            "type": "address"
+          },
+          {
+            "name": "asset",
+            "type": "address"
+          },
+          {
+            "name": "amount",
+            "type": "uint256"
+          },
+          {
+            "name": "withdrawalId",
+            "type": "bytes32"
+          },
+          {
+            "name": "deadline",
+            "type": "uint256"
+          }
+        ]
+      },
+      "primaryType": "Execute",
+      "domain": {
+        "name": "YellowCustody",
+        "version": "1",
+        "chainId": "0x7a69",
+        "verifyingContract": "0x0000000000000000000000000000000000000064",
+        "salt": ""
+      },
+      "message": {
+        "amount": "1606938044258990275541962092341162602522202993782792835301377",
+        "asset": "0x000000000000000000000000000000000000000a",
+        "deadline": "2000000000",
+        "to": "0x0000000000000000000000000000000000000009",
+        "withdrawalId": "0x000000000000000000000000000000000000000000000000000000000000000b"
+      }
+    },
+    "domainSeparator": "0xfdf5e812855b0075beeb3dc4c3150ef1cf33591f6cf4789b7884c1d4f66ba252",
+    "structHash": "0xc646d019583b03c9085d19409deb53f4e7094eaec66afcc7046a91a885b75533",
+    "digest": "0x2ba8ba095eba28ab224f2e74b6ecff8aae747397ab864c69ddf92fe59d3e48a5",
+    "signature": "0x4493bd6cee7a0a79bf2ee23b3cb49bd82a3405e82160632743d0d7d133fb3d4159441e9b1de9b81edbe03ea66fceeb0eaf8cc4ec13a3e21712f0bf8329aae3d101",
+    "signer": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+  },
+  {
+    "typedData": {
+      "types": {
+        "EIP712Domain": [
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "version",
+            "type": "string"
+          },
+          {
+            "name": "chainId",
+            "type": "uint256"
+          },
+          {
+            "name": "verifyingContract",
+            "type": "address"
+          }
+        ],
+        "UpdateSigners": [
+          {
+            "name": "newSigners",
+            "type": "address[]"
+          },
+          {
+            "name": "newThreshold",
+            "type": "uint256"
+          },
+          {
+            "name": "signerNonce",
+            "type": "uint256"
+          }
+        ]
+      },
+      "primaryType": "UpdateSigners",
+      "domain": {
+        "name": "YellowCustody",
+        "version": "1",
+        "chainId": "0x7a69",
+        "verifyingContract": "0x0000000000000000000000000000000000000064",
+        "salt": ""
+      },
+      "message": {
+        "newSigners": [
+          "0x0000000000000000000000000000000000000001",
+          "0x0000000000000000000000000000000000000002",
+          "0x0000000000000000000000000000000000000003"
+        ],
+        "newThreshold": "2",
+        "signerNonce": "7"
+      }
+    },
+    "domainSeparator": "0xfdf5e812855b0075beeb3dc4c3150ef1cf33591f6cf4789b7884c1d4f66ba252",
+    "structHash": "0xdeb474dbe18e1d844b9a4227ab685fe5f0de650d1a5b91ce3dfd1cf83526b458",
+    "digest": "0xa37403aecb73dc77000f7b4fbfd6416e6d717b2bf42bd898286ce6b40bdb7071",
+    "signature": "0xef2c6e85af30e03e5b12b50592eac25bde7a8eab0a77981b4e5e6a8b82742f603f4462715d1205fdb8122ce975dc1367389febca7122bff686ab6c3a7c68738700",
+    "signer": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+  },
+  {
+    "typedData": {
+      "types": {
+        "EIP712Domain": [
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "version",
+            "type": "string"
+          },
+          {
+            "name": "chainId",
+            "type": "uint256"
+          },
+          {
+            "name": "verifyingContract",
+            "type": "address"
+          }
+        ],
+        "RegisterIssuer": [
+          {
+            "name": "issuerKeys",
+            "type": "address[]"
+          },
+          {
+            "name": "threshold",
+            "type": "uint256"
+          }
+        ]
+      },
+      "primaryType": "RegisterIssuer",
+      "domain": {
+        "name": "YellowConfigRegistry",
+        "version": "1",
+        "chainId": "0x7a69",
+        "verifyingContract": "0x0000000000000000000000000000000000000064",
+        "salt": ""
+      },
+      "message": {
+        "issuerKeys": [
+          "0x0000000000000000000000000000000000000001",
+          "0x0000000000000000000000000000000000000002",
+          "0x0000000000000000000000000000000000000003"
+        ],
+        "threshold": "2"
+      }
+    },
+    "domainSeparator": "0xe3494c96e75b3c9e7479a92492d1125d76ff805948f28da8580b6f4b70eb521c",
+    "structHash": "0x4b7116e47b75b5b3a65fc68648a6bb46c3585e52b516832d064ca3e0344596bd",
+    "digest": "0xc42c1c69c248917dc3ef86ccfd4c592409fad394a2377208ad353c558ad78daa",
+    "signature": "0x25b612be48a624b8eb5ca792200e749558134b73f60cf5ca2b9f6d4e8eb1356f581fd48f03b5995186fe48b02bee4bd32f32fb909c1adf963abcbf766361750c00",
+    "signer": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+  },
+  {
+    "typedData": {
+      "types": {
+        "EIP712Domain": [
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "version",
+            "type": "string"
+          },
+          {
+            "name": "chainId",
+            "type": "uint256"
+          },
+          {
+            "name": "verifyingContract",
+            "type": "address"
+          }
+        ],
+        "SetConfig": [
+          {
+            "name": "issuerId",
+            "type": "address"
+          },
+          {
+            "name": "key",
+            "type": "bytes32"
+          },
+          {
+            "name": "checksum",
+            "type": "bytes32"
+          },
+          {
+            "name": "expectedNonce",
+            "type": "uint256"
+          }
+        ]
+      },
+      "primaryType": "SetConfig",
+      "domain": {
+        "name": "YellowConfigRegistry",
+        "version": "1",
+        "chainId": "0x7a69",
+        "verifyingContract": "0x0000000000000000000000000000000000000064",
+        "salt": ""
+      },
+      "message": {
+        "checksum": "0x000000000000000000000000000000000000000000000000000000000000000e",
+        "expectedNonce": "7",
+        "issuerId": "0x000000000000000000000000000000000000000c",
+        "key": "0x000000000000000000000000000000000000000000000000000000000000000d"
+      }
+    },
+    "domainSeparator": "0xe3494c96e75b3c9e7479a92492d1125d76ff805948f28da8580b6f4b70eb521c",
+    "structHash": "0xfcf9ebd7a31d483e1972eb26d07a0aa554f889a7ffc04f40da90b6af4a22a65e",
+    "digest": "0x69bf7057d0c7984e601f35e56a6704de3016c76d755db25ddbf2cad6beae4e31",
+    "signature": "0x0d7003083ef16a70335f9e316fe3c274b5d006e31ac1aeb81acf816a9dd73d622f8e4684cd19d7109741a5266740460e49f0dab3dc962db240dc0884eb8f596100",
+    "signer": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+  },
+  {
+    "typedData": {
+      "types": {
+        "EIP712Domain": [
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "version",
+            "type": "string"
+          },
+          {
+            "name": "chainId",
+            "type": "uint256"
+          },
+          {
+            "name": "verifyingContract",
+            "type": "address"
+          }
+        ],
+        "SetConfigWithData": [
+          {
+            "name": "issuerId",
+            "type": "address"
+          },
+          {
+            "name": "key",
+            "type": "bytes32"
+          },
+          {
+            "name": "data",
+            "type": "bytes"
+          },
+          {
+            "name": "expectedNonce",
+            "type": "uint256"
+          }
+        ]
+      },
+      "primaryType": "SetConfigWithData",
+      "domain": {
+        "name": "YellowConfigRegistry",
+        "version": "1",
+        "chainId": "0x7a69",
+        "verifyingContract": "0x0000000000000000000000000000000000000064",
+        "salt": ""
+      },
+      "message": {
+        "data": "0x010203",
+        "expectedNonce": "7",
+        "issuerId": "0x000000000000000000000000000000000000000c",
+        "key": "0x000000000000000000000000000000000000000000000000000000000000000d"
+      }
+    },
+    "domainSeparator": "0xe3494c96e75b3c9e7479a92492d1125d76ff805948f28da8580b6f4b70eb521c",
+    "structHash": "0xe07124522c2b8290855b64dd6565de24b918e1b9ab76cf161b350715b5844fbb",
+    "digest": "0x109299c76de3c094c6e885472a39a185fefa205d233da886ba0d6f481265592c",
+    "signature": "0xe50853fd64a186735dfb530ccf29209835976ce3b4f12bcfe68afb8d49ca1bb67c75fe77fa24b0e934717f0a8a44e513f1750fd561c39a001d94f15666056a1e00",
+    "signer": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+  },
+  {
+    "typedData": {
+      "types": {
+        "EIP712Domain": [
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "version",
+            "type": "string"
+          },
+          {
+            "name": "chainId",
+            "type": "uint256"
+          },
+          {
+            "name": "verifyingContract",
+            "type": "address"
+          }
+        ],
+        "UpdateIssuerSettings": [
+          {
+            "name": "issuerId",
+            "type": "address"
+          },
+          {
+            "name": "newIssuerKeys",
+            "type": "address[]"
+          },
+          {
+            "name": "newThreshold",
+            "type": "uint256"
+          },
+          {
+            "name": "expectedNonce",
+            "type": "uint256"
+          }
+        ]
+      },
+      "primaryType": "UpdateIssuerSettings",
+      "domain": {
+        "name": "YellowConfigRegistry",
+        "version": "1",
+        "chainId": "0x7a69",
+        "verifyingContract": "0x0000000000000000000000000000000000000064",
+        "salt": ""
+      },
+      "message": {
+        "expectedNonce": "7",
+        "issuerId": "0x000000000000000000000000000000000000000c",
+        "newIssuerKeys": [
+          "0x0000000000000000000000000000000000000001",
+          "0x0000000000000000000000000000000000000002",
+          "0x0000000000000000000000000000000000000003"
+        ],
+        "newThreshold": "2"
+      }
+    },
+    "domainSeparator": "0xe3494c96e75b3c9e7479a92492d1125d76ff805948f28da8580b6f4b70eb521c",
+    "structHash": "0x20274439143199ef58fc96dd1550a53eaa7c6848413699cad5df4e07c57e04f1",
+    "digest": "0x2df862b0649cbe3d5b0e3b0fc4a429e3168d93f7ce621eec5e9d0e4db2e7fa29",
+    "signature": "0xb55c90cc1a33a9e283ae20018e3d6b3495f4e884a02cbaaf620da6d0852f5ee154a9e3fd668b09c5f0687dd4f113df533a43b627e2c0db8e0f8f757eb084a2e600",
+    "signer": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+  }
+]

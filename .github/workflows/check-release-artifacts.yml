@@ -1,0 +1,49 @@
+name: EIP-712 pre-release artifact gate
+
+# Run manually before publishing, and verify again on release tags. Source
+# compilation stays in private custody CI; this job reads only result metadata.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check gate regressions
+        run: python3 scripts/test-verify-custody-parity-run.py
+      - name: Resolve validated artifact revision
+        id: artifacts
+        run: |
+          revision=$(cat pkg/blockchain/evm/artifacts/validated-sdk-revision)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid validated SDK revision'; exit 1; }
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: layer-3/clearnet-sdk
+          ref: ${{ steps.artifacts.outputs.revision }}
+          path: .validated-sdk
+          persist-credentials: false
+      - name: Require the exact source-validated artifact set
+        run: python3 scripts/compare-evm-artifacts.py . .validated-sdk
+      - name: Read private parity results
+        env:
+          GH_TOKEN: ${{ secrets.CUSTODY_ACTIONS_READ_TOKEN }}
+        run: |
+          test -n "$GH_TOKEN" || { echo 'Configure CUSTODY_ACTIONS_READ_TOKEN with Actions read access to layer-3/custody'; exit 1; }
+          gh api 'repos/layer-3/custody/actions/workflows/test-eip712-artifacts.yml/runs?per_page=100' \
+            --jq '.workflow_runs | map({status, conclusion, event, path, head_sha, display_title, head_repository: {full_name: .head_repository.full_name}})' \
+            > "$RUNNER_TEMP/custody-parity-results.json"
+      - name: Require exact successful source validation
+        run: |
+          python3 scripts/verify-custody-parity-run.py \
+            "$(git rev-parse HEAD)" \
+            pkg/blockchain/evm/artifacts/custody-source-revision \
+            "$RUNNER_TEMP/custody-parity-results.json"

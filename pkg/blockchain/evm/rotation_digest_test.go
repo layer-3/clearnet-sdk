@@ -7,31 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// TestComputeRotationDigest_GoldenVector pins the Go implementation to the
-// Solidity contract. The golden digest was produced by Custody.sol's exact
-// keccak256(abi.encode(...)) for these inputs, so a divergence here means the Go
-// digest no longer matches what updateSigners will verify on chain.
-func TestComputeRotationDigest_GoldenVector(t *testing.T) {
-	chainID := uint64(31337)
-	vault := common.HexToAddress("0x0000000000000000000000000000000000AbC123")
-	signers := []common.Address{
-		common.HexToAddress("0x0000000000000000000000000000000000000001"),
-		common.HexToAddress("0x0000000000000000000000000000000000000002"),
-		common.HexToAddress("0x0000000000000000000000000000000000000003"),
-	}
-	threshold := big.NewInt(2)
-	nonce := big.NewInt(7)
-
-	want := common.HexToHash("0x96fbf07188f867ef8a2f43996500d7926c85d189dcf8951a03808d864853a6cd")
-	got := common.Hash(ComputeRotationDigest(chainID, vault, signers, threshold, nonce))
-	if got != want {
-		t.Fatalf("rotation digest mismatch\nwant %s\ngot  %s", want.Hex(), got.Hex())
-	}
-}
-
-// TestComputeRotationDigest_InputsDifferentiate guards against a bug where the
-// digest ignores one of its inputs (e.g. dropping signerNonce) that the golden
-// alone could miss — every field must change the digest.
+// Every rotation field remains bound by the EIP-712 authorization.
 func TestComputeRotationDigest_InputsDifferentiate(t *testing.T) {
 	base := struct {
 		chainID   uint64

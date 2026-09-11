@@ -61,13 +61,22 @@ func NetworkChainID(networkID string) *big.Int {
 
 // ComputeDomainSeparator computes the EIP-712 domain separator for the given chain ID.
 func ComputeDomainSeparator(chainID *big.Int) [32]byte {
-	nameHash := crypto.Keccak256Hash([]byte(Name))
-	versionHash := crypto.Keccak256Hash([]byte(Version))
+	return ComputeDomainSeparatorFor(Name, Version, chainID, RouterAddr)
+}
+
+// ComputeDomainSeparatorFor builds the standard four-field EIP-712 domain for
+// a named protocol and verifier. Invalid uint256 chain IDs panic with the field name.
+func ComputeDomainSeparatorFor(name, version string, chainID *big.Int, verifier common.Address) [32]byte {
+	if chainID == nil || chainID.Sign() < 0 || chainID.BitLen() > 256 {
+		panic(fmt.Sprintf("eip712: invalid uint256 chainId: %v", chainID))
+	}
+	nameHash := crypto.Keccak256Hash([]byte(name))
+	versionHash := crypto.Keccak256Hash([]byte(version))
 	args := abi.Arguments{
 		{Type: abiutil.Bytes32}, {Type: abiutil.Bytes32}, {Type: abiutil.Bytes32},
 		{Type: abiutil.Uint256}, {Type: abiutil.Address},
 	}
-	packed, _ := args.Pack(DomainTypeHash, nameHash, versionHash, chainID, RouterAddr)
+	packed, _ := args.Pack(DomainTypeHash, nameHash, versionHash, chainID, verifier)
 	return crypto.Keccak256Hash(packed)
 }
 
