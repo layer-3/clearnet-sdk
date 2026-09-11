@@ -37,7 +37,7 @@ type ConfigRegistryCursor struct {
 
 // ReceiptSignerState is one consistent latest KEY_SIGNERS view used to prepare
 // or verify issuer receipts. Epoch, signers, and threshold must come from the
-// same resolved registry state.
+// same resolved registry state. Epoch zero is reserved and invalid.
 type ReceiptSignerState struct {
 	Epoch     uint64
 	Signers   []common.Address

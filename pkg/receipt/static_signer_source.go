@@ -21,7 +21,11 @@ type StaticSignerSource struct {
 
 // NewStaticSignerSource validates the inputs and returns a source that
 // hands the same (epoch, signers, threshold) tuple to every Load call.
+// Epoch zero is reserved and rejected.
 func NewStaticSignerSource(epoch uint64, signers []common.Address, threshold int) (*StaticSignerSource, error) {
+	if epoch == 0 {
+		return nil, errors.New("custody signer epoch must be positive")
+	}
 	if len(signers) == 0 {
 		return nil, errors.New("custody signer set is empty")
 	}

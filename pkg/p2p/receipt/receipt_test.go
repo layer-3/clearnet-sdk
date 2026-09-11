@@ -102,7 +102,7 @@ func TestReceipt_HandlerError(t *testing.T) {
 	}
 }
 
-func TestReceipt_MalformedRequestReturnsCorruptAck(t *testing.T) {
+func TestReceipt_TruncatedRequestReturnsTemporaryAck(t *testing.T) {
 	srv, cli := newPair(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -121,7 +121,34 @@ func TestReceipt_MalformedRequestReturnsCorruptAck(t *testing.T) {
 	}
 	var ack p2pproto.ReceiptAck
 	var version cborx.Version
-	if err := cborx.ReadFrame(io.LimitReader(stream, maxReceiptBytes), cborx.MaxControlFrame, &version, &ack); err != nil {
+	if err := cborx.ReadFrame(io.LimitReader(stream, int64(maxReceiptBytes)), cborx.MaxControlFrame, &version, &ack); err != nil {
+		t.Fatalf("read ack: %v", err)
+	}
+	if ack.Code != p2pproto.ReceiptAckTemporaryFailure || ack.Reason == "" {
+		t.Fatalf("ack = %+v, want temporary_failure with reason", ack)
+	}
+}
+
+func TestReceipt_SchemaFailureReturnsCorruptAck(t *testing.T) {
+	srv, cli := newPair(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	NewServer(testHandler{}, nil).Register(srv)
+	stream, err := cli.NewStream(ctx, srv.ID(), protocol.ID(p2pproto.ProtocolBurnReceipt))
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer stream.Close()
+	// Frame length 2: version 1 followed by a scalar where BurnReceipt expects an array.
+	if _, err := stream.Write([]byte{0x02, 0x01, 0x01}); err != nil {
+		t.Fatalf("write schema-invalid frame: %v", err)
+	}
+	if err := stream.CloseWrite(); err != nil {
+		t.Fatalf("close write: %v", err)
+	}
+	var ack p2pproto.ReceiptAck
+	var version cborx.Version
+	if err := cborx.ReadFrame(io.LimitReader(stream, int64(maxReceiptBytes)), cborx.MaxControlFrame, &version, &ack); err != nil {
 		t.Fatalf("read ack: %v", err)
 	}
 	if ack.Code != p2pproto.ReceiptAckCorrupt || ack.Reason == "" {

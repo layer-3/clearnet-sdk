@@ -79,6 +79,17 @@ func TestWireGoldens(t *testing.T) {
 	}
 }
 
+func TestReceiptAckUnknownCodeFallsBackToTemporaryFailure(t *testing.T) {
+	var ack ReceiptAck
+	// 82 = array(2); 6d = text string "future_code"; 60 = empty reason.
+	if err := ack.UnmarshalCBOR(bytes.NewReader([]byte{0x82, 0x6b, 'f', 'u', 't', 'u', 'r', 'e', '_', 'c', 'o', 'd', 'e', 0x60})); err != nil {
+		t.Fatalf("UnmarshalCBOR: %v", err)
+	}
+	if ack.Code != ReceiptAckTemporaryFailure || ack.Reason == "" {
+		t.Fatalf("ack = %+v, want temporary_failure with synthesized reason", ack)
+	}
+}
+
 func TestWireRoundTrip(t *testing.T) {
 	var nonce [32]byte
 	nonce[0], nonce[31] = 0x11, 0x22

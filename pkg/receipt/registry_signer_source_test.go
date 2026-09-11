@@ -100,6 +100,25 @@ func TestRegistrySignerSource_RequiresGate(t *testing.T) {
 	}
 }
 
+func TestRegistrySignerSource_RejectsZeroEpoch(t *testing.T) {
+	registry := common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	issuerID := common.HexToAddress("0x00000000000000000000000000000000000000bb")
+	payload, err := MarshalSignerPayload([]common.Address{common.HexToAddress("0x0000000000000000000000000000000000000001")}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := NewRegistrySignerSource(registry, fakeRegistryEventReader{event: core.ConfigRegistryEvent{
+		Registry: registry, IssuerID: issuerID, Key: ConfigRegistrySignersKey,
+		Checksum: checksum(payload), HasData: true, Data: payload,
+	}, ok: true}, onlineReceiptSignerStateGate(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.LoadLatestReceiptSignerState(context.Background(), issuerID); err == nil {
+		t.Fatal("zero signer epoch unexpectedly accepted")
+	}
+}
+
 func TestRegistrySignerSource_Gate(t *testing.T) {
 	registry := common.HexToAddress("0x00000000000000000000000000000000000000aa")
 	issuerID := common.HexToAddress("0x00000000000000000000000000000000000000bb")

@@ -18,8 +18,8 @@ func TestReceiptVerificationAckCode(t *testing.T) {
 		{ReceiptVerificationStaleEpoch, p2pproto.ReceiptAckStaleEpoch},
 		{ReceiptVerificationFutureEpoch, p2pproto.ReceiptAckFutureEpoch},
 		{ReceiptVerificationIssuerUnavailable, p2pproto.ReceiptAckTemporaryFailure},
-		{ReceiptVerificationUnknownWithdrawal, p2pproto.ReceiptAckRejected},
-		{ReceiptVerificationIssuerStateInvalid, p2pproto.ReceiptAckCorrupt},
+		{ReceiptVerificationUnknownWithdrawal, p2pproto.ReceiptAckTemporaryFailure},
+		{ReceiptVerificationIssuerStateInvalid, p2pproto.ReceiptAckTemporaryFailure},
 	}
 	for _, tc := range tests {
 		err := &ReceiptVerificationError{Code: tc.code}
@@ -29,5 +29,20 @@ func TestReceiptVerificationAckCode(t *testing.T) {
 	}
 	if got := ReceiptVerificationAckCode(errors.New("plain")); got != p2pproto.ReceiptAckTemporaryFailure {
 		t.Fatalf("plain error maps to %s, want temporary_failure", got)
+	}
+	if len(receiptVerificationCodes) != len(tests) {
+		t.Fatalf("canonical verification code list has %d entries, want %d", len(receiptVerificationCodes), len(tests))
+	}
+	for _, code := range receiptVerificationCodes {
+		found := false
+		for _, tc := range tests {
+			if tc.code == code {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("canonical verification code %s has no expected ACK mapping", code)
+		}
 	}
 }

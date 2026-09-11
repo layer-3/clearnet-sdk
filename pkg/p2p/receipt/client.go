@@ -86,7 +86,7 @@ func (c *Client) submit(ctx context.Context, proto string, body cbg.CBORMarshale
 
 	var ack p2pproto.ReceiptAck
 	var v cborx.Version
-	if err := cborx.ReadFrame(io.LimitReader(s, maxReceiptBytes), cborx.MaxControlFrame, &v, &ack); err != nil {
+	if err := cborx.ReadFrame(io.LimitReader(s, int64(maxReceiptBytes)), cborx.MaxControlFrame, &v, &ack); err != nil {
 		return p2pproto.ReceiptAck{}, fmt.Errorf("decode ack: %w", err)
 	}
 	if err := ack.Validate(); err != nil {

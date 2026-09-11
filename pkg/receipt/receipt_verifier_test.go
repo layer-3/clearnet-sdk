@@ -144,9 +144,9 @@ func TestWithdrawalIssuerResolutionMapsToVerificationAndAck(t *testing.T) {
 		verify     ReceiptVerificationCode
 		ack        p2pproto.ReceiptAckCode
 	}{
-		{"unknown withdrawal", WithdrawalIssuerUnknownWithdrawal, ReceiptVerificationUnknownWithdrawal, p2pproto.ReceiptAckRejected},
+		{"unknown withdrawal", WithdrawalIssuerUnknownWithdrawal, ReceiptVerificationUnknownWithdrawal, p2pproto.ReceiptAckTemporaryFailure},
 		{"issuer unavailable", WithdrawalIssuerUnavailable, ReceiptVerificationIssuerUnavailable, p2pproto.ReceiptAckTemporaryFailure},
-		{"invalid issuer state", WithdrawalIssuerStateInvalid, ReceiptVerificationIssuerStateInvalid, p2pproto.ReceiptAckCorrupt},
+		{"invalid issuer state", WithdrawalIssuerStateInvalid, ReceiptVerificationIssuerStateInvalid, p2pproto.ReceiptAckTemporaryFailure},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -687,6 +687,14 @@ func TestMintReceiptDigest_NoStringCollision(t *testing.T) {
 	d2 := MintReceiptDigest(mk("abcd", "ef", "ghi"))
 	if d1 == d2 {
 		t.Fatalf("digest collided across variable-field boundary shift: %x", d1)
+	}
+}
+
+func TestReceiptDigestDomainSeparation(t *testing.T) {
+	burn := makeReceipt(0x51)
+	mint := makeMintReceipt()
+	if BurnReceiptDigest(burn) == MintReceiptDigest(mint) {
+		t.Fatal("mint and burn logical digests are not domain-separated")
 	}
 }
 

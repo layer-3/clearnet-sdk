@@ -16,9 +16,12 @@ package receipt
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"os"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -35,8 +38,9 @@ import (
 // or hostile peer from streaming the server out of memory, and the deadline
 // bounds a single request end to end.
 const (
-	maxReceiptBytes    = 64 * 1024
-	streamReadDeadline = 10 * time.Second
+	maxReceiptBytes     = cborx.MaxControlFrame + binary.MaxVarintLen64
+	streamReadDeadline  = 10 * time.Second
+	streamWriteDeadline = 10 * time.Second
 )
 
 // Server handles inbound burn/mint receipt streams, delegating each decoded
@@ -116,12 +120,12 @@ func (s *Server) serve(
 		return
 	}
 
-	ack, err := dispatch(ctx, io.LimitReader(stream, maxReceiptBytes))
+	ack, err := dispatch(ctx, io.LimitReader(stream, int64(maxReceiptBytes)))
 	if err != nil {
 		lg.Warn("handler error", "error", err)
 		code := p2pproto.ReceiptAckTemporaryFailure
 		var decodeErr *decodeError
-		if errors.As(err, &decodeErr) {
+		if errors.As(err, &decodeErr) && !transientDecodeError(err) {
 			code = p2pproto.ReceiptAckCorrupt
 		}
 		writeAck(stream, p2pproto.ReceiptAck{Code: code, Reason: err.Error()}, lg)
@@ -136,6 +140,10 @@ func (s *Server) serve(
 }
 
 func writeAck(stream network.Stream, ack p2pproto.ReceiptAck, logger log.Logger) {
+	if err := stream.SetWriteDeadline(time.Now().Add(streamWriteDeadline)); err != nil {
+		logger.Warn("set write deadline failed", "error", err)
+		return
+	}
 	var buf bytes.Buffer
 	if err := cborx.WriteFrame(&buf, cborx.V1, &ack); err != nil {
 		logger.Warn("encode ack failed", "error", err)
@@ -144,4 +152,16 @@ func writeAck(stream network.Stream, ack p2pproto.ReceiptAck, logger log.Logger)
 	if _, err := stream.Write(buf.Bytes()); err != nil {
 		logger.Warn("write ack failed", "error", err)
 	}
+}
+
+func transientDecodeError(err error) bool {
+	if errors.Is(err, cborx.ErrFrameTooLarge) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var timeout net.Error
+	return errors.As(err, &timeout) && timeout.Timeout()
 }

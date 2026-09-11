@@ -186,7 +186,9 @@ func (v *ReceiptSignatureValidator) decodeSignature(sig []byte) (common.Address,
 }
 
 // VerifySignatures verifies a distinct authorized quorum against the frozen
-// snapshot used during collection.
+// snapshot used during collection. It is a lower-level quorum operation and
+// does not compare a receipt's declared signer epoch; custody-to-clearnet
+// ingress must use VerifyBurnReceipt or VerifyMintReceipt for that check.
 func (v *ReceiptSignatureValidator) VerifySignatures(sigs [][]byte) error {
 	if v == nil || v.snapshot == nil || v.snapshot.Threshold() <= 0 {
 		return verificationError(ReceiptVerificationInvalidSignatures, 0, 0, errors.New("receipt signature validator not configured"))
@@ -276,7 +278,9 @@ func (rv *ReceiptVerifier) VerifyBurnReceipt(ctx context.Context, v *core.BurnRe
 }
 
 // PrepareBurnReceiptSignatures freezes the current issuer receipt quorum and
-// exact BurnReceipt digest for poison-tolerant candidate collection.
+// exact BurnReceipt digest for poison-tolerant candidate collection. The
+// returned validator can verify signatures, but VerifySignatures alone does
+// not enforce the receipt proof epoch.
 func (rv *ReceiptVerifier) PrepareBurnReceiptSignatures(ctx context.Context, v *core.BurnReceipt) (*ReceiptSignatureValidator, error) {
 	if v == nil {
 		return nil, verificationError(ReceiptVerificationMalformed, 0, 0, errors.New("nil burn receipt"))
@@ -308,7 +312,9 @@ func (rv *ReceiptVerifier) VerifyMintReceipt(ctx context.Context, v *core.MintRe
 }
 
 // PrepareMintReceiptSignatures freezes the current issuer receipt quorum and
-// exact MintReceipt digest for poison-tolerant candidate collection.
+// exact MintReceipt digest for poison-tolerant candidate collection. The
+// returned validator can verify signatures, but VerifySignatures alone does
+// not enforce the receipt proof epoch.
 func (rv *ReceiptVerifier) PrepareMintReceiptSignatures(ctx context.Context, v *core.MintReceipt) (*ReceiptSignatureValidator, error) {
 	if v == nil {
 		return nil, verificationError(ReceiptVerificationMalformed, 0, 0, errors.New("nil mint receipt"))
@@ -398,7 +404,7 @@ func recoverCanonicalReceiptSigner(digest, sig []byte) (common.Address, []byte, 
 // BurnReceiptDigest(v)).
 // Format: keccak256(
 //
-//	WithdrawalID || BlockHash || EntryIndex[uint64be] ||
+//	"ynp.receipt.logical_digest.burn.v1" || WithdrawalID || BlockHash || EntryIndex[uint64be] ||
 //	len(TxID)[uint32be] || TxID || Status[byte]).
 //
 // The trailing Status byte binds the terminal outcome (Executed vs
@@ -408,7 +414,8 @@ func recoverCanonicalReceiptSigner(digest, sig []byte) (common.Address, []byte, 
 // matching signatures.
 func BurnReceiptDigest(v *core.BurnReceipt) [32]byte {
 	txID := []byte(v.TxID)
-	buf := make([]byte, 0, 32+32+8+4+len(txID)+1)
+	buf := make([]byte, 0, len(burnReceiptDigestDomain)+32+32+8+4+len(txID)+1)
+	buf = append(buf, burnReceiptDigestDomain...)
 	buf = append(buf, v.WithdrawalID[:]...)
 	buf = append(buf, v.BlockHash[:]...)
 	var index [8]byte
@@ -428,7 +435,7 @@ func BurnReceiptDigest(v *core.BurnReceipt) [32]byte {
 //
 // Format: keccak256(
 //
-//	len(TxID)[uint32be]     || TxID ||
+//	"ynp.receipt.logical_digest.mint.v1" || len(TxID)[uint32be] || TxID ||
 //	len(Account)[uint32be]  || Account ||
 //	len(AssetURI)[uint32be] || AssetURI ||
 //	len(Amount)[uint32be]   || canonical-CBOR(decimal.Decimal))
@@ -445,7 +452,8 @@ func MintReceiptDigest(v *core.MintReceipt) [32]byte {
 	account := []byte(v.Account)
 	assetURI := []byte(v.AssetURI)
 	amountBytes := amount.Bytes()
-	buf := make([]byte, 0, 4+len(txID)+4+len(account)+4+len(assetURI)+4+len(amountBytes))
+	buf := make([]byte, 0, len(mintReceiptDigestDomain)+4+len(txID)+4+len(account)+4+len(assetURI)+4+len(amountBytes))
+	buf = append(buf, mintReceiptDigestDomain...)
 	var u32 [4]byte
 	binary.BigEndian.PutUint32(u32[:], uint32(len(txID)))
 	buf = append(buf, u32[:]...)
@@ -461,6 +469,11 @@ func MintReceiptDigest(v *core.MintReceipt) [32]byte {
 	buf = append(buf, amountBytes...)
 	return [32]byte(crypto.Keccak256Hash(buf))
 }
+
+const (
+	burnReceiptDigestDomain = "ynp.receipt.logical_digest.burn.v1"
+	mintReceiptDigestDomain = "ynp.receipt.logical_digest.mint.v1"
+)
 
 func ReceiptAuthorizationDigest(epoch uint64, logicalDigest [32]byte) [32]byte {
 	var buf [8 + 32]byte

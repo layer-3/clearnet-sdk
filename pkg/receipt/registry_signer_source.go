@@ -63,6 +63,9 @@ func (s *RegistrySignerSource) LoadLatestReceiptSignerState(ctx context.Context,
 	if ev.Key != ConfigRegistrySignersKey {
 		return core.ReceiptSignerState{}, fmt.Errorf("registry signer source: unexpected key 0x%s", common.Bytes2Hex(ev.Key[:]))
 	}
+	if ev.Epoch == 0 {
+		return core.ReceiptSignerState{}, fmt.Errorf("registry signer source: signer epoch must be positive")
+	}
 	if !ev.HasData {
 		return core.ReceiptSignerState{}, fmt.Errorf("registry signer source: signer event has no data")
 	}

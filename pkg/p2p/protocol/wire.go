@@ -267,6 +267,12 @@ func (t *ReceiptAck) UnmarshalCBOR(r io.Reader) error {
 		return fmt.Errorf("ReceiptAck.Reason: %w", err)
 	}
 	t.Reason = reason
+	if !isKnownReceiptAckCode(t.Code) {
+		if t.Reason == "" {
+			t.Reason = fmt.Sprintf("unsupported receipt ACK code: %s", code)
+		}
+		t.Code = ReceiptAckTemporaryFailure
+	}
 	// Skip any trailing elements (ScanForLinks walks exactly one CBOR item per
 	// call, recursing into arrays/maps); the CID sink is a no-op.
 	noLink := func(cid.Cid) {}
@@ -276,4 +282,14 @@ func (t *ReceiptAck) UnmarshalCBOR(r io.Reader) error {
 		}
 	}
 	return t.Validate()
+}
+
+func isKnownReceiptAckCode(code ReceiptAckCode) bool {
+	switch code {
+	case ReceiptAckAccepted, ReceiptAckAlreadyAccepted, ReceiptAckStaleEpoch, ReceiptAckFutureEpoch,
+		ReceiptAckSignerStateUnavailable, ReceiptAckTemporaryFailure, ReceiptAckRejected, ReceiptAckCorrupt:
+		return true
+	default:
+		return false
+	}
 }

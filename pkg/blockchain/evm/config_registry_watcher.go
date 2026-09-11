@@ -58,11 +58,11 @@ var _ blockNumberReader = (*ethclient.Client)(nil)
 // ConfigWithDataCommitted events with broad filters, normalizes them, and
 // delivers them to a handler. It keeps no signer/config business state.
 type ConfigRegistryWatcher struct {
-	client       blockNumberReader
-	registry     ConfigRegistryWatcherReader
-	registryAddr common.Address
-	handler      ConfigRegistryEventHandler
-	cursorSource ConfigRegistryCursorSource
+	client        blockNumberReader
+	registry      ConfigRegistryWatcherReader
+	registryAddr  common.Address
+	handler       ConfigRegistryEventHandler
+	cursorSource  ConfigRegistryCursorSource
 	onlineTracker ConfigRegistryWatcherOnlineTracker
 
 	confirmations  uint64
@@ -115,6 +115,8 @@ func (w *ConfigRegistryWatcher) SetCursorSource(src ConfigRegistryCursorSource) 
 }
 
 func (w *ConfigRegistryWatcher) SetOnlineTracker(tracker ConfigRegistryWatcherOnlineTracker) {
+	// TODO(sdk): add per-poll timeouts and a freshness heartbeat/TTL so a
+	// successful but stale or wedged RPC cannot keep signer state ready forever.
 	w.onlineTracker = tracker
 }
 
@@ -184,6 +186,9 @@ func (w *ConfigRegistryWatcher) initCursor(ctx context.Context) error {
 }
 
 func (w *ConfigRegistryWatcher) Watch(ctx context.Context) error {
+	// TODO(sdk): reset started on normal cancellation if watcher restartability
+	// becomes part of the lifecycle contract; current callers construct a fresh
+	// watcher for a resumed stream.
 	w.mu.Lock()
 	if w.started {
 		w.mu.Unlock()

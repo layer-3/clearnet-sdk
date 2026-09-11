@@ -12,7 +12,7 @@ func ReceiptVerificationAckCode(err error) p2pproto.ReceiptAckCode {
 		return p2pproto.ReceiptAckTemporaryFailure
 	}
 	switch verificationErr.Code {
-	case ReceiptVerificationMalformed, ReceiptVerificationInvalidSignatures, ReceiptVerificationIssuerStateInvalid:
+	case ReceiptVerificationMalformed, ReceiptVerificationInvalidSignatures:
 		return p2pproto.ReceiptAckCorrupt
 	case ReceiptVerificationSignerStateUnavailable:
 		return p2pproto.ReceiptAckSignerStateUnavailable
@@ -23,8 +23,23 @@ func ReceiptVerificationAckCode(err error) p2pproto.ReceiptAckCode {
 	case ReceiptVerificationIssuerUnavailable:
 		return p2pproto.ReceiptAckTemporaryFailure
 	case ReceiptVerificationUnknownWithdrawal:
-		return p2pproto.ReceiptAckRejected
+		// TODO(clearnet): revisit permanent rejection once a resolver can prove
+		// that an unknown withdrawal can never exist, rather than being behind.
+		return p2pproto.ReceiptAckTemporaryFailure
+	case ReceiptVerificationIssuerStateInvalid:
+		return p2pproto.ReceiptAckTemporaryFailure
 	default:
 		return p2pproto.ReceiptAckTemporaryFailure
 	}
+}
+
+var receiptVerificationCodes = []ReceiptVerificationCode{
+	ReceiptVerificationMalformed,
+	ReceiptVerificationSignerStateUnavailable,
+	ReceiptVerificationStaleEpoch,
+	ReceiptVerificationFutureEpoch,
+	ReceiptVerificationInvalidSignatures,
+	ReceiptVerificationIssuerUnavailable,
+	ReceiptVerificationUnknownWithdrawal,
+	ReceiptVerificationIssuerStateInvalid,
 }

@@ -45,8 +45,10 @@ func (e *ReceiptSignerStateNotReadyError) Unwrap() error {
 }
 
 type InMemoryReceiptSignerStateGate struct {
-	mu         sync.RWMutex
-	subsystems map[ReceiptSignerStateSubsystem]error
+	mu          sync.RWMutex
+	initialized bool
+	order       []ReceiptSignerStateSubsystem
+	subsystems  map[ReceiptSignerStateSubsystem]error
 }
 
 func NewInMemoryReceiptSignerStateGate(subsystems ...ReceiptSignerStateSubsystem) (*InMemoryReceiptSignerStateGate, error) {
@@ -64,7 +66,7 @@ func NewInMemoryReceiptSignerStateGate(subsystems ...ReceiptSignerStateSubsystem
 		}
 		m[subsystem] = starting
 	}
-	return &InMemoryReceiptSignerStateGate{subsystems: m}, nil
+	return &InMemoryReceiptSignerStateGate{initialized: true, order: subsystems, subsystems: m}, nil
 }
 
 func (g *InMemoryReceiptSignerStateGate) CheckReceiptSignerStateReady(context.Context) error {
@@ -73,10 +75,23 @@ func (g *InMemoryReceiptSignerStateGate) CheckReceiptSignerStateReady(context.Co
 	}
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	for subsystem, reason := range g.subsystems {
+	if !g.initialized || len(g.order) == 0 || len(g.subsystems) == 0 {
+		return &ReceiptSignerStateNotReadyError{Reason: errors.New("receipt signer state gate has no configured subsystems")}
+	}
+	var offline []error
+	var firstSubsystem ReceiptSignerStateSubsystem
+	var firstReason error
+	for _, subsystem := range g.order {
+		reason := g.subsystems[subsystem]
 		if reason != nil {
-			return &ReceiptSignerStateNotReadyError{Subsystem: subsystem, Reason: reason}
+			if firstReason == nil {
+				firstSubsystem, firstReason = subsystem, reason
+			}
+			offline = append(offline, fmt.Errorf("%s: %w", subsystem, reason))
 		}
+	}
+	if firstReason != nil {
+		return &ReceiptSignerStateNotReadyError{Subsystem: firstSubsystem, Reason: errors.Join(offline...)}
 	}
 	return nil
 }
