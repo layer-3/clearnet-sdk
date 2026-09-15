@@ -30,19 +30,15 @@ func TestReceiptVerificationAckCode(t *testing.T) {
 	if got := ReceiptVerificationAckCode(errors.New("plain")); got != p2pproto.ReceiptAckTemporaryFailure {
 		t.Fatalf("plain error maps to %s, want temporary_failure", got)
 	}
-	if len(receiptVerificationCodes) != len(tests) {
-		t.Fatalf("canonical verification code list has %d entries, want %d", len(receiptVerificationCodes), len(tests))
+	if len(receiptVerificationCodes) != len(receiptVerificationAckMappings) {
+		t.Fatalf("canonical verification code list has %d entries, want %d mappings", len(receiptVerificationCodes), len(receiptVerificationAckMappings))
 	}
 	for _, code := range receiptVerificationCodes {
-		found := false
-		for _, tc := range tests {
-			if tc.code == code {
-				found = true
-				break
-			}
+		if _, ok := receiptVerificationAckMappings[code]; !ok {
+			t.Fatalf("canonical verification code %s has no ACK mapping", code)
 		}
-		if !found {
-			t.Fatalf("canonical verification code %s has no expected ACK mapping", code)
-		}
+	}
+	if _, ok := receiptVerificationAckMappings[ReceiptVerificationCode("future_unlisted_code")]; ok {
+		t.Fatal("unknown verification code unexpectedly has an explicit mapping")
 	}
 }

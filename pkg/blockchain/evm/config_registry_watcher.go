@@ -115,8 +115,6 @@ func (w *ConfigRegistryWatcher) SetCursorSource(src ConfigRegistryCursorSource) 
 }
 
 func (w *ConfigRegistryWatcher) SetOnlineTracker(tracker ConfigRegistryWatcherOnlineTracker) {
-	// TODO(sdk): add per-poll timeouts and a freshness heartbeat/TTL so a
-	// successful but stale or wedged RPC cannot keep signer state ready forever.
 	w.onlineTracker = tracker
 }
 
@@ -186,9 +184,6 @@ func (w *ConfigRegistryWatcher) initCursor(ctx context.Context) error {
 }
 
 func (w *ConfigRegistryWatcher) Watch(ctx context.Context) error {
-	// TODO(sdk): reset started on normal cancellation if watcher restartability
-	// becomes part of the lifecycle contract; current callers construct a fresh
-	// watcher for a resumed stream.
 	w.mu.Lock()
 	if w.started {
 		w.mu.Unlock()
@@ -221,6 +216,8 @@ func (w *ConfigRegistryWatcher) Watch(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
 	}
+	// TODO(sdk): add per-poll timeouts and a freshness heartbeat/TTL so a
+	// successful but stale or wedged RPC cannot keep signer state ready forever.
 	if err := w.pollOnce(ctx); err != nil {
 		w.markConfigRegistryWatcherOffline(ctx, err)
 		w.logger.Debug("ConfigRegistryWatcher initial poll failed", "error", err)

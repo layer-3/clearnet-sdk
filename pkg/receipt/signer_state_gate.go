@@ -66,7 +66,8 @@ func NewInMemoryReceiptSignerStateGate(subsystems ...ReceiptSignerStateSubsystem
 		}
 		m[subsystem] = starting
 	}
-	return &InMemoryReceiptSignerStateGate{initialized: true, order: subsystems, subsystems: m}, nil
+	order := append([]ReceiptSignerStateSubsystem(nil), subsystems...)
+	return &InMemoryReceiptSignerStateGate{initialized: true, order: order, subsystems: m}, nil
 }
 
 func (g *InMemoryReceiptSignerStateGate) CheckReceiptSignerStateReady(context.Context) error {

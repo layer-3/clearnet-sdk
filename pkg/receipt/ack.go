@@ -11,26 +11,23 @@ func ReceiptVerificationAckCode(err error) p2pproto.ReceiptAckCode {
 	if !errors.As(err, &verificationErr) {
 		return p2pproto.ReceiptAckTemporaryFailure
 	}
-	switch verificationErr.Code {
-	case ReceiptVerificationMalformed, ReceiptVerificationInvalidSignatures:
-		return p2pproto.ReceiptAckCorrupt
-	case ReceiptVerificationSignerStateUnavailable:
-		return p2pproto.ReceiptAckSignerStateUnavailable
-	case ReceiptVerificationStaleEpoch:
-		return p2pproto.ReceiptAckStaleEpoch
-	case ReceiptVerificationFutureEpoch:
-		return p2pproto.ReceiptAckFutureEpoch
-	case ReceiptVerificationIssuerUnavailable:
-		return p2pproto.ReceiptAckTemporaryFailure
-	case ReceiptVerificationUnknownWithdrawal:
-		// TODO(clearnet): revisit permanent rejection once a resolver can prove
-		// that an unknown withdrawal can never exist, rather than being behind.
-		return p2pproto.ReceiptAckTemporaryFailure
-	case ReceiptVerificationIssuerStateInvalid:
-		return p2pproto.ReceiptAckTemporaryFailure
-	default:
-		return p2pproto.ReceiptAckTemporaryFailure
+	if code, ok := receiptVerificationAckMappings[verificationErr.Code]; ok {
+		return code
 	}
+	return p2pproto.ReceiptAckTemporaryFailure
+}
+
+var receiptVerificationAckMappings = map[ReceiptVerificationCode]p2pproto.ReceiptAckCode{
+	ReceiptVerificationMalformed:              p2pproto.ReceiptAckCorrupt,
+	ReceiptVerificationInvalidSignatures:      p2pproto.ReceiptAckCorrupt,
+	ReceiptVerificationSignerStateUnavailable: p2pproto.ReceiptAckSignerStateUnavailable,
+	ReceiptVerificationStaleEpoch:             p2pproto.ReceiptAckStaleEpoch,
+	ReceiptVerificationFutureEpoch:            p2pproto.ReceiptAckFutureEpoch,
+	ReceiptVerificationIssuerUnavailable:      p2pproto.ReceiptAckTemporaryFailure,
+	// TODO(clearnet): revisit permanent rejection once a resolver can prove
+	// that an unknown withdrawal can never exist, rather than being behind.
+	ReceiptVerificationUnknownWithdrawal:  p2pproto.ReceiptAckTemporaryFailure,
+	ReceiptVerificationIssuerStateInvalid: p2pproto.ReceiptAckTemporaryFailure,
 }
 
 var receiptVerificationCodes = []ReceiptVerificationCode{

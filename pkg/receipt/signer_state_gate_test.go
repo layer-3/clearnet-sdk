@@ -86,3 +86,24 @@ func TestInMemoryReceiptSignerStateGateReportsOfflineSubsystemsDeterministically
 		t.Fatalf("not-ready error = %v, want ordered aggregate", err)
 	}
 }
+
+func TestInMemoryReceiptSignerStateGateCopiesSubsystemOrder(t *testing.T) {
+	first := ReceiptSignerStateSubsystem("first")
+	second := ReceiptSignerStateSubsystem("second")
+	order := []ReceiptSignerStateSubsystem{first, second}
+	gate, err := NewInMemoryReceiptSignerStateGate(order...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order[0], order[1] = order[1], order[0]
+	if err := gate.MarkReceiptSignerStateSubsystemOffline(context.Background(), first, errors.New("first down")); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.MarkReceiptSignerStateSubsystemOffline(context.Background(), second, errors.New("second down")); err != nil {
+		t.Fatal(err)
+	}
+	var notReady *ReceiptSignerStateNotReadyError
+	if err := gate.CheckReceiptSignerStateReady(context.Background()); !errors.As(err, &notReady) || notReady.Subsystem != first {
+		t.Fatalf("not-ready subsystem = %v, want %s", notReady, first)
+	}
+}
