@@ -14,6 +14,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 )
 
 type quorumRPC struct {
@@ -70,6 +72,21 @@ func newQuorumRPC(t *testing.T, signers []common.Address, threshold int) *quorum
 	}
 }
 
+func (q *quorumRPC) setSignerNonce(n int64) {
+	q.t.Helper()
+	parsed, err := CustodyMetaData.GetAbi()
+	if err != nil {
+		q.t.Fatal(err)
+	}
+	result, err := parsed.Methods["signerNonce"].Outputs.Pack(big.NewInt(n))
+	if err != nil {
+		q.t.Fatal(err)
+	}
+	q.mu.Lock()
+	q.signerNonceResult = hexutil.Encode(result)
+	q.mu.Unlock()
+}
+
 func (q *quorumRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		JSONRPC string            `json:"jsonrpc"`
@@ -117,7 +134,9 @@ func (q *quorumRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case strings.HasPrefix(input, q.thresholdSelector):
 			result = q.thresholdResult
 		case strings.HasPrefix(input, q.signerNonceSelector):
+			q.mu.Lock()
 			result = q.signerNonceResult
+			q.mu.Unlock()
 		case strings.HasPrefix(input, q.issuerSettingsSelector):
 			q.mu.Lock()
 			q.issuerSettingsCalls++
@@ -185,7 +204,7 @@ func TestEVMPrepareSignatureValidatorsUseExactDigestAndPinnedQuorum(t *testing.T
 		t.Fatal(err)
 	}
 
-	withdrawal := &WithdrawalFinalizer{client: client, custody: custody, chainID: 1, vaultAddr: vault}
+	withdrawal := &WithdrawalFinalizer{client: client, custody: custody, chainID: 1, vaultAddr: vault, assets: testAssetResolver{}}
 	withdrawalPacked, err := json.Marshal(evmPacked{
 		To:    common.HexToAddress("0x0000000000000000000000000000000000000003").Hex(),
 		Asset: common.Address{}.Hex(), Amount: "1", WithdrawalID: strings.Repeat("11", 32), FinalizedAt: 123, SignerNonce: "7",
@@ -225,14 +244,50 @@ func TestEVMPrepareSignatureValidatorsUseExactDigestAndPinnedQuorum(t *testing.T
 	}
 
 	rpcHandler.mu.Lock()
-	defer rpcHandler.mu.Unlock()
-	if len(rpcHandler.callBlocks) != 5 {
-		t.Fatalf("eth_call count = %d, want 5", len(rpcHandler.callBlocks))
+	callBlocks := append([]string(nil), rpcHandler.callBlocks...)
+	rpcHandler.mu.Unlock()
+	if len(callBlocks) != 5 {
+		t.Fatalf("eth_call count = %d, want 5", len(callBlocks))
 	}
-	for i, block := range rpcHandler.callBlocks {
+	for i, block := range callBlocks {
 		if block != "0x2a" {
 			t.Fatalf("eth_call[%d] block = %q, want 0x2a", i, block)
 		}
+	}
+
+	// A signer rotation invalidates the already packed generation. The same
+	// operation can be retried by repacking under the new nonce while its
+	// authenticated withdrawal time bounds remain live.
+	rpcHandler.setSignerNonce(8)
+	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), withdrawalPacked); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("old generation validator error = %v, want stale nonce", err)
+	}
+	bounds := core.WithdrawalTimeBounds{FinalizedAt: 123, ValidUntil: 3723}
+	repacked, err := withdrawal.Pack(context.Background(), &core.WithdrawalOp{
+		Recipient: common.HexToAddress("0x0000000000000000000000000000000000000003").Hex(),
+		AssetURI:  "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0",
+		Amount:    decimal.NewFromInt(1),
+	}, [32]byte{1}, bounds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retryPayload evmPacked
+	if err := json.Unmarshal(repacked, &retryPayload); err != nil {
+		t.Fatal(err)
+	}
+	if retryPayload.SignerNonce != "8" {
+		t.Fatalf("repacked signer nonce = %s, want 8", retryPayload.SignerNonce)
+	}
+	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), repacked); err != nil {
+		t.Fatalf("repacked generation rejected: %v", err)
+	}
+
+	// The caller performs this fresh validation immediately before submit. A
+	// second rotation therefore rejects the collected context rather than
+	// broadcasting signatures from generation 8 under generation 9.
+	rpcHandler.setSignerNonce(9)
+	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), repacked); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("changed pre-submit context error = %v, want stale nonce", err)
 	}
 }
 

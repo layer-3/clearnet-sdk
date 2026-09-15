@@ -125,7 +125,8 @@ type solPacked struct {
 	SignerNonce  uint64 `json:"signerNonce"`  // on-chain signer-set generation
 }
 
-// Pack resolves the withdrawal target and returns the canonical JSON.
+// Pack resolves the withdrawal target and returns canonical JSON bound to the
+// live program signer nonce. Retry after rotation repacks under the new nonce.
 func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) ([]byte, error) {
 	p, err := f.packedFromOp(ctx, op, withdrawalID, bounds)
 	if err != nil {

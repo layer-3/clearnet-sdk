@@ -110,7 +110,9 @@ type evmPacked struct {
 	SignerNonce  string `json:"signerNonce"`  // decimal uint256 signer-set generation
 }
 
-// Pack returns the canonical JSON for the withdrawal. Pure — no chain access.
+// Pack returns the canonical JSON for the withdrawal, binding the signer nonce
+// read from the live vault. A retry after signer rotation repacks against the
+// new generation; validators reject payloads from the former generation.
 func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) ([]byte, error) {
 	p, err := f.packedFromOp(ctx, op, withdrawalID, bounds)
 	if err != nil {
