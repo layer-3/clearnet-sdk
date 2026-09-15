@@ -32,33 +32,37 @@ func TestDigestVectors(t *testing.T) {
 	const amount = uint64(1234567890)
 
 	cases := []struct {
-		name     string
-		mint     solana.PublicKey
-		deadline int64
-		want     string
+		name        string
+		mint        solana.PublicKey
+		finalizedAt int64
+		signerNonce uint64
+		want        string
 	}{
 		{
-			name:     "spl mint",
-			mint:     mint,
-			deadline: 1700000000,
-			want:     "c850ef8d47806dc2ac72e968f7c6d98762b54ef112bca814b49acc482bd8eb62",
+			name:        "spl mint",
+			mint:        mint,
+			finalizedAt: 1700000000,
+			signerNonce: 42,
+			want:        "0c7d0c7b03b4118b299d22da2ad628fe2ddbb5121926382a6cff9f4a6f537704",
 		},
 		{
-			name:     "native mint",
-			mint:     solana.PublicKey{},
-			deadline: 1700000000,
-			want:     "4ed8353197f5ee4c66c9d5f337b5f9feb6dfb085280b16d452d6b201e9a6fa9d",
+			name:        "native mint",
+			mint:        solana.PublicKey{},
+			finalizedAt: 1700000000,
+			signerNonce: 42,
+			want:        "cc911b736aac34c321b28735bfb61134b78c9c943a732c2810e903308011de8f",
 		},
 		{
-			name:     "boundary deadline",
-			mint:     mint,
-			deadline: 1<<63 - 1, // i64::MAX
-			want:     "876abec0a980181a365dd2ae90b44f56c51d6a22ed5128ff03f55aa6a04a55f5",
+			name:        "boundary values",
+			mint:        mint,
+			finalizedAt: 1<<63 - 1,
+			signerNonce: 1<<64 - 1,
+			want:        "34aafc5e18eb181dc6b20d2038d2d7e3d240c9e6223578c0d0cabd8b56c60da3",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := WithdrawDigest(7, pid, vault, to, tc.mint, amount, wid, tc.deadline)
+			d := WithdrawDigest(7, pid, vault, to, tc.mint, amount, wid, tc.finalizedAt, tc.signerNonce)
 			if got := hex.EncodeToString(d[:]); got != tc.want {
 				t.Fatalf("digest mismatch:\n got  %s\n want %s", got, tc.want)
 			}

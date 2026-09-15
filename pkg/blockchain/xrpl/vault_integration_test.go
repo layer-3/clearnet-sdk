@@ -116,13 +116,14 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 	// Far-future deadline: the happy path must not expire mid-test. In standalone
 	// mode the value is not bound into LLS, but Pack/Validate still take it.
 	deadline := time.Now().Add(24 * time.Hour).Unix()
-	packed, err := finalizers[0].Pack(ctx, op, wid, deadline)
+	bounds := core.WithdrawalTimeBounds{FinalizedAt: deadline - 3600, ValidUntil: deadline}
+	packed, err := finalizers[0].Pack(ctx, op, wid, bounds)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
 	blobs := make([][]byte, 0, len(finalizers))
 	for i, f := range finalizers {
-		if err := f.Validate(ctx, packed, op, wid, deadline); err != nil {
+		if err := f.Validate(ctx, packed, op, wid, bounds); err != nil {
 			t.Fatalf("Validate[%d]: %v", i, err)
 		}
 		b, err := f.Sign(ctx, packed)

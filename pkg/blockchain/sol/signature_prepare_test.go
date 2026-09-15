@@ -74,7 +74,7 @@ func TestSolanaPrepareSignatureValidatorsUseExactDigest(t *testing.T) {
 	}
 	withdrawalPacked, err := json.Marshal(solPacked{
 		To: solana.NewWallet().PublicKey().String(), Mint: solana.PublicKey{}.String(),
-		Amount: 1, WithdrawalID: strings.Repeat("11", 32), Deadline: 123,
+		Amount: 1, WithdrawalID: strings.Repeat("11", 32), FinalizedAt: 123, SignerNonce: 7,
 	})
 	if err != nil {
 		t.Fatal(err)

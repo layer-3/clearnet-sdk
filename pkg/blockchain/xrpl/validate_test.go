@@ -177,6 +177,28 @@ func TestBuildLLS(t *testing.T) {
 	}
 }
 
+func TestWithdrawalLastLedgerSequence(t *testing.T) {
+	packed := []byte(`{"TransactionType":"Payment","LastLedgerSequence":1030}`)
+	lls, err := WithdrawalLastLedgerSequence(packed)
+	if err != nil {
+		t.Fatalf("WithdrawalLastLedgerSequence: %v", err)
+	}
+	if lls != 1030 {
+		t.Fatalf("LastLedgerSequence = %d, want 1030", lls)
+	}
+
+	for _, bad := range [][]byte{
+		[]byte(`{"TransactionType":"Payment"}`),
+		[]byte(`{"LastLedgerSequence":"1030"}`),
+		[]byte(`{"LastLedgerSequence":1030.5}`),
+		[]byte(`not-json`),
+	} {
+		if _, err := WithdrawalLastLedgerSequence(bad); err == nil {
+			t.Fatalf("invalid body accepted: %s", bad)
+		}
+	}
+}
+
 // TestValidateCanonicalRotation_FlagsRejected is the SignerListSet analogue.
 func TestValidateCanonicalRotation_FlagsRejected(t *testing.T) {
 	const vault = "rVaULtAdd1111111111111111111111111"

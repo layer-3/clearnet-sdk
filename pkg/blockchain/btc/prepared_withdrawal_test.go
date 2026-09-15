@@ -120,7 +120,7 @@ type preparedFixture struct {
 	pubkeys      [][]byte
 	op           *core.WithdrawalOp
 	withdrawalID [32]byte
-	deadline     int64
+	timeBounds   core.WithdrawalTimeBounds
 	canonical    []byte
 }
 
@@ -192,9 +192,9 @@ func newPreparedFixture(t *testing.T) *preparedFixture {
 		pubkeys:      pubkeys,
 		op:           &core.WithdrawalOp{Recipient: recipient.EncodeAddress(), AssetURI: "yellow://ynet/asset/" + preparedTestIssuer + "/btc/0/0", Amount: decimal.New(100_000, -8)},
 		withdrawalID: [32]byte{0xba, 0xdd, 0xca, 0xfe},
-		deadline:     2_000_000_000,
+		timeBounds:   core.WithdrawalTimeBounds{FinalizedAt: 1_999_996_400, ValidUntil: 2_000_000_000},
 	}
-	fixture.canonical, err = finalizers[0].Pack(context.Background(), fixture.op, fixture.withdrawalID, fixture.deadline)
+	fixture.canonical, err = finalizers[0].Pack(context.Background(), fixture.op, fixture.withdrawalID, fixture.timeBounds)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
@@ -211,7 +211,7 @@ func (f *preparedFixture) prepare(t *testing.T) *PreparedWithdrawal {
 }
 
 func (f *preparedFixture) authorization() WithdrawalAuthorization {
-	return WithdrawalAuthorization{Operation: f.op, WithdrawalID: f.withdrawalID, Deadline: f.deadline}
+	return WithdrawalAuthorization{Operation: f.op, WithdrawalID: f.withdrawalID, TimeBounds: f.timeBounds}
 }
 
 func clonePrepared(prepared *PreparedWithdrawal) *PreparedWithdrawal {
@@ -326,10 +326,11 @@ func TestPreparedWithdrawalPrepareAndValidate(t *testing.T) {
 	if err := fixture.finalizers[0].ValidatePrepared(prepared, fixture.authorization()); err != nil {
 		t.Fatalf("ValidatePrepared: %v", err)
 	}
-	wrongDeadline := fixture.authorization()
-	wrongDeadline.Deadline += 12345
-	if err := fixture.finalizers[0].ValidatePrepared(prepared, wrongDeadline); err == nil {
-		t.Fatal("ValidatePrepared accepted a different authorization deadline")
+	wrongBounds := fixture.authorization()
+	wrongBounds.TimeBounds.FinalizedAt++
+	wrongBounds.TimeBounds.ValidUntil++
+	if err := fixture.finalizers[0].ValidatePrepared(prepared, wrongBounds); err == nil {
+		t.Fatal("ValidatePrepared accepted different authorization time bounds")
 	}
 	if len(fixture.rpc.getTxOutCalls) != calls {
 		t.Fatalf("ValidatePrepared made RPC calls: %d -> %d", calls, len(fixture.rpc.getTxOutCalls))
@@ -355,7 +356,7 @@ func TestPreparedWithdrawalPrepareAndValidate(t *testing.T) {
 	}
 	for _, check := range checks {
 		t.Run("authorization_"+check.name, func(t *testing.T) {
-			if err := fixture.finalizers[0].ValidatePrepared(prepared, WithdrawalAuthorization{Operation: check.op, WithdrawalID: check.id, Deadline: fixture.deadline}); err == nil {
+			if err := fixture.finalizers[0].ValidatePrepared(prepared, WithdrawalAuthorization{Operation: check.op, WithdrawalID: check.id, TimeBounds: fixture.timeBounds}); err == nil {
 				t.Fatal("ValidatePrepared accepted mismatched authorization")
 			}
 		})
@@ -449,7 +450,7 @@ func TestPreparedWithdrawalBinaryRoundTripAndMalformed(t *testing.T) {
 	// catches an encoder/decoder pair drifting together and silently making
 	// persisted prepared envelopes unreadable across binary upgrades.
 	const goldenLength = 1079
-	wantGoldenHash, err := hex.DecodeString("0af94de0359455976c08541904baf0e57ce2d4a4c844dda9988a6c3f354f45c3")
+	wantGoldenHash, err := hex.DecodeString("74ff969195f557395b9d931c0991a264e530a79b090b1786a23b27775d8d7134")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -897,7 +898,7 @@ func TestPreparedWithdrawalLegacyCompatibility(t *testing.T) {
 	fixture := newPreparedFixture(t)
 	ctx := context.Background()
 
-	if err := fixture.finalizers[0].Validate(ctx, fixture.canonical, fixture.op, fixture.withdrawalID, fixture.deadline); err != nil {
+	if err := fixture.finalizers[0].Validate(ctx, fixture.canonical, fixture.op, fixture.withdrawalID, fixture.timeBounds); err != nil {
 		t.Fatalf("legacy Validate: %v", err)
 	}
 	if len(fixture.rpc.getTxOutCalls) != 2 {
@@ -941,7 +942,7 @@ func TestPreparedWithdrawalLegacyCompatibility(t *testing.T) {
 
 	wrong := *fixture.op
 	wrong.Amount = decimal.New(100_001, -8)
-	if err := fixture.finalizers[0].Validate(ctx, fixture.canonical, &wrong, fixture.withdrawalID, fixture.deadline); err == nil {
+	if err := fixture.finalizers[0].Validate(ctx, fixture.canonical, &wrong, fixture.withdrawalID, fixture.timeBounds); err == nil {
 		t.Fatal("legacy Validate accepted a mismatched operation")
 	}
 }

@@ -13,7 +13,7 @@ import (
 const CustodyDomainName = "YellowCustody"
 const ConfigRegistryDomainName = "YellowConfigRegistry"
 const EIP712Version = "1"
-const executeType = "Execute(address to,address asset,uint256 amount,bytes32 withdrawalId,uint256 deadline)"
+const executeType = "Execute(address to,address asset,uint256 amount,bytes32 withdrawalId,uint256 finalizedAt,uint256 signerNonce)"
 const updateSignersType = "UpdateSigners(address[] newSigners,uint256 newThreshold,uint256 signerNonce)"
 const registerIssuerType = "RegisterIssuer(address[] issuerKeys,uint256 threshold)"
 const setConfigType = "SetConfig(address issuerId,bytes32 key,bytes32 checksum,uint256 expectedNonce)"
@@ -48,6 +48,6 @@ func typedDigest(name string, chainID uint64, contract common.Address, structure
 
 // ComputeWithdrawalDigest returns the EIP-712 Execute authorization. All integers
 // are Solidity uint256 values; invalid (negative, nil or overflowing) values panic.
-func ComputeWithdrawalDigest(chainID uint64, vault, to, asset common.Address, amount *big.Int, withdrawalID [32]byte, deadline *big.Int) common.Hash {
-	return typedDigest(CustodyDomainName, chainID, vault, typedStructHash(executeType, addressWord(to), addressWord(asset), uint256Word("amount", amount), withdrawalID[:], uint256Word("deadline", deadline)))
+func ComputeWithdrawalDigest(chainID uint64, vault, to, asset common.Address, amount *big.Int, withdrawalID [32]byte, finalizedAt, signerNonce *big.Int) common.Hash {
+	return typedDigest(CustodyDomainName, chainID, vault, typedStructHash(executeType, addressWord(to), addressWord(asset), uint256Word("amount", amount), withdrawalID[:], uint256Word("finalizedAt", finalizedAt), uint256Word("signerNonce", signerNonce)))
 }

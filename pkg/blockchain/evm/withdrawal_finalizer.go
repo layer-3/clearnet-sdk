@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -69,6 +70,14 @@ func NewWithdrawalFinalizer(ctx context.Context, client *ethclient.Client, vault
 	if err != nil {
 		return nil, fmt.Errorf("load custody: %w", err)
 	}
+	window, err := custody.WITHDRAWALEXECUTIONWINDOW(&bind.CallOpts{Context: ctx})
+	if err != nil {
+		return nil, fmt.Errorf("read withdrawal execution window: %w", err)
+	}
+	wantWindow := big.NewInt(int64(core.WithdrawalExecutionWindow / time.Second))
+	if window.Cmp(wantWindow) != 0 {
+		return nil, fmt.Errorf("withdrawal execution window mismatch: vault=%s sdk=%s", window, wantWindow)
+	}
 	chainID, err := client.ChainID(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get chain ID: %w", err)
@@ -97,28 +106,27 @@ type evmPacked struct {
 	Asset        string `json:"asset"`        // asset address (hex); zero = ETH
 	Amount       string `json:"amount"`       // base units (decimal string)
 	WithdrawalID string `json:"withdrawalId"` // 32-byte hex
-	Deadline     int64  `json:"deadline"`     // unix seconds; authorization void past this
+	FinalizedAt  int64  `json:"finalizedAt"`  // BLS-authenticated unix timestamp
+	SignerNonce  string `json:"signerNonce"`  // decimal uint256 signer-set generation
 }
 
 // Pack returns the canonical JSON for the withdrawal. Pure — no chain access.
-func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
-	p, err := f.packedFromOp(ctx, op, withdrawalID, deadline)
+func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) ([]byte, error) {
+	p, err := f.packedFromOp(ctx, op, withdrawalID, bounds)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(p)
 }
 
-// Validate re-derives the canonical payload from the op and the caller-supplied
-// deadline and asserts the packed bytes match it exactly — the defense against
-// a Byzantine packer (a peer packing a longer-lived deadline than the quorum
-// agreed is rejected here, before Sign).
-func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
+// Validate re-derives the canonical payload from the operation, authenticated
+// time bounds, and current signer generation before any signature is produced.
+func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) error {
 	var got evmPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("decode packed: %w", err)
 	}
-	want, err := f.packedFromOp(ctx, op, withdrawalID, deadline)
+	want, err := f.packedFromOp(ctx, op, withdrawalID, bounds)
 	if err != nil {
 		return err
 	}
@@ -153,9 +161,16 @@ func (f *WithdrawalFinalizer) PrepareSignatureValidator(ctx context.Context, pac
 	if err != nil {
 		return nil, err
 	}
-	signers, threshold, err := fetchLiveQuorum(ctx, f.client, f.custody)
+	packedNonce, ok := new(big.Int).SetString(p.SignerNonce, 10)
+	if !ok {
+		return nil, fmt.Errorf("bad signer nonce %q", p.SignerNonce)
+	}
+	signers, threshold, liveNonce, err := fetchLiveWithdrawalQuorum(ctx, f.client, f.custody)
 	if err != nil {
 		return nil, err
+	}
+	if liveNonce.Cmp(packedNonce) != 0 {
+		return nil, fmt.Errorf("evm: packed signer nonce %s is stale; live nonce is %s", packedNonce, liveNonce)
 	}
 	return NewSignatureValidator(digest, signers, threshold)
 }
@@ -197,12 +212,16 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, signatu
 		return "", fmt.Errorf("bad amount %q", p.Amount)
 	}
 
-	deadline := new(big.Int).SetInt64(p.Deadline)
+	finalizedAt := new(big.Int).SetInt64(p.FinalizedAt)
+	signerNonce, ok := new(big.Int).SetString(p.SignerNonce, 10)
+	if !ok {
+		return "", fmt.Errorf("bad signer nonce %q", p.SignerNonce)
+	}
 	tx, err := f.transactor.Transact(ctx, f.fees, func(opts *bind.TransactOpts) (*gethtypes.Transaction, error) {
-		if err := f.estimateGas(ctx, opts, to, asset, amount, wid, deadline, sigs); err != nil {
+		if err := f.estimateGas(ctx, opts, to, asset, amount, wid, finalizedAt, signerNonce, sigs); err != nil {
 			return nil, err
 		}
-		tx, err := f.custody.Execute(opts, to, asset, amount, wid, deadline, sigs)
+		tx, err := f.custody.Execute(opts, to, asset, amount, wid, finalizedAt, signerNonce, sigs)
 		if err != nil {
 			return nil, fmt.Errorf("execute: %w", err)
 		}
@@ -245,7 +264,10 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 
 // --- helpers ---
 
-func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) (evmPacked, error) {
+func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) (evmPacked, error) {
+	if err := bounds.Validate(); err != nil {
+		return evmPacked{}, err
+	}
 	// common.HexToAddress silently zero-fills/truncates a malformed input, which
 	// would sign a withdrawal to the wrong (often zero) recipient. Reject
 	// anything that is not a well-formed hex address up front.
@@ -273,12 +295,17 @@ func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.Withdra
 	if err != nil {
 		return evmPacked{}, fmt.Errorf("evm: amount: %w", err)
 	}
+	nonce, err := f.custody.SignerNonce(&bind.CallOpts{Context: ctx})
+	if err != nil {
+		return evmPacked{}, fmt.Errorf("evm: signer nonce: %w", err)
+	}
 	return evmPacked{
 		To:           common.HexToAddress(op.Recipient).Hex(),
 		Asset:        depositAssetAddress(id.AssetAddress).Hex(),
 		Amount:       amt.String(),
 		WithdrawalID: hex.EncodeToString(withdrawalID[:]),
-		Deadline:     deadline,
+		FinalizedAt:  bounds.FinalizedAt,
+		SignerNonce:  nonce.String(),
 	}, nil
 }
 
@@ -293,10 +320,11 @@ func (f *WithdrawalFinalizer) digest(p evmPacked) (common.Hash, error) {
 	if err != nil {
 		return common.Hash{}, err
 	}
-	if p.Deadline < 0 || amount.Sign() < 0 || amount.BitLen() > 256 {
+	nonce, ok := new(big.Int).SetString(p.SignerNonce, 10)
+	if !ok || p.FinalizedAt < 0 || amount.Sign() < 0 || amount.BitLen() > 256 || nonce.Sign() < 0 || nonce.BitLen() > 256 {
 		return common.Hash{}, fmt.Errorf("invalid withdrawal uint256")
 	}
-	return ComputeWithdrawalDigest(f.chainID, f.vaultAddr, common.HexToAddress(p.To), common.HexToAddress(p.Asset), amount, wid, big.NewInt(p.Deadline)), nil
+	return ComputeWithdrawalDigest(f.chainID, f.vaultAddr, common.HexToAddress(p.To), common.HexToAddress(p.Asset), amount, wid, big.NewInt(p.FinalizedAt), nonce), nil
 }
 
 // applyFees sets EIP-1559 (or legacy) gas pricing on opts from fees, refusing to
@@ -328,12 +356,12 @@ func applyFees(ctx context.Context, client *ethclient.Client, fees FeeConfig, op
 	return nil
 }
 
-func (f *WithdrawalFinalizer) estimateGas(ctx context.Context, opts *bind.TransactOpts, to, asset common.Address, amount *big.Int, withdrawalID [32]byte, deadline *big.Int, sigs [][]byte) error {
+func (f *WithdrawalFinalizer) estimateGas(ctx context.Context, opts *bind.TransactOpts, to, asset common.Address, amount *big.Int, withdrawalID [32]byte, finalizedAt, signerNonce *big.Int, sigs [][]byte) error {
 	abi, err := CustodyMetaData.GetAbi()
 	if err != nil {
 		return fmt.Errorf("parse ABI: %w", err)
 	}
-	data, err := abi.Pack("execute", to, asset, amount, withdrawalID, deadline, sigs)
+	data, err := abi.Pack("execute", to, asset, amount, withdrawalID, finalizedAt, signerNonce, sigs)
 	if err != nil {
 		return fmt.Errorf("pack execute calldata: %w", err)
 	}

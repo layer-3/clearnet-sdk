@@ -53,11 +53,10 @@ const maxAcceptableFeeDrops uint64 = 1_000_000
 // canonical withdrawal instead carries a LastLedgerSequence: rippled drops the
 // tx once the network passes that ledger, so each blob dies at the ledger level.
 //
-// The critical correctness property: the budget is per-attempt
-// and small — derived from ExecutionMargin, NOT the full validity window — so
-// every blob a retry can produce dies before SealedAt + MaxBlockAge + margin =
-// deadline. A full-window budget would let a blob signed near the freshness
-// cutoff outlive clearnet's re-credit and double-spend.
+// The critical correctness property is that the budget is per-attempt and
+// small, and every accepted LastLedgerSequence has an estimated close no later
+// than the authenticated withdrawal's ValidUntil. A full-window ledger budget
+// created near the cutoff could otherwise outlive that authorization bound.
 const (
 	// LedgerBudget is the number of ledgers of headroom the builder targets when
 	// setting LastLedgerSequence (~2min at ~4s/ledger).
@@ -176,6 +175,25 @@ func (p llsPolicy) checkField(raw any, present bool) error {
 		return fmt.Errorf("xrpl canonical: LastLedgerSequence %d estimated close %d past deadline %d", lls, p.estimatedCloseUnix(lls), p.deadline)
 	}
 	return nil
+}
+
+// WithdrawalLastLedgerSequence extracts the exact ledger expiry committed in a
+// canonical withdrawal body. It is intentionally strict: callers use this
+// value to decide when every signature over that body is consensus-dead.
+func WithdrawalLastLedgerSequence(packed []byte) (uint32, error) {
+	var flat transaction.FlatTransaction
+	if err := json.Unmarshal(packed, &flat); err != nil {
+		return 0, fmt.Errorf("xrpl: decode canonical withdrawal: %w", err)
+	}
+	raw, present := flat["LastLedgerSequence"]
+	if !present {
+		return 0, fmt.Errorf("xrpl: canonical withdrawal missing LastLedgerSequence")
+	}
+	number, ok := raw.(float64)
+	if !ok || number < 0 || number > math.MaxUint32 || math.Trunc(number) != number {
+		return 0, fmt.Errorf("xrpl: canonical withdrawal has invalid LastLedgerSequence %v", raw)
+	}
+	return uint32(number), nil
 }
 
 // Identity is a signer's XRPL classic address + signing pubkey hex.
