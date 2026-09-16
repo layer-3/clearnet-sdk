@@ -35,18 +35,20 @@ type ConfigRegistryCursor struct {
 	TxHash      common.Hash
 }
 
-// ReceiptSignerSet is the current signer directory used to verify issuer
-// receipts.
-type ReceiptSignerSet struct {
+// ReceiptSignerState is one consistent latest KEY_SIGNERS view used to prepare
+// or verify issuer receipts. Epoch, signers, and threshold must come from the
+// same resolved registry state. Epoch zero is reserved and invalid.
+type ReceiptSignerState struct {
+	Epoch     uint64
 	Signers   []common.Address
 	Threshold int
 }
 
-// ReceiptSignerSource resolves receipt signers for a ConfigRegistry issuer.
+// ReceiptSignerSource resolves latest receipt signer state for a ConfigRegistry issuer.
 // Dynamic implementations backed by watchers or remote stores must fail closed
 // when they cannot prove their data is fresh enough for their integration's
 // safety policy. Implementations must return a positive threshold, distinct
 // non-zero signer addresses, and at least threshold signers.
 type ReceiptSignerSource interface {
-	LoadReceiptSigners(ctx context.Context, issuerID common.Address) (ReceiptSignerSet, error)
+	LoadLatestReceiptSignerState(ctx context.Context, issuerID common.Address) (ReceiptSignerState, error)
 }

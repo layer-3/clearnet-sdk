@@ -31,12 +31,16 @@ const (
 	// server sends an AuthChallenge, the peer returns a signed AuthResponse.
 	ProtocolAuth = "/ynp/auth/1.0.0"
 
-	// ProtocolBurnReceipt carries a signed BurnReceipt — the attestation that
-	// the L1 execute() of a finalized withdrawal landed — and a ReceiptAck.
+	// ProtocolBurnReceipt carries a custody-to-clearnet ingress BurnReceipt and
+	// ReceiptAck. The receipt protocol is still evolving; coordinated
+	// redeployments may intentionally ship breaking receipt wire changes under
+	// this stream ID.
 	ProtocolBurnReceipt = "/ynp/burnreceipt/1.0.0"
 
-	// ProtocolMintReceipt carries a signed MintReceipt — the attestation that
-	// an L1 deposit confirmed — and a ReceiptAck.
+	// ProtocolMintReceipt carries a custody-to-clearnet ingress MintReceipt and
+	// ReceiptAck. The receipt protocol is still evolving; coordinated
+	// redeployments may intentionally ship breaking receipt wire changes under
+	// this stream ID.
 	ProtocolMintReceipt = "/ynp/mintreceipt/1.0.0"
 )
 

@@ -23,17 +23,17 @@ import (
 var testIssuerID = common.HexToAddress("0x0000000000000000000000000000000000001234")
 
 type testSignerSource struct {
-	sets map[common.Address]core.ReceiptSignerSet
+	sets map[common.Address]core.ReceiptSignerState
 	err  error
 }
 
-func (s testSignerSource) LoadReceiptSigners(_ context.Context, issuerID common.Address) (core.ReceiptSignerSet, error) {
+func (s testSignerSource) LoadLatestReceiptSignerState(_ context.Context, issuerID common.Address) (core.ReceiptSignerState, error) {
 	if s.err != nil {
-		return core.ReceiptSignerSet{}, s.err
+		return core.ReceiptSignerState{}, s.err
 	}
 	set, ok := s.sets[issuerID]
 	if !ok {
-		return core.ReceiptSignerSet{}, nil
+		return core.ReceiptSignerState{}, nil
 	}
 	return set, nil
 }
@@ -48,7 +48,7 @@ func TestAuth_Operator(t *testing.T) {
 	}
 
 	results := make(chan Result, 1)
-	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerSet{
+	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerState{
 		testIssuerID: {Signers: []common.Address{addr}, Threshold: 1},
 	}}, func(_ network.Conn, r Result) {
 		results <- r
@@ -85,7 +85,7 @@ func TestAuth_OperatorRejectedBySignerSource(t *testing.T) {
 	otherAddr, _ := sign.EthAddress(other)
 
 	results := make(chan Result, 1)
-	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerSet{
+	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerState{
 		testIssuerID: {Signers: []common.Address{otherAddr}, Threshold: 1},
 	}}, func(_ network.Conn, r Result) {
 		results <- r
@@ -116,7 +116,7 @@ func TestAuth_OperatorRejectedByTrustedIssuerFilter(t *testing.T) {
 	}
 
 	results := make(chan Result, 1)
-	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerSet{
+	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerState{
 		testIssuerID: {Signers: []common.Address{addr}, Threshold: 1},
 	}}, func(_ network.Conn, r Result) {
 		results <- r
@@ -138,7 +138,7 @@ func TestAuth_OperatorRejectedByTrustedIssuerFilter(t *testing.T) {
 
 func TestAuth_OperatorRequiresIssuerID(t *testing.T) {
 	srv, cli := newPair(t, nil)
-	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerSet{}}, nil, nil).Register(srv)
+	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerState{}}, nil, nil).Register(srv)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -189,7 +189,7 @@ func TestAuth_PassiveRejectedWhenSignerSourceConfigured(t *testing.T) {
 	connect(t, cli, srv)
 
 	results := make(chan Result, 1)
-	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerSet{}}, func(_ network.Conn, r Result) {
+	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerState{}}, func(_ network.Conn, r Result) {
 		results <- r
 	}, nil).Register(srv)
 

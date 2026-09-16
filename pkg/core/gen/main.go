@@ -55,6 +55,7 @@ func main() {
 		core.SessionChallengeOp{},
 		// --- Cross-cluster wire types ---
 		core.BlockEntryRef{},
+		core.ReceiptProof{},
 		core.BurnReceipt{},
 		core.MintReceipt{},
 		core.FinalizedWithdrawal{},

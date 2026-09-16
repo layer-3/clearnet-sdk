@@ -45,24 +45,24 @@ func TestWireGoldens(t *testing.T) {
 			wantHex: "8344deadbeef782a3078" + strings.Repeat("31", 40) + "782a3078" + strings.Repeat("32", 40),
 		},
 		{
-			name: "ReceiptAck true/ok",
+			name: "ReceiptAck accepted",
 			marshal: func() ([]byte, error) {
 				var buf bytes.Buffer
-				err := (&ReceiptAck{Accepted: true, Reason: "ok"}).MarshalCBOR(&buf)
+				err := (&ReceiptAck{Code: ReceiptAckAccepted}).MarshalCBOR(&buf)
 				return buf.Bytes(), err
 			},
-			// 82 = array(2); f5 = true; 626f6b = tstr "ok".
-			wantHex: "82f5626f6b",
+			// 82 = array(2); 686163636570746564 = tstr "accepted"; 60 = empty reason.
+			wantHex: "8268616363657074656460",
 		},
 		{
-			name: "ReceiptAck false/empty",
+			name: "ReceiptAck corrupt",
 			marshal: func() ([]byte, error) {
 				var buf bytes.Buffer
-				err := (&ReceiptAck{Accepted: false, Reason: ""}).MarshalCBOR(&buf)
+				err := (&ReceiptAck{Code: ReceiptAckCorrupt, Reason: "bad"}).MarshalCBOR(&buf)
 				return buf.Bytes(), err
 			},
-			// 82 = array(2); f4 = false; 60 = tstr len 0.
-			wantHex: "82f460",
+			// 82 = array(2); 67636f7272757074 = tstr "corrupt"; 63626164 = "bad".
+			wantHex: "8267636f727275707463626164",
 		},
 	}
 
@@ -76,6 +76,17 @@ func TestWireGoldens(t *testing.T) {
 				t.Errorf("bytes = %s\n want = %s", gotHex, tc.wantHex)
 			}
 		})
+	}
+}
+
+func TestReceiptAckUnknownCodeFallsBackToTemporaryFailure(t *testing.T) {
+	var ack ReceiptAck
+	// 82 = array(2); 6d = text string "future_code"; 60 = empty reason.
+	if err := ack.UnmarshalCBOR(bytes.NewReader([]byte{0x82, 0x6b, 'f', 'u', 't', 'u', 'r', 'e', '_', 'c', 'o', 'd', 'e', 0x60})); err != nil {
+		t.Fatalf("UnmarshalCBOR: %v", err)
+	}
+	if ack.Code != ReceiptAckTemporaryFailure || ack.Reason == "" {
+		t.Fatalf("ack = %+v, want temporary_failure with synthesized reason", ack)
 	}
 }
 
@@ -114,10 +125,9 @@ func TestWireRoundTrip(t *testing.T) {
 	})
 
 	t.Run("ReceiptAck wider ack", func(t *testing.T) {
-		// A real clearnode emits a 6-element ack; the reader must accept it and
-		// take only the first two fields (Accepted, Reason), skipping the rest.
-		// 86 = array(6); f5 = true; 626f6b = "ok"; then 4 trailing ints 0..3.
-		wire, err := hex.DecodeString("86f5626f6b00010203")
+		// The reader accepts wider future ACKs and takes only Code and Reason.
+		// 86 = array(6); "accepted"; ""; then 4 trailing ints 0..3.
+		wire, err := hex.DecodeString("866861636365707465646000010203")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -125,15 +135,15 @@ func TestWireRoundTrip(t *testing.T) {
 		if err := out.UnmarshalCBOR(bytes.NewReader(wire)); err != nil {
 			t.Fatalf("decode 6-element ack: %v", err)
 		}
-		if !out.Accepted || out.Reason != "ok" {
-			t.Errorf("got %+v, want {Accepted:true Reason:ok}", out)
+		if out.Code != ReceiptAckAccepted || out.Reason != "" {
+			t.Errorf("got %+v, want accepted", out)
 		}
 	})
 
 	t.Run("ReceiptAck", func(t *testing.T) {
 		for _, in := range []*ReceiptAck{
-			{Accepted: true, Reason: ""},
-			{Accepted: false, Reason: "rejected: bad signature"},
+			{Code: ReceiptAckAccepted},
+			{Code: ReceiptAckRejected, Reason: "bad signature"},
 		} {
 			var buf bytes.Buffer
 			if err := in.MarshalCBOR(&buf); err != nil {
@@ -148,4 +158,32 @@ func TestWireRoundTrip(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestReceiptAckValidate(t *testing.T) {
+	for _, ack := range []ReceiptAck{
+		{Code: ReceiptAckAccepted},
+		{Code: ReceiptAckAlreadyAccepted},
+		{Code: ReceiptAckStaleEpoch},
+		{Code: ReceiptAckFutureEpoch},
+		{Code: ReceiptAckSignerStateUnavailable},
+		{Code: ReceiptAckTemporaryFailure, Reason: "retry"},
+		{Code: ReceiptAckRejected, Reason: "semantic"},
+		{Code: ReceiptAckCorrupt, Reason: "bad signature"},
+	} {
+		if err := ack.Validate(); err != nil {
+			t.Fatalf("%+v failed validation: %v", ack, err)
+		}
+	}
+	for _, ack := range []ReceiptAck{
+		{},
+		{Code: ReceiptAckCode("bogus")},
+		{Code: ReceiptAckTemporaryFailure},
+		{Code: ReceiptAckRejected},
+		{Code: ReceiptAckCorrupt},
+	} {
+		if err := ack.Validate(); err == nil {
+			t.Fatalf("%+v unexpectedly validated", ack)
+		}
+	}
 }
