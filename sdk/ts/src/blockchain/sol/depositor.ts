@@ -95,6 +95,18 @@ export class SolanaVaultDepositor
     options: SubmitDepositOptions = {},
   ): Promise<string> {
     const waitOptions = requireSubmitDepositOptions(options);
+    validateWaitOptions(waitOptions);
+    const transaction = await this.prepareDeposit(input);
+
+    const signature = await this.signAndSend(transaction);
+    const txID = normalizeSolanaTxID(signature);
+    waitOptions.onSubmitted?.(txID);
+    await this.waitForCommitment(signature, txID, waitOptions);
+    return txID;
+  }
+
+  /** Builds the exact unsigned custody transaction without a recent blockhash. */
+  async prepareDeposit(input: SolanaSubmitDepositInput): Promise<Transaction> {
     const fields =
       input && typeof input === "object"
         ? (input as Partial<SolanaSubmitDepositInput>)
@@ -110,7 +122,6 @@ export class SolanaVaultDepositor
     if (amount > (1n << 64n) - 1n) {
       throw new ClearnetSdkError("INVALID_AMOUNT", "amount must fit in uint64");
     }
-    validateWaitOptions(waitOptions);
     const transaction = new Transaction();
     transaction.feePayer = this.depositor;
     transaction.add(
@@ -118,12 +129,7 @@ export class SolanaVaultDepositor
         ? this.depositSolInstruction(account, reference, amount)
         : this.depositSplInstruction(mint, account, reference, amount),
     );
-
-    const signature = await this.signAndSend(transaction);
-    const txID = normalizeSolanaTxID(signature);
-    waitOptions.onSubmitted?.(txID);
-    await this.waitForCommitment(signature, txID, waitOptions);
-    return txID;
+    return transaction;
   }
 
   async verifyDeposit(
