@@ -118,6 +118,9 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("sol: decode packed: %w", err)
 	}
+	if _, err := checkThreshold(int(got.NewThreshold), len(got.NewSigners)); err != nil {
+		return err
+	}
 	pubs, err := parseRotationSigners(newSigners)
 	if err != nil {
 		return err

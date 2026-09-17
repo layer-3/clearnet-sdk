@@ -108,6 +108,9 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("decode packed: %w", err)
 	}
+	if err := blockchain.ValidateMajorityThreshold(got.NewThreshold, len(got.NewSigners)); err != nil {
+		return fmt.Errorf("evm: %w", err)
+	}
 	addrs, err := parseSignerAddresses(newSigners)
 	if err != nil {
 		return err
