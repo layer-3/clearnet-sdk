@@ -706,7 +706,7 @@
     {
       "code": 6002,
       "name": "InvalidThreshold",
-      "msg": "threshold must be > 0 and <= number of signers"
+      "msg": "threshold must be a strict majority of the signer set"
     },
     {
       "code": 6003,

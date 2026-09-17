@@ -14,6 +14,7 @@ import (
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
@@ -88,8 +89,8 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 	if err != nil {
 		return nil, err
 	}
-	if newThreshold <= 0 || newThreshold > len(addrs) {
-		return nil, fmt.Errorf("evm: threshold %d out of range for %d signers", newThreshold, len(addrs))
+	if err := blockchain.ValidateMajorityThreshold(newThreshold, len(addrs)); err != nil {
+		return nil, fmt.Errorf("evm: %w", err)
 	}
 	nonce, err := f.custody.SignerNonce(&bind.CallOpts{Context: ctx})
 	if err != nil {
@@ -107,9 +108,15 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("decode packed: %w", err)
 	}
+	if err := blockchain.ValidateMajorityThreshold(got.NewThreshold, len(got.NewSigners)); err != nil {
+		return fmt.Errorf("evm: %w", err)
+	}
 	addrs, err := parseSignerAddresses(newSigners)
 	if err != nil {
 		return err
+	}
+	if err := blockchain.ValidateMajorityThreshold(newThreshold, len(addrs)); err != nil {
+		return fmt.Errorf("evm: %w", err)
 	}
 	want := evmRotPacked{NewSigners: addrsToHex(addrs), NewThreshold: newThreshold}
 	if got.NewThreshold != want.NewThreshold || !equalStrings(got.NewSigners, want.NewSigners) {
@@ -162,6 +169,9 @@ func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, signature
 	if err != nil {
 		return "", err
 	}
+	if err := blockchain.ValidateMajorityThreshold(p.NewThreshold, len(addrs)); err != nil {
+		return "", fmt.Errorf("evm: %w", err)
+	}
 	if txID, done, err := f.VerifyRotation(ctx, p.NewSigners, p.NewThreshold); err != nil {
 		return "", err
 	} else if done {
@@ -201,6 +211,9 @@ func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []str
 	addrs, err := parseSignerAddresses(newSigners)
 	if err != nil {
 		return "", false, err
+	}
+	if err := blockchain.ValidateMajorityThreshold(newThreshold, len(addrs)); err != nil {
+		return "", false, fmt.Errorf("evm: %w", err)
 	}
 	live, threshold, err := fetchLiveQuorum(ctx, f.client, f.custody)
 	if err != nil {
@@ -253,6 +266,9 @@ func (f *RotationFinalizer) digestFromPacked(packed []byte) ([32]byte, error) {
 	addrs, err := parseSignerAddresses(p.NewSigners)
 	if err != nil {
 		return [32]byte{}, err
+	}
+	if err := blockchain.ValidateMajorityThreshold(p.NewThreshold, len(addrs)); err != nil {
+		return [32]byte{}, fmt.Errorf("evm: %w", err)
 	}
 	nonce, ok := new(big.Int).SetString(p.SignerNonce, 10)
 	if !ok {

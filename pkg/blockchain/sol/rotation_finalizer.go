@@ -13,6 +13,7 @@ import (
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/rpc"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/blockchain/sol/custody"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
@@ -117,6 +118,9 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("sol: decode packed: %w", err)
 	}
+	if _, err := checkThreshold(int(got.NewThreshold), len(got.NewSigners)); err != nil {
+		return err
+	}
 	pubs, err := parseRotationSigners(newSigners)
 	if err != nil {
 		return err
@@ -188,6 +192,9 @@ func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares []
 	}
 	newPubs, err := parseRotationSigners(p.NewSigners)
 	if err != nil {
+		return "", err
+	}
+	if _, err := checkThreshold(int(p.NewThreshold), len(newPubs)); err != nil {
 		return "", err
 	}
 	if _, done, _ := f.VerifyRotation(ctx, p.NewSigners, int(p.NewThreshold)); done {
@@ -292,7 +299,11 @@ func (f *RotationFinalizer) digestFromPacked(packed []byte) ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, err
 	}
-	commitment := SignersCommitment(pubs, p.NewThreshold)
+	threshold, err := checkThreshold(int(p.NewThreshold), len(pubs))
+	if err != nil {
+		return [32]byte{}, err
+	}
+	commitment := SignersCommitment(pubs, threshold)
 	return RotateDigest(f.chainID, f.programID, f.configPDA, commitment, p.SignerNonce), nil
 }
 
@@ -333,8 +344,8 @@ func parsePubkey(s string) (solana.PublicKey, error) {
 }
 
 func checkThreshold(newThreshold, n int) (uint8, error) {
-	if newThreshold <= 0 || newThreshold > n {
-		return 0, fmt.Errorf("sol: threshold %d out of range for %d signers", newThreshold, n)
+	if err := blockchain.ValidateMajorityThreshold(newThreshold, n); err != nil {
+		return 0, fmt.Errorf("sol: %w", err)
 	}
 	if n > 255 {
 		return 0, fmt.Errorf("sol: too many signers (%d)", n)
