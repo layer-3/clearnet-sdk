@@ -71,3 +71,28 @@ func TestRotationFinalizerAcceptsMajorityPackedTarget(t *testing.T) {
 		t.Fatalf("digestFromPacked rejected 2-of-3: %v", err)
 	}
 }
+
+func TestRotationFinalizerRejectsEvenNonMajorityTarget(t *testing.T) {
+	evenSigners := []string{
+		"0x0000000000000000000000000000000000000001",
+		"0x0000000000000000000000000000000000000002",
+		"0x0000000000000000000000000000000000000003",
+		"0x0000000000000000000000000000000000000004",
+	}
+	packed, err := json.Marshal(evmRotPacked{
+		NewSigners:   evenSigners,
+		NewThreshold: 2,
+		SignerNonce:  "0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := &RotationFinalizer{}
+	if _, err := f.Pack(context.Background(), [32]byte{}, evenSigners, 2); err == nil || !strings.Contains(err.Error(), "strict majority") {
+		t.Fatalf("Pack error = %v, want strict-majority rejection", err)
+	}
+	if err := f.Validate(context.Background(), [32]byte{}, packed, evenSigners[:3], 2); err == nil || !strings.Contains(err.Error(), "strict majority") {
+		t.Fatalf("Validate packed 2-of-4 error = %v, want strict-majority rejection", err)
+	}
+}

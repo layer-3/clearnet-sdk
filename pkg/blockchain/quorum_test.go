@@ -12,10 +12,13 @@ func TestValidateMajorityThreshold(t *testing.T) {
 		signerCount int
 		wantErr     bool
 	}{
+		{name: "one of one", threshold: 1, signerCount: 1},
+		{name: "zero of one", threshold: 0, signerCount: 1, wantErr: true},
 		{name: "two of three", threshold: 2, signerCount: 3},
 		{name: "three of five", threshold: 3, signerCount: 5},
 		{name: "four of six", threshold: 4, signerCount: 6},
 		{name: "four of seven", threshold: 4, signerCount: 7},
+		{name: "all of even set", threshold: 4, signerCount: 4},
 		{name: "all signers", threshold: 7, signerCount: 7},
 		{name: "zero threshold", threshold: 0, signerCount: 7, wantErr: true},
 		{name: "negative threshold", threshold: -1, signerCount: 7, wantErr: true},
