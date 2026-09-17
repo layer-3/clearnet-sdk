@@ -211,6 +211,11 @@ instruction and delegates signing/broadcast to a caller-provided `SolanaSigner`.
 The signer boundary is small so browser-wallet, Wallet Standard, and local
 keypair adapters can live outside the core SDK.
 
+`prepareDeposit(input)` returns the same unsigned custody `Transaction` used by
+`submitDeposit`. It does not set a recent blockhash or sign/broadcast. Clients
+may use it for simulation, compute-budget selection, and fee estimation without
+duplicating the SDK's custody instruction encoding.
+
 ```ts
 import {
   SOLANA_NATIVE_ASSET,
@@ -520,6 +525,13 @@ Solana input fields:
 | `amount` | `string` | Positive decimal amount. Native SOL uses 9 decimals; SPL tokens use mint decimals. |
 
 For Solana, `txID` is the base58 signature.
+
+```ts
+const transaction = await depositor.prepareDeposit(input);
+// Add a recent blockhash and any client-owned compute-budget instructions,
+// then simulate or call getFeeForMessage. submitDeposit still performs the
+// authoritative SDK submission flow.
+```
 
 ### `XrplVaultDepositor`
 
