@@ -351,6 +351,11 @@ or `terQUEUED`. Use `verifyDeposit` to observe validated-ledger finality; a
 just-submitted XRPL payment can return `pending` until it appears in a validated
 ledger.
 
+`prepareDeposit(input)` returns the same autofilled unsigned `Payment` used by
+`submitDeposit`. Callers can inspect its `Fee`, `Sequence`, and
+`LastLedgerSequence` before signing; `submitDeposit` remains the authoritative
+SDK signing and submission flow.
+
 ## Deposit References
 
 Pass `destination.ref` to attach a 32-byte opaque sub-account reference to the
@@ -559,6 +564,11 @@ XRPL input fields:
 | `amount` | `string` | Positive decimal amount; native XRP uses 6 decimals, issued currencies use configured decimals. |
 
 For XRPL, `txID` is the uppercase 64-hex transaction hash.
+
+```ts
+const payment = await depositor.prepareDeposit(input);
+console.log(payment.Fee); // autofilled network fee in drops
+```
 
 `XrplVaultDepositor` owns an XRPL WebSocket client. Call
 `await depositor.disconnect()` when the depositor is no longer needed, such as
