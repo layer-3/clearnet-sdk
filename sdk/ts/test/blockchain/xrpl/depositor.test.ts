@@ -282,14 +282,20 @@ describe("XrplVaultDepositor", () => {
         amount: "1",
         destination: { account: "0x1234" },
       }),
-    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination.account must be a 20-byte hex address",
+    });
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
         amount: "1",
         destination: { account: "yellow://ynet/user/not-hex" },
       }),
-    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination.account must be a 20-byte hex address",
+    });
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
@@ -423,6 +429,10 @@ describe("XrplVaultDepositor", () => {
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(depositor.verifyDeposit(HASH_REF, -1)).rejects.toMatchObject({
       code: "INVALID_CONFIRMATIONS",
+    });
+    await expect(depositor.verifyDeposit(HASH_REF, 1.5)).rejects.toMatchObject({
+      code: "INVALID_CONFIRMATIONS",
+      message: "minConfirmations must be a non-negative safe integer",
     });
 
     expect(client.request).not.toHaveBeenCalled();
