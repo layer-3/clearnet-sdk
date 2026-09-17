@@ -28,7 +28,7 @@ import (
 const (
 	// PreparedWithdrawalFormatVersion is the current stable binary format for a
 	// prepared Bitcoin withdrawal.
-	PreparedWithdrawalFormatVersion uint16 = 3
+	PreparedWithdrawalFormatVersion uint16 = 4
 	// PreparedPolicyFormatVersion is the current validation-policy snapshot
 	// format embedded in every prepared transaction.
 	PreparedPolicyFormatVersion uint16 = 1
@@ -66,7 +66,7 @@ type PreparedPolicy struct {
 type WithdrawalAuthorization struct {
 	Operation    *core.WithdrawalOp
 	WithdrawalID [32]byte
-	Deadline     int64
+	TimeBounds   core.WithdrawalTimeBounds
 }
 
 // RotationAuthorization binds a sweep to its operation marker and exact
@@ -659,8 +659,8 @@ func (f *WithdrawalFinalizer) prepareTransaction(ctx context.Context, canonical 
 }
 
 // ValidatePrepared rechecks a prepared context and its authorization entirely
-// offline. As with the legacy BTC Validate method, deadline is deliberately not
-// a transaction field because Bitcoin has no consensus transaction expiry.
+// offline. The authenticated time bounds are part of the authorization identity,
+// but are never interpreted as Bitcoin transaction expiry.
 func (f *WithdrawalFinalizer) ValidatePrepared(prepared *PreparedWithdrawal, auth WithdrawalAuthorization) error {
 	recipient, amount, err := f.parseOp(context.Background(), auth.Operation)
 	if err != nil {
@@ -1416,13 +1416,17 @@ func hashWithdrawalAuthorization(auth WithdrawalAuthorization) ([sha256.Size]byt
 		return [sha256.Size]byte{}, fmt.Errorf("btc withdrawal authorization: operation is required")
 	}
 	var b bytes.Buffer
-	b.WriteString("clearnet-sdk/btc/withdrawal-authorization/v1")
+	if err := auth.TimeBounds.Validate(); err != nil {
+		return [sha256.Size]byte{}, fmt.Errorf("btc withdrawal authorization: %w", err)
+	}
+	b.WriteString("clearnet-sdk/btc/withdrawal-authorization/v2")
 	writePreparedString(&b, string(auth.Operation.AssetURI))
 	writePreparedString(&b, auth.Operation.Amount.String())
 	writePreparedString(&b, auth.Operation.Recipient)
 	writePreparedBytes(&b, auth.Operation.UserSignature)
 	b.Write(auth.WithdrawalID[:])
-	writePreparedInt64(&b, auth.Deadline)
+	writePreparedInt64(&b, auth.TimeBounds.FinalizedAt)
+	writePreparedInt64(&b, auth.TimeBounds.ValidUntil)
 	return sha256.Sum256(b.Bytes()), nil
 }
 

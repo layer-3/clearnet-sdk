@@ -28,7 +28,7 @@ func TestCustodyInstructionsUseExplicitProgramAccount(t *testing.T) {
 	)
 	assertProgram("deposit_sol", ix, err)
 	ix, err = custody.NewExecuteInstruction(
-		account, solana.PublicKey{}, 1, [32]uint8{3}, 2, 4,
+		account, solana.PublicKey{}, 1, [32]uint8{3}, 2, 4, 5,
 		account, account, account, account, account,
 		solana.SysVarInstructionsPubkey, solana.SystemProgramID, account, program,
 	)

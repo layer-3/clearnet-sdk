@@ -138,7 +138,10 @@ func (f *WithdrawalFinalizer) feeQuorum(ctx context.Context) (int, error) {
 // its sorted-key JSON. It sets LastLedgerSequence to current + a per-attempt
 // budget clamped so the tx's estimated close is at or before the deadline
 // ; if too little budget remains it fails and the withdrawal parks.
-func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
+func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) ([]byte, error) {
+	if err := bounds.Validate(); err != nil {
+		return nil, err
+	}
 	amount, err := BuildAmount(ctx, f.assets, op)
 	if err != nil {
 		return nil, err
@@ -179,7 +182,7 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 		if err != nil {
 			return nil, err
 		}
-		lls, err := buildLLS(state, deadline)
+		lls, err := buildLLS(state, bounds.ValidUntil)
 		if err != nil {
 			return nil, err
 		}
@@ -191,12 +194,15 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 // Validate re-derives the trust-bound shape from the op and asserts the packed
 // flatTx matches, including that LastLedgerSequence is inside this follower's
 // deadline-bound expiry band.
-func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
+func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) error {
+	if err := bounds.Validate(); err != nil {
+		return candidateRejected(err)
+	}
 	var flat transaction.FlatTransaction
 	if err := json.Unmarshal(packed, &flat); err != nil {
 		return candidateRejected(fmt.Errorf("xrpl: decode packed: %w", err))
 	}
-	policy := llsPolicy{standalone: f.standalone, deadline: deadline}
+	policy := llsPolicy{standalone: f.standalone, deadline: bounds.ValidUntil}
 	if !f.standalone {
 		state, err := f.ledgerState(ctx)
 		if err != nil {

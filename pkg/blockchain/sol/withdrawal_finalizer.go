@@ -121,27 +121,28 @@ type solPacked struct {
 	Mint         string `json:"mint"`         // mint (base58); zero pubkey = native SOL
 	Amount       uint64 `json:"amount"`       // base units / lamports
 	WithdrawalID string `json:"withdrawalId"` // 32-byte hex
-	Deadline     int64  `json:"deadline"`     // unix seconds; authorization void past this
+	FinalizedAt  int64  `json:"finalizedAt"`  // BLS-authenticated unix timestamp
+	SignerNonce  uint64 `json:"signerNonce"`  // on-chain signer-set generation
 }
 
-// Pack resolves the withdrawal target and returns the canonical JSON.
-func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
-	p, err := f.packedFromOp(ctx, op, withdrawalID, deadline)
+// Pack resolves the withdrawal target and returns canonical JSON bound to the
+// live program signer nonce. Retry after rotation repacks under the new nonce.
+func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) ([]byte, error) {
+	p, err := f.packedFromOp(ctx, op, withdrawalID, bounds)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(p)
 }
 
-// Validate re-derives the canonical payload from the op and the caller-supplied
-// deadline and asserts a match — a peer packing a different deadline than the
-// quorum agreed is rejected here, before Sign.
-func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
+// Validate re-derives the canonical payload from the operation, authenticated
+// time bounds, and current signer generation before signing.
+func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) error {
 	var got solPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("sol: decode packed: %w", err)
 	}
-	want, err := f.packedFromOp(ctx, op, withdrawalID, deadline)
+	want, err := f.packedFromOp(ctx, op, withdrawalID, bounds)
 	if err != nil {
 		return err
 	}
@@ -174,6 +175,10 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 // PrepareSignatureValidator freezes the live program quorum and exact
 // withdrawal digest for validation-first mesh collection.
 func (f *WithdrawalFinalizer) PrepareSignatureValidator(ctx context.Context, packed []byte) (*SignatureValidator, error) {
+	var p solPacked
+	if err := json.Unmarshal(packed, &p); err != nil {
+		return nil, fmt.Errorf("sol: decode packed: %w", err)
+	}
 	digest, err := f.digestFromPacked(packed)
 	if err != nil {
 		return nil, err
@@ -181,6 +186,9 @@ func (f *WithdrawalFinalizer) PrepareSignatureValidator(ctx context.Context, pac
 	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.SignerNonce != p.SignerNonce {
+		return nil, fmt.Errorf("sol: packed signer nonce %d is stale; live nonce is %d", p.SignerNonce, cfg.SignerNonce)
 	}
 	return NewSignatureValidator(digest, cfg.Signers, int(cfg.Threshold))
 }
@@ -195,7 +203,7 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares 
 	if err := json.Unmarshal(packed, &p); err != nil {
 		return "", fmt.Errorf("sol: decode packed: %w", err)
 	}
-	to, mint, amount, wid, deadline, err := decodePacked(p)
+	to, mint, amount, wid, finalizedAt, signerNonce, err := decodePacked(p)
 	if err != nil {
 		return "", err
 	}
@@ -228,7 +236,7 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares 
 			associatedtokenaccount.NewCreateIdempotentInstruction(f.feePayerPub, to, mint).Build())
 	}
 	sigIxIndex := uint8(len(leading))
-	execIx, err := f.buildExecuteIx(to, mint, amount, wid, sigIxIndex, deadline)
+	execIx, err := f.buildExecuteIx(to, mint, amount, wid, sigIxIndex, finalizedAt, signerNonce)
 	if err != nil {
 		return "", err
 	}
@@ -253,9 +261,9 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares 
 // remaining-accounts the program's execute expects (token program, vault ATA,
 // recipient ATA), reusing the binding's data encoding so the discriminator and
 // arguments stay byte-exact.
-func (f *WithdrawalFinalizer) buildExecuteIx(to, mint solana.PublicKey, amount uint64, wid [32]byte, sigIxIndex uint8, deadline int64) (solana.Instruction, error) {
+func (f *WithdrawalFinalizer) buildExecuteIx(to, mint solana.PublicKey, amount uint64, wid [32]byte, sigIxIndex uint8, finalizedAt int64, signerNonce uint64) (solana.Instruction, error) {
 	execIx, err := custody.NewExecuteInstruction(
-		to, mint, amount, wid, sigIxIndex, deadline,
+		to, mint, amount, wid, sigIxIndex, finalizedAt, signerNonce,
 		f.feePayerPub, f.configPDA, f.vaultPDA, WithdrawalPDA(f.programID, wid),
 		to, solana.SysVarInstructionsPubkey, solana.SystemProgramID, f.eventAuth, f.programID,
 	)
@@ -334,7 +342,10 @@ func (f *WithdrawalFinalizer) waitExecuted(ctx context.Context, withdrawalID [32
 
 // --- helpers ---
 
-func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) (solPacked, error) {
+func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) (solPacked, error) {
+	if err := bounds.Validate(); err != nil {
+		return solPacked{}, err
+	}
 	to, err := solana.PublicKeyFromBase58(op.Recipient)
 	if err != nil {
 		return solPacked{}, fmt.Errorf("sol: recipient %q not base58: %w", op.Recipient, err)
@@ -367,12 +378,17 @@ func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.Withdra
 	if err != nil {
 		return solPacked{}, err
 	}
+	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
+	if err != nil {
+		return solPacked{}, err
+	}
 	return solPacked{
 		To:           to.String(),
 		Mint:         mint.String(),
 		Amount:       amt.Uint64(),
 		WithdrawalID: hex.EncodeToString(withdrawalID[:]),
-		Deadline:     deadline,
+		FinalizedAt:  bounds.FinalizedAt,
+		SignerNonce:  cfg.SignerNonce,
 	}, nil
 }
 
@@ -381,14 +397,14 @@ func (f *WithdrawalFinalizer) digestFromPacked(packed []byte) ([32]byte, error) 
 	if err := json.Unmarshal(packed, &p); err != nil {
 		return [32]byte{}, fmt.Errorf("sol: decode packed: %w", err)
 	}
-	to, mint, amount, wid, deadline, err := decodePacked(p)
+	to, mint, amount, wid, finalizedAt, signerNonce, err := decodePacked(p)
 	if err != nil {
 		return [32]byte{}, err
 	}
-	return WithdrawDigest(f.chainID, f.programID, f.vaultPDA, to, mint, amount, wid, deadline), nil
+	return WithdrawDigest(f.chainID, f.programID, f.vaultPDA, to, mint, amount, wid, finalizedAt, signerNonce), nil
 }
 
-func decodePacked(p solPacked) (to, mint solana.PublicKey, amount uint64, wid [32]byte, deadline int64, err error) {
+func decodePacked(p solPacked) (to, mint solana.PublicKey, amount uint64, wid [32]byte, finalizedAt int64, signerNonce uint64, err error) {
 	if to, err = solana.PublicKeyFromBase58(p.To); err != nil {
 		return
 	}
@@ -402,6 +418,10 @@ func decodePacked(p solPacked) (to, mint solana.PublicKey, amount uint64, wid [3
 	}
 	copy(wid[:], b)
 	amount = p.Amount
-	deadline = p.Deadline
+	finalizedAt = p.FinalizedAt
+	signerNonce = p.SignerNonce
+	if finalizedAt < 0 {
+		err = fmt.Errorf("sol: finalizedAt must be non-negative")
+	}
 	return
 }

@@ -92,6 +92,18 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	if err := waitMined(ctx, client, deployTx); err != nil {
 		t.Fatalf("deploy wait: %v", err)
 	}
+	deployedCustody, err := NewCustody(custodyAddr, client)
+	if err != nil {
+		t.Fatalf("bind deployed custody: %v", err)
+	}
+	window, err := deployedCustody.WITHDRAWALEXECUTIONWINDOW(nil)
+	if err != nil {
+		t.Fatalf("read deployed execution window: %v", err)
+	}
+	wantWindow := big.NewInt(int64(core.WithdrawalExecutionWindow / time.Second))
+	if window.Cmp(wantWindow) != 0 {
+		t.Fatalf("deployed execution window = %s, SDK = %s", window, wantWindow)
+	}
 	t.Logf("deployed Custody at %s (signers=%d threshold=%d)", custodyAddr.Hex(), integrationSignerCount, integrationThreshold)
 
 	// ── Deposit flow ──────────────────────────────────────────────────────────
@@ -133,14 +145,15 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	// 1. Pack (any node — here the first). Far-future deadline: the
 	// happy path must not expire mid-test.
 	deadline := time.Now().Add(24 * time.Hour).Unix()
-	packed, err := finalizers[0].Pack(ctx, op, withdrawalID, deadline)
+	bounds := core.WithdrawalTimeBounds{FinalizedAt: deadline - 3600, ValidUntil: deadline}
+	packed, err := finalizers[0].Pack(ctx, op, withdrawalID, bounds)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
 	// 2. Every node validates then signs.
 	sigs := make([][]byte, 0, len(finalizers))
 	for i, f := range finalizers {
-		if err := f.Validate(ctx, packed, op, withdrawalID, deadline); err != nil {
+		if err := f.Validate(ctx, packed, op, withdrawalID, bounds); err != nil {
 			t.Fatalf("Validate[%d]: %v", i, err)
 		}
 		s, err := f.Sign(ctx, packed)

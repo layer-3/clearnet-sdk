@@ -108,15 +108,15 @@ type VaultDepositor interface {
 //   - VerifyExecution reads canonical chain state to answer "already executed?"
 //     for the retry/finalize loop.
 //
-// deadline (unix seconds) is threaded into Pack/Validate: it is a
-// digest input on every chain, so the packed bytes — and thus the signature —
-// bind it. Sign/Submit are unchanged; the packed body already carries it.
+// bounds carries the authenticated FinalizedAt and its exactly derived
+// ValidUntil. Chain implementations bind the appropriate fields into their
+// canonical body; Sign/Submit are unchanged because that body carries them.
 // Chain-specific validation-first collection APIs are exposed by the concrete
 // EVM and Solana finalizers rather than this cross-chain interface; BTC and XRPL
 // use their own prepared/finalized validation models.
 type VaultWithdrawalFinalizer interface {
-	Pack(ctx context.Context, op *WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error)
-	Validate(ctx context.Context, packed []byte, op *WithdrawalOp, withdrawalID [32]byte, deadline int64) error
+	Pack(ctx context.Context, op *WithdrawalOp, withdrawalID [32]byte, bounds WithdrawalTimeBounds) ([]byte, error)
+	Validate(ctx context.Context, packed []byte, op *WithdrawalOp, withdrawalID [32]byte, bounds WithdrawalTimeBounds) error
 	Sign(ctx context.Context, packed []byte) ([]byte, error)
 	Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error)
 	VerifyExecution(ctx context.Context, withdrawalID [32]byte) (txID string, executed bool, err error)

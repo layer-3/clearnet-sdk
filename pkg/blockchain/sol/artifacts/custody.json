@@ -485,8 +485,12 @@
           "type": "u8"
         },
         {
-          "name": "deadline",
+          "name": "finalized_at",
           "type": "i64"
+        },
+        {
+          "name": "signer_nonce",
+          "type": "u64"
         }
       ]
     },
@@ -801,7 +805,17 @@
     {
       "code": 6021,
       "name": "DeadlineExpired",
-      "msg": "withdrawal authorization has expired (deadline < cluster time)"
+      "msg": "withdrawal authorization has expired"
+    },
+    {
+      "code": 6022,
+      "name": "DeadlineOverflow",
+      "msg": "withdrawal authorization deadline overflow"
+    },
+    {
+      "code": 6023,
+      "name": "InvalidSignerNonce",
+      "msg": "withdrawal authorization signer nonce is not current"
     }
   ],
   "types": [

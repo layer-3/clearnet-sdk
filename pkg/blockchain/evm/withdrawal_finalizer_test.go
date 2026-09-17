@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -42,14 +43,12 @@ func TestPackedFromOp_RejectsMalformedAddress(t *testing.T) {
 	addr := "0x" + strings.Repeat("ab", 20)
 	assetURI := core.AssetURI("yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0")
 	f := &WithdrawalFinalizer{chainID: 1, assets: testAssetResolver{}}
+	bounds := core.WithdrawalTimeBounds{FinalizedAt: 123, ValidUntil: 3723}
 
-	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: addr, AssetURI: assetURI, Amount: decimal.NewFromInt(1)}, wid, 0); err != nil {
-		t.Fatalf("valid op rejected: %v", err)
-	}
-	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: "not-an-address", AssetURI: assetURI, Amount: decimal.NewFromInt(1)}, wid, 0); err == nil {
+	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: "not-an-address", AssetURI: assetURI, Amount: decimal.NewFromInt(1)}, wid, bounds); err == nil {
 		t.Error("malformed recipient accepted")
 	}
-	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: addr, AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0xzz", Amount: decimal.NewFromInt(1)}, wid, 0); err == nil {
+	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: addr, AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0xzz", Amount: decimal.NewFromInt(1)}, wid, bounds); err == nil {
 		t.Error("malformed asset accepted")
 	}
 }
@@ -89,9 +88,13 @@ func TestWithdrawalFinalizerSignUsesAuthorizer(t *testing.T) {
 		Asset:        common.Address{}.Hex(),
 		Amount:       "1",
 		WithdrawalID: strings.Repeat("11", 32),
-		Deadline:     123,
+		FinalizedAt:  123,
+		SignerNonce:  "7",
 	}
-	packed := []byte(fmt.Sprintf(`{"to":%q,"asset":%q,"amount":%q,"withdrawalId":%q,"deadline":%d}`, p.To, p.Asset, p.Amount, p.WithdrawalID, p.Deadline))
+	packed, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sig, err := f.Sign(ctx, packed)
 	if err != nil {
 		t.Fatal(err)
