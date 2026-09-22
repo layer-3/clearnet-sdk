@@ -94,14 +94,14 @@ func TestEIP712DeploymentAllOperations(t *testing.T) {
 	recipient := common.HexToAddress("0x1234")
 	wid := [32]byte{1}
 	deadline := big.NewInt(4000000000)
-	signerNonce := big.NewInt(0)
-	mined(vault.Execute(auth, recipient, common.Address{}, big.NewInt(100), wid, deadline, signerNonce, sign(evm.ComputeWithdrawalDigest(1337, vaultAddr, recipient, common.Address{}, big.NewInt(100), wid, deadline, signerNonce))))
+	rotationNonce := big.NewInt(0)
+	mined(vault.Execute(auth, recipient, common.Address{}, big.NewInt(100), wid, deadline, rotationNonce, sign(evm.ComputeWithdrawalDigest(1337, vaultAddr, recipient, common.Address{}, big.NewInt(100), wid, deadline, rotationNonce))))
 	balance, err := client.BalanceAt(ctx, recipient, nil)
 	if err != nil || balance.Cmp(big.NewInt(100)) != 0 {
 		t.Fatalf("withdrawal balance %v: %v", balance, err)
 	}
 	mined(vault.UpdateSigners(auth, keys, big.NewInt(2), sign(evm.ComputeRotationDigest(1337, vaultAddr, keys, big.NewInt(2), big.NewInt(0)))))
-	nonce, err := vault.SignerNonce(nil)
+	nonce, err := vault.RotationNonce(nil)
 	if err != nil || nonce.Uint64() != 1 {
 		t.Fatal("vault rotation nonce", nonce, err)
 	}

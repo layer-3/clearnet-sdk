@@ -23,11 +23,11 @@ const (
 //
 //	sha256(WITHDRAW_DOMAIN ‖ chainID(BE) ‖ programID ‖ vault
 //	       ‖ to ‖ mint ‖ amount(BE) ‖ withdrawalID
-//	       ‖ finalizedAt(BE) ‖ signerNonce(BE))
+//	       ‖ finalizedAt(BE) ‖ rotationNonce(BE))
 //
 // mint == the zero pubkey denotes native SOL. finalizedAt is encoded as signed
-// int64 big-endian; signerNonce is unsigned uint64 big-endian.
-func WithdrawDigest(chainID uint64, programID, vault, to, mint solana.PublicKey, amount uint64, withdrawalID [32]byte, finalizedAt int64, signerNonce uint64) [32]byte {
+// int64 big-endian; rotationNonce is unsigned uint64 big-endian.
+func WithdrawDigest(chainID uint64, programID, vault, to, mint solana.PublicKey, amount uint64, withdrawalID [32]byte, finalizedAt int64, rotationNonce uint64) [32]byte {
 	var u8 [8]byte
 	h := sha256.New()
 	h.Write([]byte(withdrawDomain))
@@ -42,7 +42,7 @@ func WithdrawDigest(chainID uint64, programID, vault, to, mint solana.PublicKey,
 	h.Write(withdrawalID[:])
 	binary.BigEndian.PutUint64(u8[:], uint64(finalizedAt))
 	h.Write(u8[:])
-	binary.BigEndian.PutUint64(u8[:], signerNonce)
+	binary.BigEndian.PutUint64(u8[:], rotationNonce)
 	h.Write(u8[:])
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
@@ -66,10 +66,10 @@ func SignersCommitment(newSigners []solana.PublicKey, newThreshold uint8) [32]by
 // rotation, matching the program's `rotate_digest`:
 //
 //	sha256(ROTATE_DOMAIN ‖ chainID(BE) ‖ programID ‖ config
-//	       ‖ signersCommitment ‖ signerNonce(BE))
+//	       ‖ signersCommitment ‖ rotationNonce(BE))
 //
-// signerNonce is the on-chain Config.SignerNonce — the rotation replay token.
-func RotateDigest(chainID uint64, programID, config solana.PublicKey, commitment [32]byte, signerNonce uint64) [32]byte {
+// rotationNonce is the on-chain Config.RotationNonce, the rotation replay token.
+func RotateDigest(chainID uint64, programID, config solana.PublicKey, commitment [32]byte, rotationNonce uint64) [32]byte {
 	var u8 [8]byte
 	h := sha256.New()
 	h.Write([]byte(rotateDomain))
@@ -78,7 +78,7 @@ func RotateDigest(chainID uint64, programID, config solana.PublicKey, commitment
 	h.Write(programID[:])
 	h.Write(config[:])
 	h.Write(commitment[:])
-	binary.BigEndian.PutUint64(u8[:], signerNonce)
+	binary.BigEndian.PutUint64(u8[:], rotationNonce)
 	h.Write(u8[:])
 	var out [32]byte
 	copy(out[:], h.Sum(nil))

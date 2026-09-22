@@ -78,16 +78,16 @@ func NewRotationFinalizer(rpcURL string, programID solana.PublicKey, signer, fee
 }
 
 // rotPacked is the canonical rotation payload: the new signer set + threshold
-// and the signer nonce the digest is bound to.
+// and the rotation nonce the digest is bound to.
 type rotPacked struct {
-	NewSigners   []string `json:"newSigners"` // base58, ascending
-	NewThreshold uint8    `json:"newThreshold"`
-	SignerNonce  uint64   `json:"signerNonce"`
+	NewSigners    []string `json:"newSigners"` // base58, ascending
+	NewThreshold  uint8    `json:"newThreshold"`
+	RotationNonce uint64   `json:"rotationNonce"`
 }
 
-// Pack reads the live signer nonce and returns the canonical JSON for rotating
+// Pack reads the live rotation nonce and returns the canonical JSON for rotating
 // to newSigners / newThreshold. opID is ignored: Solana binds rotation replay to
-// the on-chain program signer nonce, so the operation identity is not embedded
+// the on-chain program rotation nonce, so the operation identity is not embedded
 // in the payload.
 func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []string, newThreshold int) ([]byte, error) {
 	pubs, err := parseRotationSigners(newSigners)
@@ -102,7 +102,7 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 	if err != nil {
 		return nil, err
 	}
-	p := rotPacked{NewSigners: make([]string, len(pubs)), NewThreshold: thr, SignerNonce: cfg.SignerNonce}
+	p := rotPacked{NewSigners: make([]string, len(pubs)), NewThreshold: thr, RotationNonce: cfg.RotationNonce}
 	for i, pk := range pubs {
 		p.NewSigners[i] = pk.String()
 	}
@@ -111,7 +111,7 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 
 // Validate re-derives the rotation target from newSigners / newThreshold,
 // asserts the packed payload matches it, and re-reads the live nonce to reject a
-// packer that bound a stale or wrong signer nonce.
+// packer that bound a stale or wrong rotation nonce.
 func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []byte, newSigners []string, newThreshold int) error {
 	var got rotPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
@@ -136,8 +136,8 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 	if err != nil {
 		return err
 	}
-	if got.SignerNonce != cfg.SignerNonce {
-		return fmt.Errorf("sol: packed signer nonce %d != live %d", got.SignerNonce, cfg.SignerNonce)
+	if got.RotationNonce != cfg.RotationNonce {
+		return fmt.Errorf("sol: packed rotation nonce %d != live %d", got.RotationNonce, cfg.RotationNonce)
 	}
 	return nil
 }
@@ -293,7 +293,7 @@ func (f *RotationFinalizer) digestFromPacked(packed []byte) ([32]byte, error) {
 		return [32]byte{}, err
 	}
 	commitment := SignersCommitment(pubs, p.NewThreshold)
-	return RotateDigest(f.chainID, f.programID, f.configPDA, commitment, p.SignerNonce), nil
+	return RotateDigest(f.chainID, f.programID, f.configPDA, commitment, p.RotationNonce), nil
 }
 
 // parseRotationSigners decodes the incoming signer set (base58 or 32-byte hex)

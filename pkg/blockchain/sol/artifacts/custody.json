@@ -489,7 +489,7 @@
           "type": "i64"
         },
         {
-          "name": "signer_nonce",
+          "name": "rotation_nonce",
           "type": "u64"
         }
       ]
@@ -814,8 +814,8 @@
     },
     {
       "code": 6023,
-      "name": "InvalidSignerNonce",
-      "msg": "withdrawal authorization signer nonce is not current"
+      "name": "InvalidRotationNonce",
+      "msg": "withdrawal authorization rotation nonce is not current"
     }
   ],
   "types": [
@@ -840,7 +840,7 @@
             "type": "u8"
           },
           {
-            "name": "signer_nonce",
+            "name": "rotation_nonce",
             "type": "u64"
           },
           {
@@ -953,7 +953,7 @@
             "type": "u8"
           },
           {
-            "name": "signer_nonce",
+            "name": "rotation_nonce",
             "type": "u64"
           }
         ]

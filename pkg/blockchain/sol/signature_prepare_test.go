@@ -89,7 +89,7 @@ func TestSolanaPrepareSignatureValidatorsUseExactDigest(t *testing.T) {
 	programID := solana.NewWallet().PublicKey()
 	signers := []solana.PublicKey{solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()}
 	config := newConfigRPC(t, programID, solcustody.Config{
-		Signers: signers, Threshold: 2, SignerNonce: 7, ChainId: 1,
+		Signers: signers, Threshold: 2, RotationNonce: 7, ChainId: 1,
 	})
 	server := httptest.NewServer(config)
 	defer server.Close()
@@ -101,7 +101,7 @@ func TestSolanaPrepareSignatureValidatorsUseExactDigest(t *testing.T) {
 	}
 	withdrawalPacked, err := json.Marshal(solPacked{
 		To: solana.NewWallet().PublicKey().String(), Mint: solana.PublicKey{}.String(),
-		Amount: 1, WithdrawalID: strings.Repeat("11", 32), FinalizedAt: 123, SignerNonce: 7,
+		Amount: 1, WithdrawalID: strings.Repeat("11", 32), FinalizedAt: 123, RotationNonce: 7,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestSolanaPrepareSignatureValidatorsUseExactDigest(t *testing.T) {
 	}
 	rotationPacked, err := json.Marshal(rotPacked{
 		NewSigners:   []string{hex.EncodeToString(signers[0][:]), hex.EncodeToString(signers[1][:])},
-		NewThreshold: 2, SignerNonce: 7,
+		NewThreshold: 2, RotationNonce: 7,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestSolanaPrepareSignatureValidatorsUseExactDigest(t *testing.T) {
 		t.Fatalf("rotation prepared context = %x/%d, want %x/2", rotationValidator.Digest(), rotationValidator.Threshold(), rotationDigest)
 	}
 
-	config.setConfig(solcustody.Config{Signers: signers, Threshold: 2, SignerNonce: 8, ChainId: 1})
+	config.setConfig(solcustody.Config{Signers: signers, Threshold: 2, RotationNonce: 8, ChainId: 1})
 	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), withdrawalPacked); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("old generation validator error = %v, want stale nonce", err)
 	}
@@ -158,14 +158,14 @@ func TestSolanaPrepareSignatureValidatorsUseExactDigest(t *testing.T) {
 	if err := json.Unmarshal(repacked, &retryPayload); err != nil {
 		t.Fatal(err)
 	}
-	if retryPayload.SignerNonce != 8 {
-		t.Fatalf("repacked signer nonce = %d, want 8", retryPayload.SignerNonce)
+	if retryPayload.RotationNonce != 8 {
+		t.Fatalf("repacked rotation nonce = %d, want 8", retryPayload.RotationNonce)
 	}
 	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), repacked); err != nil {
 		t.Fatalf("repacked generation rejected: %v", err)
 	}
 
-	config.setConfig(solcustody.Config{Signers: signers, Threshold: 2, SignerNonce: 9, ChainId: 1})
+	config.setConfig(solcustody.Config{Signers: signers, Threshold: 2, RotationNonce: 9, ChainId: 1})
 	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), repacked); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("changed pre-submit context error = %v, want stale nonce", err)
 	}

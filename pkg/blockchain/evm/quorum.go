@@ -136,7 +136,7 @@ type vaultQuorumReader interface {
 
 type vaultWithdrawalQuorumReader interface {
 	vaultQuorumReader
-	SignerNonce(*bind.CallOpts) (*big.Int, error)
+	RotationNonce(*bind.CallOpts) (*big.Int, error)
 }
 
 // fetchLiveQuorum reads the vault's current authorized signer set and threshold
@@ -178,15 +178,15 @@ func fetchLiveWithdrawalQuorum(ctx context.Context, chain quorumBlockNumberReade
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("read threshold: %w", err)
 	}
-	nonce, err := custody.SignerNonce(opts)
+	nonce, err := custody.RotationNonce(opts)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("read signer nonce: %w", err)
+		return nil, 0, nil, fmt.Errorf("read rotation nonce: %w", err)
 	}
 	if thr == nil || !thr.IsInt64() || thr.Int64() <= 0 || thr.Int64() > int64(len(signers)) {
 		return nil, 0, nil, fmt.Errorf("on-chain threshold %v out of range for %d signers", thr, len(signers))
 	}
 	if nonce == nil || nonce.Sign() < 0 || nonce.BitLen() > 256 {
-		return nil, 0, nil, fmt.Errorf("on-chain signer nonce %v out of uint256 range", nonce)
+		return nil, 0, nil, fmt.Errorf("on-chain rotation nonce %v out of uint256 range", nonce)
 	}
 	return signers, int(thr.Int64()), nonce, nil
 }

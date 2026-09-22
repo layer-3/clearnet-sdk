@@ -125,7 +125,7 @@ type VaultWithdrawalFinalizer interface {
 // SignerRotationFinalizer rotates the vault's authorized signer set. It is the
 // same build→sign→merge→submit→verify shape as VaultWithdrawalFinalizer, but the
 // signed payload commits to the new signer set + threshold + the chain's local
-// replay token (EVM signerNonce, XRPL account sequence, Solana program nonce)
+// replay token (EVM rotationNonce, XRPL account sequence, Solana program nonce)
 // rather than a withdrawal. Signature collection (mesh) and submitter selection
 // stay with the caller; the implementation owns the node's signer and the
 // chain-specific authorization supplied at construction.
@@ -136,7 +136,7 @@ type VaultWithdrawalFinalizer interface {
 //
 // opID is the caller's unique identifier for this rotation operation (custody's
 // RotationRequest.RequestID). In-place chains bind replay protection on-chain
-// (EVM signerNonce, XRPL account sequence, Solana program nonce) and accept opID
+// (EVM rotationNonce, XRPL account sequence, Solana program nonce) and accept opID
 // only to keep one uniform signature — they do not embed it in the packed
 // payload. BTC has no on-chain op record: it embeds opID as an OP_RETURN marker
 // in the sweep so an external watcher can attribute the swept transaction to

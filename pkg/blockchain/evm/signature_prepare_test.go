@@ -22,11 +22,11 @@ type quorumRPC struct {
 	t                      *testing.T
 	signersResult          string
 	thresholdResult        string
-	signerNonceResult      string
+	rotationNonceResult    string
 	issuerSettingsResult   string
 	signersSelector        string
 	thresholdSelector      string
-	signerNonceSelector    string
+	rotationNonceSelector  string
 	issuerSettingsSelector string
 	mu                     sync.Mutex
 	callBlocks             []string
@@ -47,7 +47,7 @@ func newQuorumRPC(t *testing.T, signers []common.Address, threshold int) *quorum
 	if err != nil {
 		t.Fatal(err)
 	}
-	signerNonceResult, err := parsed.Methods["signerNonce"].Outputs.Pack(big.NewInt(7))
+	rotationNonceResult, err := parsed.Methods["rotationNonce"].Outputs.Pack(big.NewInt(7))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,27 +63,27 @@ func newQuorumRPC(t *testing.T, signers []common.Address, threshold int) *quorum
 		t:                      t,
 		signersResult:          hexutil.Encode(signersResult),
 		thresholdResult:        hexutil.Encode(thresholdResult),
-		signerNonceResult:      hexutil.Encode(signerNonceResult),
+		rotationNonceResult:    hexutil.Encode(rotationNonceResult),
 		issuerSettingsResult:   hexutil.Encode(issuerSettingsResult),
 		signersSelector:        hexutil.Encode(parsed.Methods["signers"].ID),
 		thresholdSelector:      hexutil.Encode(parsed.Methods["threshold"].ID),
-		signerNonceSelector:    hexutil.Encode(parsed.Methods["signerNonce"].ID),
+		rotationNonceSelector:  hexutil.Encode(parsed.Methods["rotationNonce"].ID),
 		issuerSettingsSelector: hexutil.Encode(registryABI.Methods["issuerSettings"].ID),
 	}
 }
 
-func (q *quorumRPC) setSignerNonce(n int64) {
+func (q *quorumRPC) setRotationNonce(n int64) {
 	q.t.Helper()
 	parsed, err := CustodyMetaData.GetAbi()
 	if err != nil {
 		q.t.Fatal(err)
 	}
-	result, err := parsed.Methods["signerNonce"].Outputs.Pack(big.NewInt(n))
+	result, err := parsed.Methods["rotationNonce"].Outputs.Pack(big.NewInt(n))
 	if err != nil {
 		q.t.Fatal(err)
 	}
 	q.mu.Lock()
-	q.signerNonceResult = hexutil.Encode(result)
+	q.rotationNonceResult = hexutil.Encode(result)
 	q.mu.Unlock()
 }
 
@@ -133,9 +133,9 @@ func (q *quorumRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			result = q.signersResult
 		case strings.HasPrefix(input, q.thresholdSelector):
 			result = q.thresholdResult
-		case strings.HasPrefix(input, q.signerNonceSelector):
+		case strings.HasPrefix(input, q.rotationNonceSelector):
 			q.mu.Lock()
-			result = q.signerNonceResult
+			result = q.rotationNonceResult
 			q.mu.Unlock()
 		case strings.HasPrefix(input, q.issuerSettingsSelector):
 			q.mu.Lock()
@@ -207,7 +207,7 @@ func TestEVMPrepareSignatureValidatorsUseExactDigestAndPinnedQuorum(t *testing.T
 	withdrawal := &WithdrawalFinalizer{client: client, custody: custody, chainID: 1, vaultAddr: vault, assets: testAssetResolver{}}
 	withdrawalPacked, err := json.Marshal(evmPacked{
 		To:    common.HexToAddress("0x0000000000000000000000000000000000000003").Hex(),
-		Asset: common.Address{}.Hex(), Amount: "1", WithdrawalID: strings.Repeat("11", 32), FinalizedAt: 123, SignerNonce: "7",
+		Asset: common.Address{}.Hex(), Amount: "1", WithdrawalID: strings.Repeat("11", 32), FinalizedAt: 123, RotationNonce: "7",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +226,7 @@ func TestEVMPrepareSignatureValidatorsUseExactDigestAndPinnedQuorum(t *testing.T
 
 	rotation := &RotationFinalizer{client: client, custody: custody, chainID: 1, vaultAddr: vault}
 	rotationPacked, err := json.Marshal(evmRotPacked{
-		NewSigners: addrsToHex(signers), NewThreshold: 2, SignerNonce: "7",
+		NewSigners: addrsToHex(signers), NewThreshold: 2, RotationNonce: "7",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -258,7 +258,7 @@ func TestEVMPrepareSignatureValidatorsUseExactDigestAndPinnedQuorum(t *testing.T
 	// A signer rotation invalidates the already packed generation. The same
 	// operation can be retried by repacking under the new nonce while its
 	// authenticated withdrawal time bounds remain live.
-	rpcHandler.setSignerNonce(8)
+	rpcHandler.setRotationNonce(8)
 	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), withdrawalPacked); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("old generation validator error = %v, want stale nonce", err)
 	}
@@ -275,8 +275,8 @@ func TestEVMPrepareSignatureValidatorsUseExactDigestAndPinnedQuorum(t *testing.T
 	if err := json.Unmarshal(repacked, &retryPayload); err != nil {
 		t.Fatal(err)
 	}
-	if retryPayload.SignerNonce != "8" {
-		t.Fatalf("repacked signer nonce = %s, want 8", retryPayload.SignerNonce)
+	if retryPayload.RotationNonce != "8" {
+		t.Fatalf("repacked rotation nonce = %s, want 8", retryPayload.RotationNonce)
 	}
 	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), repacked); err != nil {
 		t.Fatalf("repacked generation rejected: %v", err)
@@ -285,7 +285,7 @@ func TestEVMPrepareSignatureValidatorsUseExactDigestAndPinnedQuorum(t *testing.T
 	// The caller performs this fresh validation immediately before submit. A
 	// second rotation therefore rejects the collected context rather than
 	// broadcasting signatures from generation 8 under generation 9.
-	rpcHandler.setSignerNonce(9)
+	rpcHandler.setRotationNonce(9)
 	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), repacked); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("changed pre-submit context error = %v, want stale nonce", err)
 	}

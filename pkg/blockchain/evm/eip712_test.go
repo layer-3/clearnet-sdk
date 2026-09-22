@@ -56,9 +56,9 @@ func vectorDigest(td apitypes.TypedData) common.Hash {
 	contract := common.HexToAddress(td.Domain.VerifyingContract)
 	switch td.PrimaryType {
 	case "Execute":
-		return ComputeWithdrawalDigest(chain, contract, addr("to"), addr("asset"), num("amount"), hash("withdrawalId"), num("finalizedAt"), num("signerNonce"))
+		return ComputeWithdrawalDigest(chain, contract, addr("to"), addr("asset"), num("amount"), hash("withdrawalId"), num("finalizedAt"), num("rotationNonce"))
 	case "UpdateSigners":
-		return ComputeRotationDigest(chain, contract, keys("newSigners"), num("newThreshold"), num("signerNonce"))
+		return ComputeRotationDigest(chain, contract, keys("newSigners"), num("newThreshold"), num("rotationNonce"))
 	case "RegisterIssuer":
 		return ComputeConfigRegistryRegistrationDigest(chain, contract, keys("issuerKeys"), num("threshold"))
 	case "SetConfig":
@@ -163,11 +163,11 @@ func TestEIP712InvalidUint256NamesField(t *testing.T) {
 		{"finalizedAt", func(n *big.Int) common.Hash {
 			return ComputeWithdrawalDigest(1, address, address, address, good, [32]byte{}, n, good)
 		}},
-		{"signerNonce", func(n *big.Int) common.Hash {
+		{"rotationNonce", func(n *big.Int) common.Hash {
 			return ComputeWithdrawalDigest(1, address, address, address, good, [32]byte{}, good, n)
 		}},
 		{"newThreshold", func(n *big.Int) common.Hash { return ComputeRotationDigest(1, address, keys, n, good) }},
-		{"signerNonce", func(n *big.Int) common.Hash { return ComputeRotationDigest(1, address, keys, good, n) }},
+		{"rotationNonce", func(n *big.Int) common.Hash { return ComputeRotationDigest(1, address, keys, good, n) }},
 		{"threshold", func(n *big.Int) common.Hash { return ComputeConfigRegistryRegistrationDigest(1, address, keys, n) }},
 		{"expectedNonce", func(n *big.Int) common.Hash {
 			return ComputeConfigRegistrySetConfigDigest(1, address, address, [32]byte{}, [32]byte{}, n)

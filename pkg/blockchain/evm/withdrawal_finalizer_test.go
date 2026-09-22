@@ -84,12 +84,12 @@ func TestWithdrawalFinalizerSignUsesAuthorizer(t *testing.T) {
 		authorizerAddr: authorizerAddr,
 	}
 	p := evmPacked{
-		To:           common.HexToAddress("0x000000000000000000000000000000000000b0b0").Hex(),
-		Asset:        common.Address{}.Hex(),
-		Amount:       "1",
-		WithdrawalID: strings.Repeat("11", 32),
-		FinalizedAt:  123,
-		SignerNonce:  "7",
+		To:            common.HexToAddress("0x000000000000000000000000000000000000b0b0").Hex(),
+		Asset:         common.Address{}.Hex(),
+		Amount:        "1",
+		WithdrawalID:  strings.Repeat("11", 32),
+		FinalizedAt:   123,
+		RotationNonce: "7",
 	}
 	packed, err := json.Marshal(p)
 	if err != nil {

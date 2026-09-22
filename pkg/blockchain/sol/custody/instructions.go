@@ -157,7 +157,7 @@ func NewExecuteInstruction(
 	withdrawalIdParam [32]uint8,
 	sigIxIndexParam uint8,
 	finalizedAtParam int64,
-	signerNonceParam uint64,
+	rotationNonceParam uint64,
 
 	// Accounts:
 	feePayerAccount solanago.PublicKey,
@@ -209,10 +209,10 @@ func NewExecuteInstruction(
 		if err != nil {
 			return nil, errors.NewField("finalizedAtParam", err)
 		}
-		// Serialize `signerNonceParam`:
-		err = enc__.Encode(signerNonceParam)
+		// Serialize `rotationNonceParam`:
+		err = enc__.Encode(rotationNonceParam)
 		if err != nil {
-			return nil, errors.NewField("signerNonceParam", err)
+			return nil, errors.NewField("rotationNonceParam", err)
 		}
 	}
 	accounts__ := solanago.AccountMetaSlice{}

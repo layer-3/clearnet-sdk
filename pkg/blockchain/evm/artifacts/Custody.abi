@@ -133,7 +133,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "authorizationSignerNonce",
+        "name": "authorizationRotationNonce",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -186,7 +186,7 @@
   },
   {
     "type": "function",
-    "name": "signerNonce",
+    "name": "rotationNonce",
     "inputs": [],
     "outputs": [
       {
