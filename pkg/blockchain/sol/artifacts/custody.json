@@ -986,5 +986,15 @@
         ]
       }
     }
+  ],
+  "constants": [
+    {
+      "name": "WITHDRAWAL_EXECUTION_WINDOW_SECONDS",
+      "docs": [
+        "Fixed post-finalization authorization lifetime for this program artifact."
+      ],
+      "type": "i64",
+      "value": "3600"
+    }
   ]
 }
