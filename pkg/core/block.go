@@ -376,18 +376,25 @@ func RefFromBlock(block *Block, entryIndex uint64) BlockEntryRef {
 	}
 }
 
+// ReceiptProof carries the epoch-bound receipt authorization proof. Signatures
+// are over receipt.ReceiptAuthorizationDigest(SignerEpoch, logicalDigest), not
+// over the logical receipt digest directly.
+type ReceiptProof struct {
+	SignerEpoch uint64
+	Signatures  [][]byte
+}
+
 // BurnReceipt is returned by the custody layer after L1 execution of a
-// withdrawal (ADR-005 §9.1, receipt-model amendment 2026-05-12). Provider
-// ECDSA signatures (k-of-n against the configured custody signer directory
-// — manifest custody.signers/threshold; future Registry-backed source)
-// confirm the withdrawal was executed on-chain; the cluster validates the
-// receipt and applies the second leg of the burn (DR 2010 / CR 1020).
+// withdrawal. Provider ECDSA signatures confirm the terminal withdrawal outcome
+// against the issuer's latest receipt signer epoch at custody-to-clearnet
+// ingress. Clearnet must still bind WithdrawalID back to BlockEntryRef before
+// accepting the burn.
 type BurnReceipt struct {
 	WithdrawalID  [32]byte          // keccak256(accountId, blockHash, entryIndex, assetURI, amount, recipient, nonce)
 	BlockEntryRef                   // Block hash + entry index of the escrow entry
 	TxID          string            // Chain-native transaction/reference id (empty unless applicable)
-	Signatures    [][]byte          // k-of-n provider ECDSA signatures over the receipt digest
 	Status        WithdrawalOutcome // Terminal outcome: Executed, Expired, or failed with reason
+	Proof         ReceiptProof      // Epoch-bound k-of-n provider ECDSA receipt proof
 }
 
 // WithdrawalOutcome is the terminal status of a withdrawal, carried in a
@@ -417,21 +424,18 @@ const (
 	WithdrawalInvalidDecimals WithdrawalOutcome = 5
 )
 
-// MintReceipt is issued by the custody layer after an L1 deposit confirms
-// (ADR-005 §9.1, receipt-model amendment 2026-05-12). Provider ECDSA
-// signatures (k-of-n against the configured custody signer directory —
-// manifest custody.signers/threshold; future Registry-backed source) attest
-// that the deposit landed and reached the configured confirmation depth;
-// the cluster validates the receipt and credits the user account
-// (DR 1010 / CR 2010).
+// MintReceipt is issued by the custody layer after an L1 deposit confirms.
+// Provider ECDSA signatures attest that the deposit landed and reached the
+// configured confirmation depth against the issuer's latest receipt signer epoch
+// at custody-to-clearnet ingress.
 //
 // Idempotency is keyed by (AssetURI, TxID) so a re-issued receipt cannot
 // produce a second credit. Clearnet does not watch the chain — receipts are
 // the only deposit ingress.
 type MintReceipt struct {
-	TxID       string          // Issuer-defined transaction/event id
-	Account    string          // Clearnet account URI to credit
-	AssetURI   AssetURI        // Issuer asset URI
-	Amount     decimal.Decimal // Deposit amount in protocol token units, must be > 0
-	Signatures [][]byte        // k-of-n provider ECDSA signatures over the receipt digest
+	TxID     string          // Issuer-defined transaction/event id
+	Account  string          // Clearnet account URI to credit
+	AssetURI AssetURI        // Issuer asset URI
+	Amount   decimal.Decimal // Deposit amount in protocol token units, must be > 0
+	Proof    ReceiptProof    // Epoch-bound k-of-n provider ECDSA receipt proof
 }

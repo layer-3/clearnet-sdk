@@ -62,6 +62,10 @@ func TestIntegration_ConfigRegistryReceipts(t *testing.T) {
 	verifyConfigCommitIdempotency(ctx, t, client, registryAddr, registry, deployer, issuer1)
 
 	store := newConfigEventStore()
+	signerStateGate, err := receipt.NewInMemoryReceiptSignerStateGate(receipt.ReceiptSignerStateConfigRegistryWatcher)
+	if err != nil {
+		t.Fatalf("signer state gate: %v", err)
+	}
 	forwarder, err := evm.NewConfigRegistryEventForwarder(
 		[]common.Address{issuer1.id, issuer2.id},
 		[][32]byte{receipt.ConfigRegistrySignersKey},
@@ -74,6 +78,7 @@ func TestIntegration_ConfigRegistryReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("watcher: %v", err)
 	}
+	watcher.SetOnlineTracker(receipt.ConfigRegistryWatcherReceiptSignerStateOnlineTracker{Tracker: signerStateGate})
 	watcher.SetCursorSource(store)
 	watcher.SetInitialLookback(100)
 	watcher.SetPollInterval(100 * time.Millisecond)
@@ -94,7 +99,7 @@ func TestIntegration_ConfigRegistryReceipts(t *testing.T) {
 		t.Fatalf("issuer2 initial signer epoch = %d, want 1", ev.Epoch)
 	}
 
-	src, err := receipt.NewRegistrySignerSource(registryAddr, store)
+	src, err := receipt.NewRegistrySignerSource(registryAddr, store, signerStateGate)
 	if err != nil {
 		t.Fatalf("registry signer source: %v", err)
 	}
@@ -108,6 +113,7 @@ func TestIntegration_ConfigRegistryReceipts(t *testing.T) {
 	verifyMalformedPayloadRecovery(ctx, t, client, registryAddr, deployer, store, src, issuer1)
 	verifySignerPayloadOverwrite(ctx, t, client, registryAddr, deployer, store, verifier, resolver, issuer1, issuer2)
 	stopWatch()
+	waitForSignerStateUnavailable(ctx, t, src, issuer2.id)
 	verifyWatcherResumeFromCursor(ctx, t, client, registryAddr, registry, deployer, store, issuer2)
 }
 
@@ -153,7 +159,7 @@ func registerIssuer(ctx context.Context, t *testing.T, client *ethclient.Client,
 
 func writeSignerPayload(ctx context.Context, t *testing.T, client *ethclient.Client, registry common.Address, payer sign.Signer, issuer issuerFixture, signers []common.Address, threshold int) {
 	t.Helper()
-	payload, err := receipt.MarshalReceiptSignerPayload(core.ReceiptSignerSet{Signers: signers, Threshold: threshold})
+	payload, err := receipt.MarshalReceiptSignerPayload(core.ReceiptSignerState{Signers: signers, Threshold: threshold})
 	if err != nil {
 		t.Fatalf("marshal signer payload: %v", err)
 	}
@@ -368,14 +374,14 @@ func verifyMalformedPayloadRecovery(ctx context.Context, t *testing.T, client *e
 	if ev := waitForRawSignerEvent(ctx, t, store, registry, issuer.id, []byte("not-json")); ev.Epoch != 2 {
 		t.Fatalf("malformed signer payload epoch = %d, want 2", ev.Epoch)
 	}
-	if _, err := src.LoadReceiptSigners(ctx, issuer.id); err == nil {
+	if _, err := src.LoadLatestReceiptSignerState(ctx, issuer.id); err == nil {
 		t.Fatal("malformed signer payload loaded successfully")
 	}
 	writeSignerPayload(ctx, t, client, registry, payer, issuer, issuer.addrs, issuer.threshold)
 	if ev := waitForSignerEvent(ctx, t, store, registry, issuer.id, issuer.threshold, 3); ev.Epoch != 3 {
 		t.Fatalf("recovered signer payload epoch = %d, want 3", ev.Epoch)
 	}
-	if _, err := src.LoadReceiptSigners(ctx, issuer.id); err != nil {
+	if _, err := src.LoadLatestReceiptSignerState(ctx, issuer.id); err != nil {
 		t.Fatalf("valid signer payload did not recover source: %v", err)
 	}
 }
@@ -388,6 +394,7 @@ func verifySignerPayloadOverwrite(ctx context.Context, t *testing.T, client *eth
 		Account:  "yellow://ynet/user/0xabc",
 		AssetURI: core.AssetURI("yellow://ynet/asset/" + issuerID + "/evm/31337/0"),
 		Amount:   decimal.NewFromInt(1),
+		Proof:    core.ReceiptProof{SignerEpoch: 3},
 	}
 	signMint(t, oldMint, issuer.keys[:issuer.threshold]...)
 	if err := verifier.VerifyMintReceipt(ctx, oldMint); err != nil {
@@ -406,6 +413,7 @@ func verifySignerPayloadOverwrite(ctx context.Context, t *testing.T, client *eth
 	}
 	newMint := cloneMint(oldMint)
 	newMint.TxID = "post-rotation/" + issuer.id.Hex()
+	newMint.Proof.SignerEpoch = 4
 	signMint(t, newMint, next.keys[:nextThreshold]...)
 	if err := verifier.VerifyMintReceipt(ctx, newMint); err != nil {
 		t.Fatalf("new signer set did not verify after overwrite: %v", err)
@@ -669,6 +677,22 @@ func waitForSignerEventWrites(ctx context.Context, t *testing.T, store *configEv
 	}
 }
 
+func waitForSignerStateUnavailable(ctx context.Context, t *testing.T, src core.ReceiptSignerSource, issuer common.Address) {
+	t.Helper()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := src.LoadLatestReceiptSignerState(ctx, issuer); err != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for signer state gate to fail closed")
+		case <-ticker.C:
+		}
+	}
+}
+
 func countConfigCommitted(ctx context.Context, t *testing.T, client *ethclient.Client, registry *evm.ConfigRegistry, issuer common.Address, key [32]byte, checksum [32]byte) int {
 	t.Helper()
 	head, err := client.BlockNumber(ctx)
@@ -786,21 +810,29 @@ func thresholdFor(issuer issuerFixture) int {
 
 func signMint(t *testing.T, r *core.MintReceipt, keys ...*ecdsa.PrivateKey) {
 	t.Helper()
-	digest := receipt.MintReceiptDigest(r)
-	r.Signatures = signDigest(t, digest, keys...)
+	if r.Proof.SignerEpoch == 0 {
+		r.Proof.SignerEpoch = 1
+	}
+	logical := receipt.MintReceiptDigest(r)
+	digest := receipt.ReceiptAuthorizationDigest(r.Proof.SignerEpoch, logical)
+	r.Proof.Signatures = signDigest(t, digest, keys...)
 }
 
 func signBurn(t *testing.T, r *core.BurnReceipt, keys ...*ecdsa.PrivateKey) {
 	t.Helper()
-	digest := receipt.BurnReceiptDigest(r)
-	r.Signatures = signDigest(t, digest, keys...)
+	if r.Proof.SignerEpoch == 0 {
+		r.Proof.SignerEpoch = 1
+	}
+	logical := receipt.BurnReceiptDigest(r)
+	digest := receipt.ReceiptAuthorizationDigest(r.Proof.SignerEpoch, logical)
+	r.Proof.Signatures = signDigest(t, digest, keys...)
 }
 
-func signDigest(t *testing.T, digest []byte, keys ...*ecdsa.PrivateKey) [][]byte {
+func signDigest(t *testing.T, digest [32]byte, keys ...*ecdsa.PrivateKey) [][]byte {
 	t.Helper()
 	out := make([][]byte, len(keys))
 	for i, key := range keys {
-		sig, err := crypto.Sign(digest, key)
+		sig, err := crypto.Sign(digest[:], key)
 		if err != nil {
 			t.Fatalf("sign digest[%d]: %v", i, err)
 		}
@@ -811,13 +843,13 @@ func signDigest(t *testing.T, digest []byte, keys ...*ecdsa.PrivateKey) [][]byte
 
 func cloneMint(r *core.MintReceipt) *core.MintReceipt {
 	cp := *r
-	cp.Signatures = nil
+	cp.Proof.Signatures = nil
 	return &cp
 }
 
 func cloneBurn(r *core.BurnReceipt) *core.BurnReceipt {
 	cp := *r
-	cp.Signatures = nil
+	cp.Proof.Signatures = nil
 	return &cp
 }
 

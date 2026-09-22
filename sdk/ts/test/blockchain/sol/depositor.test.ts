@@ -72,12 +72,37 @@ describe("SolanaVaultDepositor", () => {
     expectTypeOf<SolanaVaultDepositor>().toMatchTypeOf<
       VaultDepositor<SolanaSubmitDepositInput>
     >();
+    expectTypeOf<SolanaVaultDepositor["prepareDeposit"]>().toBeFunction();
     expectTypeOf<string>().toEqualTypeOf<string>();
     expectTypeOf<DepositStatus>().toEqualTypeOf<
       "absent" | "pending" | "confirmed"
     >();
     expect(SOLANA_NATIVE_ASSET).toBe("");
     expect(SOLANA_CUSTODY_PROGRAM_ID).toBe(EXPECTED_PROGRAM_ID);
+  });
+
+  it("prepares the exact unsigned custody transaction without signing", async () => {
+    const signer = createSigner();
+    const depositor = createDepositor(signer);
+
+    const transaction = await depositor.prepareDeposit({
+      asset: SOLANA_NATIVE_ASSET,
+      amount: "0.01",
+      destination: { account: ACCOUNT, ref: REFERENCE },
+    });
+
+    expect(signer.signAndSend).not.toHaveBeenCalled();
+    expect(transaction.feePayer?.toBase58()).toBe(DEPOSITOR.toBase58());
+    expect(transaction.recentBlockhash).toBeUndefined();
+    expect(transaction.instructions).toHaveLength(1);
+    expect(transaction.instructions[0]?.programId.toBase58()).toBe(EXPECTED_PROGRAM_ID);
+    expect(metas(transaction.instructions[0]!)).toEqual([
+      meta(DEPOSITOR, true, true),
+      meta(VAULT_PDA, false, true),
+      meta(SYSTEM_PROGRAM_ID, false, false),
+      meta(EVENT_AUTHORITY_PDA, false, false),
+      meta(PROGRAM_ID, false, false),
+    ]);
   });
 
   it("submits native SOL with the deposit_sol layout and Go-compatible tx ref", async () => {
@@ -189,7 +214,20 @@ describe("SolanaVaultDepositor", () => {
         amount: "1",
         destination: { account: "0x1234" },
       }),
-    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination.account must be a 20-byte hex address",
+    });
+    await expect(
+      depositor.submitDeposit({
+        asset: SOLANA_NATIVE_ASSET,
+        amount: "1",
+        destination: { account: "yellow://local/user/not-hex" },
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination.account must be a 20-byte hex address",
+    });
     await expect(
       depositor.submitDeposit({
         asset: "not-base58",

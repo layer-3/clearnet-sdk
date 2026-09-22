@@ -211,6 +211,11 @@ instruction and delegates signing/broadcast to a caller-provided `SolanaSigner`.
 The signer boundary is small so browser-wallet, Wallet Standard, and local
 keypair adapters can live outside the core SDK.
 
+`prepareDeposit(input)` returns the same unsigned custody `Transaction` used by
+`submitDeposit`. It does not set a recent blockhash or sign/broadcast. Clients
+may use it for simulation, compute-budget selection, and fee estimation without
+duplicating the SDK's custody instruction encoding.
+
 ```ts
 import {
   SOLANA_NATIVE_ASSET,
@@ -345,6 +350,11 @@ signed blob, and returns after rippled accepts the submit result as `tesSUCCESS`
 or `terQUEUED`. Use `verifyDeposit` to observe validated-ledger finality; a
 just-submitted XRPL payment can return `pending` until it appears in a validated
 ledger.
+
+`prepareDeposit(input)` returns the same autofilled unsigned `Payment` used by
+`submitDeposit`. Callers can inspect its `Fee`, `Sequence`, and
+`LastLedgerSequence` before signing; `submitDeposit` remains the authoritative
+SDK signing and submission flow.
 
 ## Deposit References
 
@@ -521,6 +531,13 @@ Solana input fields:
 
 For Solana, `txID` is the base58 signature.
 
+```ts
+const transaction = await depositor.prepareDeposit(input);
+// Add a recent blockhash and any client-owned compute-budget instructions,
+// then simulate or call getFeeForMessage. submitDeposit still performs the
+// authoritative SDK submission flow.
+```
+
 ### `XrplVaultDepositor`
 
 ```ts
@@ -547,6 +564,11 @@ XRPL input fields:
 | `amount` | `string` | Positive decimal amount; native XRP uses 6 decimals, issued currencies use configured decimals. |
 
 For XRPL, `txID` is the uppercase 64-hex transaction hash.
+
+```ts
+const payment = await depositor.prepareDeposit(input);
+console.log(payment.Fee); // autofilled network fee in drops
+```
 
 `XrplVaultDepositor` owns an XRPL WebSocket client. Call
 `await depositor.disconnect()` when the depositor is no longer needed, such as

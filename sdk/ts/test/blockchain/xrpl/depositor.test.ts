@@ -78,6 +78,7 @@ describe("XrplVaultDepositor", () => {
     expectTypeOf<XrplVaultDepositor>().toMatchTypeOf<
       VaultDepositor<XrplSubmitDepositInput>
     >();
+    expectTypeOf<XrplVaultDepositor["prepareDeposit"]>().toBeFunction();
     expectTypeOf<XrplSubmitDepositInput>().toEqualTypeOf<
       XrplNativeDepositInput | XrplIssuedDepositInput
     >();
@@ -98,6 +99,35 @@ describe("XrplVaultDepositor", () => {
       "absent" | "pending" | "confirmed"
     >();
     expect(XRPL_NATIVE_ASSET).toBe("");
+  });
+
+  it("prepares the exact autofilled custody payment without signing", async () => {
+    const signer = createSigner();
+    const depositor = createDepositor(signer);
+
+    const payment = await depositor.prepareDeposit({
+      asset: XRPL_NATIVE_ASSET,
+      amount: "10",
+      destination: { account: ACCOUNT, ref: REFERENCE },
+    });
+
+    expect(client.autofill).toHaveBeenCalledExactlyOnceWith({
+      TransactionType: "Payment",
+      Account: DEPOSITOR_ADDRESS,
+      Destination: VAULT_ADDRESS,
+      Amount: "10000000",
+      Memos: [
+        {
+          Memo: {
+            MemoType: MEMO_TYPE,
+            MemoData: `${ACCOUNT_NO_PREFIX}${REFERENCE.slice(2)}`,
+          },
+        },
+      ],
+    });
+    expect(payment).toEqual(expect.objectContaining({ Fee: "12", Sequence: 1 }));
+    expect(signer.sign).not.toHaveBeenCalled();
+    expect(client.submit).not.toHaveBeenCalled();
   });
 
   it("submits native XRP drops with the ynet-account memo and Go-compatible tx ref", async () => {
@@ -282,14 +312,20 @@ describe("XrplVaultDepositor", () => {
         amount: "1",
         destination: { account: "0x1234" },
       }),
-    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination.account must be a 20-byte hex address",
+    });
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
         amount: "1",
         destination: { account: "yellow://ynet/user/not-hex" },
       }),
-    ).rejects.toMatchObject({ code: "INVALID_ADDRESS" });
+    ).rejects.toMatchObject({
+      code: "INVALID_ADDRESS",
+      message: "destination.account must be a 20-byte hex address",
+    });
     await expect(
       depositor.submitDeposit({
         asset: XRPL_NATIVE_ASSET,
@@ -423,6 +459,10 @@ describe("XrplVaultDepositor", () => {
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(depositor.verifyDeposit(HASH_REF, -1)).rejects.toMatchObject({
       code: "INVALID_CONFIRMATIONS",
+    });
+    await expect(depositor.verifyDeposit(HASH_REF, 1.5)).rejects.toMatchObject({
+      code: "INVALID_CONFIRMATIONS",
+      message: "minConfirmations must be a non-negative safe integer",
     });
 
     expect(client.request).not.toHaveBeenCalled();

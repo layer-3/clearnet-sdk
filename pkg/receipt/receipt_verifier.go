@@ -36,24 +36,111 @@ type ReceiptVerifier struct {
 	withdrawalIssuers WithdrawalIssuerResolver
 }
 
+type ReceiptVerificationCode string
+
+const (
+	ReceiptVerificationMalformed              ReceiptVerificationCode = "malformed"
+	ReceiptVerificationSignerStateUnavailable ReceiptVerificationCode = "signer_state_unavailable"
+	ReceiptVerificationStaleEpoch             ReceiptVerificationCode = "stale_epoch"
+	ReceiptVerificationFutureEpoch            ReceiptVerificationCode = "future_epoch"
+	ReceiptVerificationInvalidSignatures      ReceiptVerificationCode = "invalid_signatures"
+	ReceiptVerificationIssuerUnavailable      ReceiptVerificationCode = "issuer_unavailable"
+	ReceiptVerificationUnknownWithdrawal      ReceiptVerificationCode = "unknown_withdrawal"
+	ReceiptVerificationIssuerStateInvalid     ReceiptVerificationCode = "issuer_state_invalid"
+)
+
+type ReceiptVerificationError struct {
+	Code        ReceiptVerificationCode
+	SignerEpoch uint64
+	LatestEpoch uint64
+	Err         error
+}
+
+func (e *ReceiptVerificationError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	msg := string(e.Code)
+	if e.SignerEpoch != 0 || e.LatestEpoch != 0 {
+		msg = fmt.Sprintf("%s: signer_epoch=%d latest_epoch=%d", msg, e.SignerEpoch, e.LatestEpoch)
+	}
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+func (e *ReceiptVerificationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+type WithdrawalIssuerResolutionCode string
+
+const (
+	WithdrawalIssuerUnavailable       WithdrawalIssuerResolutionCode = "issuer_unavailable"
+	WithdrawalIssuerUnknownWithdrawal WithdrawalIssuerResolutionCode = "unknown_withdrawal"
+	WithdrawalIssuerStateInvalid      WithdrawalIssuerResolutionCode = "issuer_state_invalid"
+)
+
+type WithdrawalIssuerResolutionError struct {
+	Code WithdrawalIssuerResolutionCode
+	Err  error
+}
+
+func (e *WithdrawalIssuerResolutionError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Err == nil {
+		return string(e.Code)
+	}
+	return string(e.Code) + ": " + e.Err.Error()
+}
+
+func (e *WithdrawalIssuerResolutionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // ReceiptSignatureValidator is an immutable snapshot of the signer quorum and
 // digest for one receipt. It is safe to use while collecting untrusted mesh
 // candidates: rejected signatures never consume a quorum slot.
 type ReceiptSignatureValidator struct {
-	snapshot *internalquorum.Snapshot[common.Address]
+	snapshot      *internalquorum.Snapshot[common.Address]
+	signerEpoch   uint64
+	logicalDigest [32]byte
+	digest        [32]byte
 }
 
 const maxCandidatesPerReceiptSigner = internalquorum.MaxCandidatesPerSigner
 
 var receiptSecp256k1HalfN = new(big.Int).Rsh(new(big.Int).Set(crypto.S256().Params().N), 1)
 
-// Digest returns a defensive copy of the receipt digest.
-func (v *ReceiptSignatureValidator) Digest() []byte {
+func (v *ReceiptSignatureValidator) SignerEpoch() uint64 {
 	if v == nil {
-		return nil
+		return 0
 	}
-	digest := v.snapshot.Digest()
-	return append([]byte(nil), digest[:]...)
+	return v.signerEpoch
+}
+
+func (v *ReceiptSignatureValidator) LogicalDigest() [32]byte {
+	if v == nil {
+		return [32]byte{}
+	}
+	return v.logicalDigest
+}
+
+// Digest returns the epoch-bound receipt authorization digest.
+func (v *ReceiptSignatureValidator) Digest() [32]byte {
+	if v == nil {
+		return [32]byte{}
+	}
+	return v.digest
 }
 
 // Threshold returns the frozen quorum threshold.
@@ -68,7 +155,7 @@ func (v *ReceiptSignatureValidator) Threshold() int {
 // quorum threshold, and authorized signer set. Callers use it to fail closed
 // when the live roster changes between collection and persistence.
 func (v *ReceiptSignatureValidator) MatchesSigningContext(other *ReceiptSignatureValidator) bool {
-	return v != nil && other != nil && v.snapshot.Matches(other.snapshot)
+	return v != nil && other != nil && v.signerEpoch == other.signerEpoch && v.logicalDigest == other.logicalDigest && v.snapshot.Matches(other.snapshot)
 }
 
 // ValidateSignature recovers and authorizes one receipt signature. Legacy
@@ -99,15 +186,17 @@ func (v *ReceiptSignatureValidator) decodeSignature(sig []byte) (common.Address,
 }
 
 // VerifySignatures verifies a distinct authorized quorum against the frozen
-// snapshot used during collection.
+// snapshot used during collection. It is a lower-level quorum operation and
+// does not compare a receipt's declared signer epoch; custody-to-clearnet
+// ingress must use VerifyBurnReceipt or VerifyMintReceipt for that check.
 func (v *ReceiptSignatureValidator) VerifySignatures(sigs [][]byte) error {
 	if v == nil || v.snapshot == nil || v.snapshot.Threshold() <= 0 {
-		return errors.New("receipt signature validator not configured")
+		return verificationError(ReceiptVerificationInvalidSignatures, 0, 0, errors.New("receipt signature validator not configured"))
 	}
 	if len(sigs) < v.snapshot.Threshold() {
-		return fmt.Errorf("insufficient signatures: %d < %d", len(sigs), v.snapshot.Threshold())
+		return verificationError(ReceiptVerificationInvalidSignatures, 0, 0, fmt.Errorf("insufficient signatures: %d < %d", len(sigs), v.snapshot.Threshold()))
 	}
-	return receiptQuorumError(v.snapshot.HasQuorum(sigs, v.decodeSignature, nil))
+	return invalidSignatureError(receiptQuorumError(v.snapshot.HasQuorum(sigs, v.decodeSignature, nil)))
 }
 
 // QuorumSignatures filters invalid, unauthorized, and duplicate candidates,
@@ -164,7 +253,7 @@ func (rv *ReceiptVerifier) SetSignersForTest(signers []common.Address, threshold
 	if rv == nil {
 		return errors.New("receipt verifier not configured")
 	}
-	src, err := NewStaticSignerSource(signers, threshold)
+	src, err := NewStaticSignerSource(1, signers, threshold)
 	if err != nil {
 		return err
 	}
@@ -172,92 +261,104 @@ func (rv *ReceiptVerifier) SetSignersForTest(signers []common.Address, threshold
 	return nil
 }
 
-// VerifyBurnReceipt checks that the receipt carries at least `threshold`
-// distinct valid signatures from the cached signer set over BurnReceiptDigest.
+// VerifyBurnReceipt performs latest-only custody-to-clearnet ingress
+// verification for a burn receipt.
 func (rv *ReceiptVerifier) VerifyBurnReceipt(ctx context.Context, v *core.BurnReceipt) error {
 	validator, err := rv.PrepareBurnReceiptSignatures(ctx, v)
 	if err != nil {
 		return err
 	}
-	return validator.VerifySignatures(v.Signatures)
+	if v.Proof.SignerEpoch < validator.SignerEpoch() {
+		return verificationError(ReceiptVerificationStaleEpoch, v.Proof.SignerEpoch, validator.SignerEpoch(), nil)
+	}
+	if v.Proof.SignerEpoch > validator.SignerEpoch() {
+		return verificationError(ReceiptVerificationFutureEpoch, v.Proof.SignerEpoch, validator.SignerEpoch(), nil)
+	}
+	return validator.VerifySignatures(v.Proof.Signatures)
 }
 
 // PrepareBurnReceiptSignatures freezes the current issuer receipt quorum and
-// exact BurnReceipt digest for poison-tolerant candidate collection.
+// exact BurnReceipt digest for poison-tolerant candidate collection. The
+// returned validator can verify signatures, but VerifySignatures alone does
+// not enforce the receipt proof epoch.
 func (rv *ReceiptVerifier) PrepareBurnReceiptSignatures(ctx context.Context, v *core.BurnReceipt) (*ReceiptSignatureValidator, error) {
 	if v == nil {
-		return nil, errors.New("nil burn receipt")
+		return nil, verificationError(ReceiptVerificationMalformed, 0, 0, errors.New("nil burn receipt"))
 	}
 	if rv == nil || rv.withdrawalIssuers == nil {
-		return nil, errors.New("receipt verifier has no withdrawal issuer resolver")
+		return nil, verificationError(ReceiptVerificationIssuerUnavailable, 0, 0, errors.New("receipt verifier has no withdrawal issuer resolver"))
 	}
 	issuerID, err := rv.withdrawalIssuers.IssuerIDByWithdrawalID(ctx, v.WithdrawalID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve withdrawal issuer: %w", err)
+		return nil, classifyWithdrawalIssuerError(err)
 	}
 	return rv.prepareSignatures(ctx, issuerID, BurnReceiptDigest(v))
 }
 
-// VerifyMintReceipt checks that the receipt carries at least `threshold`
-// distinct valid signatures from the cached signer set over MintReceiptDigest.
+// VerifyMintReceipt performs latest-only custody-to-clearnet ingress
+// verification for a mint receipt.
 func (rv *ReceiptVerifier) VerifyMintReceipt(ctx context.Context, v *core.MintReceipt) error {
 	validator, err := rv.PrepareMintReceiptSignatures(ctx, v)
 	if err != nil {
 		return err
 	}
-	return validator.VerifySignatures(v.Signatures)
+	if v.Proof.SignerEpoch < validator.SignerEpoch() {
+		return verificationError(ReceiptVerificationStaleEpoch, v.Proof.SignerEpoch, validator.SignerEpoch(), nil)
+	}
+	if v.Proof.SignerEpoch > validator.SignerEpoch() {
+		return verificationError(ReceiptVerificationFutureEpoch, v.Proof.SignerEpoch, validator.SignerEpoch(), nil)
+	}
+	return validator.VerifySignatures(v.Proof.Signatures)
 }
 
 // PrepareMintReceiptSignatures freezes the current issuer receipt quorum and
-// exact MintReceipt digest for poison-tolerant candidate collection.
+// exact MintReceipt digest for poison-tolerant candidate collection. The
+// returned validator can verify signatures, but VerifySignatures alone does
+// not enforce the receipt proof epoch.
 func (rv *ReceiptVerifier) PrepareMintReceiptSignatures(ctx context.Context, v *core.MintReceipt) (*ReceiptSignatureValidator, error) {
 	if v == nil {
-		return nil, errors.New("nil mint receipt")
+		return nil, verificationError(ReceiptVerificationMalformed, 0, 0, errors.New("nil mint receipt"))
 	}
 	if v.Amount.Sign() <= 0 {
-		return nil, errors.New("mint receipt amount must be positive")
+		return nil, verificationError(ReceiptVerificationMalformed, 0, 0, errors.New("mint receipt amount must be positive"))
 	}
 	issuerID, err := core.IssuerIDFromAssetURI(v.AssetURI)
 	if err != nil {
-		return nil, fmt.Errorf("mint receipt issuer: %w", err)
+		return nil, verificationError(ReceiptVerificationMalformed, 0, 0, fmt.Errorf("mint receipt issuer: %w", err))
 	}
 	return rv.prepareSignatures(ctx, issuerID, MintReceiptDigest(v))
 }
 
-func (rv *ReceiptVerifier) prepareSignatures(ctx context.Context, issuerID common.Address, digest []byte) (*ReceiptSignatureValidator, error) {
+func (rv *ReceiptVerifier) prepareSignatures(ctx context.Context, issuerID common.Address, logicalDigest [32]byte) (*ReceiptSignatureValidator, error) {
 	if rv == nil {
-		return nil, errors.New("receipt verifier not configured")
+		return nil, verificationError(ReceiptVerificationSignerStateUnavailable, 0, 0, errors.New("receipt verifier not configured"))
 	}
 	if rv.source == nil {
-		return nil, errors.New("receipt verifier has no signer source")
+		return nil, verificationError(ReceiptVerificationSignerStateUnavailable, 0, 0, errors.New("receipt verifier has no signer source"))
 	}
-	set, err := rv.source.LoadReceiptSigners(ctx, issuerID)
+	set, err := rv.source.LoadLatestReceiptSignerState(ctx, issuerID)
 	if err != nil {
-		return nil, fmt.Errorf("load receipt signers: %w", err)
+		return nil, verificationError(ReceiptVerificationSignerStateUnavailable, 0, 0, fmt.Errorf("load receipt signer state: %w", err))
 	}
-	if len(digest) != 32 {
-		return nil, fmt.Errorf("receipt digest length = %d, want 32", len(digest))
-	}
-	var digest32 [32]byte
-	copy(digest32[:], digest)
+	digest32 := ReceiptAuthorizationDigest(set.Epoch, logicalDigest)
 	snapshot, err := internalquorum.NewSnapshot(digest32, set.Signers, set.Threshold, func(signer common.Address) bool {
 		return signer == (common.Address{})
 	})
 	if err != nil {
 		var thresholdRange *internalquorum.ThresholdRangeError
 		if errors.As(err, &thresholdRange) {
-			return nil, fmt.Errorf("receipt threshold = %d out of range for %d signers", thresholdRange.Threshold, thresholdRange.Signers)
+			return nil, verificationError(ReceiptVerificationSignerStateUnavailable, 0, set.Epoch, fmt.Errorf("receipt threshold = %d out of range for %d signers", thresholdRange.Threshold, thresholdRange.Signers))
 		}
 		if errors.Is(err, internalquorum.ErrZeroSigner) {
-			return nil, errors.New("receipt signer set contains zero address")
+			return nil, verificationError(ReceiptVerificationSignerStateUnavailable, 0, set.Epoch, errors.New("receipt signer set contains zero address"))
 		}
 		var distinct *internalquorum.DistinctSignerError
 		if errors.As(err, &distinct) {
-			return nil, fmt.Errorf("receipt threshold = %d exceeds %d distinct signers", distinct.Threshold, distinct.Signers)
+			return nil, verificationError(ReceiptVerificationSignerStateUnavailable, 0, set.Epoch, fmt.Errorf("receipt threshold = %d exceeds %d distinct signers", distinct.Threshold, distinct.Signers))
 		}
-		return nil, err
+		return nil, verificationError(ReceiptVerificationSignerStateUnavailable, 0, set.Epoch, err)
 	}
-	return &ReceiptSignatureValidator{snapshot: snapshot}, nil
+	return &ReceiptSignatureValidator{snapshot: snapshot, signerEpoch: set.Epoch, logicalDigest: logicalDigest, digest: digest32}, nil
 }
 
 // recoverCanonicalReceiptSigner dispatches signature verification by length
@@ -298,11 +399,12 @@ func recoverCanonicalReceiptSigner(digest, sig []byte) (common.Address, []byte, 
 	}
 }
 
-// BurnReceiptDigest is the keccak256 digest custody providers sign over for
-// withdrawal terminal attestations.
+// BurnReceiptDigest is the signer-epoch-independent logical digest for a burn
+// receipt. Do not sign it directly; sign ReceiptAuthorizationDigest(epoch,
+// BurnReceiptDigest(v)).
 // Format: keccak256(
 //
-//	WithdrawalID || BlockHash || EntryIndex[uint64be] ||
+//	"ynp.receipt.logical_digest.burn.v1" || WithdrawalID || BlockHash || EntryIndex[uint64be] ||
 //	len(TxID)[uint32be] || TxID || Status[byte]).
 //
 // The trailing Status byte binds the terminal outcome (Executed vs
@@ -310,9 +412,10 @@ func recoverCanonicalReceiptSigner(digest, sig []byte) (common.Address, []byte, 
 // an executed receipt for an expired one (which would authorize a re-credit).
 // Exported so custody-side tooling and the custodytesting package can build
 // matching signatures.
-func BurnReceiptDigest(v *core.BurnReceipt) []byte {
+func BurnReceiptDigest(v *core.BurnReceipt) [32]byte {
 	txID := []byte(v.TxID)
-	buf := make([]byte, 0, 32+32+8+4+len(txID)+1)
+	buf := make([]byte, 0, len(burnReceiptDigestDomain)+32+32+8+4+len(txID)+1)
+	buf = append(buf, burnReceiptDigestDomain...)
 	buf = append(buf, v.WithdrawalID[:]...)
 	buf = append(buf, v.BlockHash[:]...)
 	var index [8]byte
@@ -323,16 +426,16 @@ func BurnReceiptDigest(v *core.BurnReceipt) []byte {
 	buf = append(buf, u32[:]...)
 	buf = append(buf, txID...)
 	buf = append(buf, byte(v.Status))
-	return crypto.Keccak256(buf)
+	return [32]byte(crypto.Keccak256Hash(buf))
 }
 
-// MintReceiptDigest is the keccak256 digest custody providers sign over for
-// deposit confirmation attestations. Exported so custody-side tooling can
-// produce matching signatures.
+// MintReceiptDigest is the signer-epoch-independent logical digest for a mint
+// receipt. Do not sign it directly; sign ReceiptAuthorizationDigest(epoch,
+// MintReceiptDigest(v)).
 //
 // Format: keccak256(
 //
-//	len(TxID)[uint32be]     || TxID ||
+//	"ynp.receipt.logical_digest.mint.v1" || len(TxID)[uint32be] || TxID ||
 //	len(Account)[uint32be]  || Account ||
 //	len(AssetURI)[uint32be] || AssetURI ||
 //	len(Amount)[uint32be]   || canonical-CBOR(decimal.Decimal))
@@ -340,7 +443,7 @@ func BurnReceiptDigest(v *core.BurnReceipt) []byte {
 // The length prefixes prevent boundary-shift collisions between variable-size
 // receipt fields. Idempotency is keyed by (AssetURI, TxID), but the digest also
 // binds the credited account and protocol amount.
-func MintReceiptDigest(v *core.MintReceipt) []byte {
+func MintReceiptDigest(v *core.MintReceipt) [32]byte {
 	var amount bytes.Buffer
 	if err := v.Amount.MarshalCBOR(&amount); err != nil {
 		panic(fmt.Errorf("receipt: decimal MarshalCBOR: %w", err))
@@ -349,7 +452,8 @@ func MintReceiptDigest(v *core.MintReceipt) []byte {
 	account := []byte(v.Account)
 	assetURI := []byte(v.AssetURI)
 	amountBytes := amount.Bytes()
-	buf := make([]byte, 0, 4+len(txID)+4+len(account)+4+len(assetURI)+4+len(amountBytes))
+	buf := make([]byte, 0, len(mintReceiptDigestDomain)+4+len(txID)+4+len(account)+4+len(assetURI)+4+len(amountBytes))
+	buf = append(buf, mintReceiptDigestDomain...)
 	var u32 [4]byte
 	binary.BigEndian.PutUint32(u32[:], uint32(len(txID)))
 	buf = append(buf, u32[:]...)
@@ -363,5 +467,91 @@ func MintReceiptDigest(v *core.MintReceipt) []byte {
 	binary.BigEndian.PutUint32(u32[:], uint32(len(amountBytes)))
 	buf = append(buf, u32[:]...)
 	buf = append(buf, amountBytes...)
-	return crypto.Keccak256(buf)
+	return [32]byte(crypto.Keccak256Hash(buf))
+}
+
+const (
+	burnReceiptDigestDomain = "ynp.receipt.logical_digest.burn.v1"
+	mintReceiptDigestDomain = "ynp.receipt.logical_digest.mint.v1"
+)
+
+func ReceiptAuthorizationDigest(epoch uint64, logicalDigest [32]byte) [32]byte {
+	var buf [8 + 32]byte
+	binary.BigEndian.PutUint64(buf[:8], epoch)
+	copy(buf[8:], logicalDigest[:])
+	return [32]byte(crypto.Keccak256Hash(buf[:]))
+}
+
+type ReceiptKind string
+
+const (
+	ReceiptKindMint ReceiptKind = "mint"
+	ReceiptKindBurn ReceiptKind = "burn"
+)
+
+type ReceiptLogicalID [32]byte
+
+// BurnReceiptLogicalID returns the idempotency identity for a burn receipt.
+// It is independent of the receipt proof and signer epoch.
+func BurnReceiptLogicalID(r *core.BurnReceipt) (ReceiptLogicalID, error) {
+	if r == nil {
+		return ReceiptLogicalID{}, errors.New("nil burn receipt")
+	}
+	buf := make([]byte, 0, len("ynp.receipt.logical_id.burn.v1")+32)
+	buf = append(buf, "ynp.receipt.logical_id.burn.v1"...)
+	buf = append(buf, r.WithdrawalID[:]...)
+	return ReceiptLogicalID(crypto.Keccak256Hash(buf)), nil
+}
+
+// MintReceiptLogicalID returns the idempotency identity for a mint receipt.
+// It is independent of the receipt proof and signer epoch.
+func MintReceiptLogicalID(r *core.MintReceipt) (ReceiptLogicalID, error) {
+	if r == nil {
+		return ReceiptLogicalID{}, errors.New("nil mint receipt")
+	}
+	if _, err := core.IssuerIDFromAssetURI(r.AssetURI); err != nil {
+		return ReceiptLogicalID{}, fmt.Errorf("mint receipt asset uri: %w", err)
+	}
+	assetURI := []byte(r.AssetURI)
+	txID := []byte(r.TxID)
+	buf := make([]byte, 0, len("ynp.receipt.logical_id.mint.v1")+4+len(assetURI)+4+len(txID))
+	buf = append(buf, "ynp.receipt.logical_id.mint.v1"...)
+	var u32 [4]byte
+	binary.BigEndian.PutUint32(u32[:], uint32(len(assetURI)))
+	buf = append(buf, u32[:]...)
+	buf = append(buf, assetURI...)
+	binary.BigEndian.PutUint32(u32[:], uint32(len(txID)))
+	buf = append(buf, u32[:]...)
+	buf = append(buf, txID...)
+	return ReceiptLogicalID(crypto.Keccak256Hash(buf)), nil
+}
+
+func verificationError(code ReceiptVerificationCode, signerEpoch, latestEpoch uint64, err error) error {
+	return &ReceiptVerificationError{Code: code, SignerEpoch: signerEpoch, LatestEpoch: latestEpoch, Err: err}
+}
+
+func invalidSignatureError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *ReceiptVerificationError
+	if errors.As(err, &existing) {
+		return err
+	}
+	return verificationError(ReceiptVerificationInvalidSignatures, 0, 0, err)
+}
+
+func classifyWithdrawalIssuerError(err error) error {
+	var res *WithdrawalIssuerResolutionError
+	if errors.As(err, &res) {
+		switch res.Code {
+		case WithdrawalIssuerUnknownWithdrawal:
+			return verificationError(ReceiptVerificationUnknownWithdrawal, 0, 0, fmt.Errorf("resolve withdrawal issuer: %w", err))
+		case WithdrawalIssuerStateInvalid:
+			return verificationError(ReceiptVerificationIssuerStateInvalid, 0, 0, fmt.Errorf("resolve withdrawal issuer: %w", err))
+		case WithdrawalIssuerUnavailable:
+			return verificationError(ReceiptVerificationIssuerUnavailable, 0, 0, fmt.Errorf("resolve withdrawal issuer: %w", err))
+		}
+	}
+	return verificationError(ReceiptVerificationIssuerUnavailable, 0, 0, fmt.Errorf("resolve withdrawal issuer: %w", err))
 }

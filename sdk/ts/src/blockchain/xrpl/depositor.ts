@@ -55,11 +55,21 @@ export class XrplVaultDepositor
     input: XrplSubmitDepositInput,
     options: SubmitDepositOptions = {},
   ): Promise<string> {
+    const submitOptions = requireSubmitDepositOptions(options);
+    const prepared = await this.prepareDeposit(input);
+    const signed = await this.sign(prepared);
+    const txID = normalizeTxHash(signed.hash);
+    await this.submit(signed.txBlob, txID);
+    submitOptions.onSubmitted?.(txID);
+    return txID;
+  }
+
+  /** Builds and autofills the exact unsigned custody payment. */
+  async prepareDeposit(input: XrplSubmitDepositInput): Promise<Payment> {
     const fields =
       input && typeof input === "object"
         ? (input as Partial<XrplSubmitDepositInput>)
         : {};
-    const submitOptions = requireSubmitDepositOptions(options);
     const destination = requireDepositDestination(fields.destination);
     const account = requireClearnetAccount(destination.account);
     const reference = requireReference(destination.ref);
@@ -78,11 +88,7 @@ export class XrplVaultDepositor
 
     const prepared = await this.autofill(payment);
     this.enforceFee(prepared);
-    const signed = await this.sign(prepared);
-    const txID = normalizeTxHash(signed.hash);
-    await this.submit(signed.txBlob, txID);
-    submitOptions.onSubmitted?.(txID);
-    return txID;
+    return prepared;
   }
 
   async verifyDeposit(
