@@ -25,6 +25,8 @@ func TestNewWithdrawalTimeBounds(t *testing.T) {
 		{name: "admission one second late", sealedAt: sealedAt, finalizedAt: sealedAt + 86401, now: sealedAt + 86401, challenge: challenge, wantErr: true},
 		{name: "future skew exact", sealedAt: sealedAt, finalizedAt: sealedAt + 1800, now: sealedAt + 1500, challenge: challenge},
 		{name: "future skew one second late", sealedAt: sealedAt, finalizedAt: sealedAt + 1801, now: sealedAt + 1500, challenge: challenge, wantErr: true},
+		{name: "absolute age exact", sealedAt: sealedAt, finalizedAt: sealedAt + 1800, now: sealedAt + 1800 + 86400, challenge: challenge},
+		{name: "absolute age one second late", sealedAt: sealedAt, finalizedAt: sealedAt + 1800, now: sealedAt + 1800 + 86401, challenge: challenge, wantErr: true},
 		{name: "negative sealed", sealedAt: -1, finalizedAt: 1800, now: 1800, challenge: challenge, wantErr: true},
 		{name: "finalized before sealed", sealedAt: sealedAt, finalizedAt: sealedAt - 1, now: sealedAt, challenge: challenge, wantErr: true},
 		{name: "zero challenge", sealedAt: sealedAt, finalizedAt: sealedAt, now: sealedAt, challenge: 0, wantErr: true},

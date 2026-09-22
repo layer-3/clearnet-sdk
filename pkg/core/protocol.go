@@ -46,6 +46,9 @@ func NewWithdrawalTimeBounds(sealedAt, finalizedAt, localNow int64, challengeDur
 	if localNow > math.MaxInt64-int64(ClockSkewTolerance/time.Second) || finalizedAt > localNow+int64(ClockSkewTolerance/time.Second) {
 		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: finalized_at %d exceeds local clock tolerance", finalizedAt)
 	}
+	if localNow > finalizedAt && localNow-finalizedAt > int64(FinalizationAdmissionHorizon/time.Second) {
+		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: finalized_at %d is older than admission horizon", finalizedAt)
+	}
 	if finalizedAt > math.MaxInt64-int64(WithdrawalExecutionWindow/time.Second) {
 		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: valid_until overflow")
 	}
