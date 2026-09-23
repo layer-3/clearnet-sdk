@@ -114,7 +114,14 @@ type evmPacked struct {
 // read from the live vault. A retry after signer rotation repacks against the
 // new generation; validators reject payloads from the former generation.
 func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) ([]byte, error) {
-	p, err := f.packedFromOp(ctx, op, withdrawalID, bounds)
+	if err := bounds.Validate(); err != nil {
+		return nil, err
+	}
+	nonce, err := fetchLiveRotationNonce(ctx, f.client, f.custody)
+	if err != nil {
+		return nil, fmt.Errorf("evm: rotation nonce: %w", err)
+	}
+	p, err := f.packedFromOp(ctx, op, withdrawalID, bounds, nonce)
 	if err != nil {
 		return nil, err
 	}
@@ -122,13 +129,21 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 }
 
 // Validate re-derives the canonical payload from the operation, authenticated
-// time bounds, and current signer generation before any signature is produced.
+// time bounds, and candidate's canonical signer generation without another
+// mutable chain read. PrepareSignatureValidator checks that generation is live.
 func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) error {
+	if err := bounds.Validate(); err != nil {
+		return err
+	}
 	var got evmPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("decode packed: %w", err)
 	}
-	want, err := f.packedFromOp(ctx, op, withdrawalID, bounds)
+	nonce, err := parseCanonicalUint256("rotation nonce", got.RotationNonce)
+	if err != nil {
+		return err
+	}
+	want, err := f.packedFromOp(ctx, op, withdrawalID, bounds, nonce)
 	if err != nil {
 		return err
 	}
@@ -163,9 +178,9 @@ func (f *WithdrawalFinalizer) PrepareSignatureValidator(ctx context.Context, pac
 	if err != nil {
 		return nil, err
 	}
-	packedNonce, ok := new(big.Int).SetString(p.RotationNonce, 10)
-	if !ok {
-		return nil, fmt.Errorf("bad rotation nonce %q", p.RotationNonce)
+	packedNonce, err := parseCanonicalUint256("rotation nonce", p.RotationNonce)
+	if err != nil {
+		return nil, err
 	}
 	signers, threshold, liveNonce, err := fetchLiveWithdrawalQuorum(ctx, f.client, f.custody)
 	if err != nil {
@@ -209,15 +224,15 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, signatu
 
 	to := common.HexToAddress(p.To)
 	asset := common.HexToAddress(p.Asset)
-	amount, ok := new(big.Int).SetString(p.Amount, 10)
-	if !ok {
-		return "", fmt.Errorf("bad amount %q", p.Amount)
+	amount, err := parseCanonicalUint256("amount", p.Amount)
+	if err != nil {
+		return "", err
 	}
 
 	finalizedAt := new(big.Int).SetInt64(p.FinalizedAt)
-	rotationNonce, ok := new(big.Int).SetString(p.RotationNonce, 10)
-	if !ok {
-		return "", fmt.Errorf("bad rotation nonce %q", p.RotationNonce)
+	rotationNonce, err := parseCanonicalUint256("rotation nonce", p.RotationNonce)
+	if err != nil {
+		return "", err
 	}
 	tx, err := f.transactor.Transact(ctx, f.fees, func(opts *bind.TransactOpts) (*gethtypes.Transaction, error) {
 		if err := f.estimateGas(ctx, opts, to, asset, amount, wid, finalizedAt, rotationNonce, sigs); err != nil {
@@ -266,9 +281,12 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 
 // --- helpers ---
 
-func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) (evmPacked, error) {
+func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds, nonce *big.Int) (evmPacked, error) {
 	if err := bounds.Validate(); err != nil {
 		return evmPacked{}, err
+	}
+	if nonce == nil || nonce.Sign() < 0 || nonce.BitLen() > 256 {
+		return evmPacked{}, fmt.Errorf("evm: rotation nonce %v out of uint256 range", nonce)
 	}
 	// common.HexToAddress silently zero-fills/truncates a malformed input, which
 	// would sign a withdrawal to the wrong (often zero) recipient. Reject
@@ -297,10 +315,6 @@ func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.Withdra
 	if err != nil {
 		return evmPacked{}, fmt.Errorf("evm: amount: %w", err)
 	}
-	nonce, err := f.custody.RotationNonce(&bind.CallOpts{Context: ctx})
-	if err != nil {
-		return evmPacked{}, fmt.Errorf("evm: rotation nonce: %w", err)
-	}
 	return evmPacked{
 		To:            common.HexToAddress(op.Recipient).Hex(),
 		Asset:         depositAssetAddress(id.AssetAddress).Hex(),
@@ -314,19 +328,30 @@ func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.Withdra
 // digest computes the Custody.execute signing digest:
 // EIP-712 Execute under the YellowCustody domain.
 func (f *WithdrawalFinalizer) digest(p evmPacked) (common.Hash, error) {
-	amount, ok := new(big.Int).SetString(p.Amount, 10)
-	if !ok {
-		return common.Hash{}, fmt.Errorf("bad amount %q", p.Amount)
+	amount, err := parseCanonicalUint256("amount", p.Amount)
+	if err != nil {
+		return common.Hash{}, err
 	}
 	wid, err := decodeHex32(p.WithdrawalID)
 	if err != nil {
 		return common.Hash{}, err
 	}
-	nonce, ok := new(big.Int).SetString(p.RotationNonce, 10)
-	if !ok || p.FinalizedAt < 0 || amount.Sign() < 0 || amount.BitLen() > 256 || nonce.Sign() < 0 || nonce.BitLen() > 256 {
+	nonce, err := parseCanonicalUint256("rotation nonce", p.RotationNonce)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	if p.FinalizedAt < 0 {
 		return common.Hash{}, fmt.Errorf("invalid withdrawal uint256")
 	}
 	return ComputeWithdrawalDigest(f.chainID, f.vaultAddr, common.HexToAddress(p.To), common.HexToAddress(p.Asset), amount, wid, big.NewInt(p.FinalizedAt), nonce), nil
+}
+
+func parseCanonicalUint256(field, value string) (*big.Int, error) {
+	n, ok := new(big.Int).SetString(value, 10)
+	if !ok || n.Sign() < 0 || n.BitLen() > 256 || n.String() != value {
+		return nil, fmt.Errorf("bad %s %q", field, value)
+	}
+	return n, nil
 }
 
 // applyFees sets EIP-1559 (or legacy) gas pricing on opts from fees, refusing to

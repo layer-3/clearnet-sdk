@@ -142,10 +142,12 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 		Amount:    decimal.NewFromBigInt(big.NewInt(400_000_000_000), -18), // < deposited
 	}
 
-	// 1. Pack (any node — here the first). Far-future deadline: the
-	// happy path must not expire mid-test.
-	deadline := time.Now().Add(24 * time.Hour).Unix()
-	bounds := core.WithdrawalTimeBounds{FinalizedAt: deadline - 3600, ValidUntil: deadline}
+	// 1. Pack (any node — here the first) with realistic admission bounds.
+	finalizedAt := time.Now().Unix()
+	bounds, err := core.NewWithdrawalTimeBounds(finalizedAt-60, finalizedAt, finalizedAt, time.Minute)
+	if err != nil {
+		t.Fatalf("NewWithdrawalTimeBounds: %v", err)
+	}
 	packed, err := finalizers[0].Pack(ctx, op, withdrawalID, bounds)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)

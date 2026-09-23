@@ -31,6 +31,21 @@ import (
 
 const preparedTestIssuer = "0x0000000000000000000000000000000000001234"
 
+func TestWithdrawalFinalizerRejectsInvalidBoundsBeforeChainRead(t *testing.T) {
+	f := &WithdrawalFinalizer{}
+	for _, bounds := range []core.WithdrawalTimeBounds{
+		{FinalizedAt: 1000, ValidUntil: 4599},
+		{FinalizedAt: 1000, ValidUntil: 4601},
+	} {
+		if _, err := f.Pack(context.Background(), nil, [32]byte{}, bounds); err == nil || !strings.Contains(err.Error(), "valid_until") {
+			t.Fatalf("Pack(%+v) error = %v, want bounds rejection", bounds, err)
+		}
+		if err := f.Validate(context.Background(), nil, nil, [32]byte{}, bounds); err == nil || !strings.Contains(err.Error(), "valid_until") {
+			t.Fatalf("Validate(%+v) error = %v, want bounds rejection", bounds, err)
+		}
+	}
+}
+
 type preparedGetTxOutCall struct {
 	txID           string
 	vout           uint32
@@ -894,7 +909,7 @@ func TestPreparedWithdrawalBroadcastPrepared(t *testing.T) {
 	}
 }
 
-func TestPreparedWithdrawalLegacyCompatibility(t *testing.T) {
+func TestWithdrawalFinalizerLegacyMethodsRequirePreparedAPI(t *testing.T) {
 	fixture := newPreparedFixture(t)
 	ctx := context.Background()
 
@@ -904,40 +919,11 @@ func TestPreparedWithdrawalLegacyCompatibility(t *testing.T) {
 	if len(fixture.rpc.getTxOutCalls) != 2 {
 		t.Fatalf("legacy Validate GetTxOut calls = %d, want 2", len(fixture.rpc.getTxOutCalls))
 	}
-	legacyShares := make([][]byte, 2)
-	var err error
-	for i := range legacyShares {
-		legacyShares[i], err = fixture.finalizers[i].Sign(ctx, fixture.canonical)
-		if err != nil {
-			t.Fatalf("legacy Sign[%d]: %v", i, err)
-		}
+	if _, err := fixture.finalizers[0].Sign(ctx, fixture.canonical); !errors.Is(err, ErrPreparedWithdrawalRequired) {
+		t.Fatalf("Sign error = %v, want ErrPreparedWithdrawalRequired", err)
 	}
-	legacyTxID, err := fixture.finalizers[0].Submit(ctx, fixture.canonical, legacyShares)
-	if err != nil {
-		t.Fatalf("legacy Submit: %v", err)
-	}
-	legacyRaw := fixture.rpc.sentRaw[len(fixture.rpc.sentRaw)-1]
-	if legacyTxID != mustPreparedTx(t, &PreparedWithdrawal{preparedTransaction: preparedTransaction{canonicalTx: fixture.canonical}}).TxHash().String() {
-		t.Fatalf("legacy Submit txid = %s", legacyTxID)
-	}
-
-	prepared, err := fixture.finalizers[0].Prepare(ctx, fixture.canonical, fixture.authorization())
-	if err != nil {
-		t.Fatalf("Prepare after legacy flow: %v", err)
-	}
-	preparedShares := make([][]byte, 2)
-	for i := range preparedShares {
-		preparedShares[i], err = fixture.finalizers[i].SignPrepared(ctx, prepared, fixture.authorization())
-		if err != nil {
-			t.Fatalf("SignPrepared[%d]: %v", i, err)
-		}
-	}
-	preparedRaw, preparedTxID, err := fixture.finalizers[0].FinalizePrepared(prepared, fixture.authorization(), preparedShares)
-	if err != nil {
-		t.Fatalf("FinalizePrepared: %v", err)
-	}
-	if preparedTxID != legacyTxID || !bytes.Equal(preparedRaw, legacyRaw) {
-		t.Fatal("prepared API changed the legacy deterministic transaction or txid")
+	if _, err := fixture.finalizers[0].Submit(ctx, fixture.canonical, nil); !errors.Is(err, ErrPreparedWithdrawalRequired) {
+		t.Fatalf("Submit error = %v, want ErrPreparedWithdrawalRequired", err)
 	}
 
 	wrong := *fixture.op

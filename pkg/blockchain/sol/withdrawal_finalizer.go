@@ -33,8 +33,9 @@ type Config struct {
 	ChainID          uint64
 	ComputeUnitLimit uint32 // 0 → 200k
 	ComputeUnitPrice uint64 // micro-lamports per CU (priority fee)
-	// Commitment is the level at which on-chain reads (Config, the Withdrawal
-	// PDA) are observed. Empty → CommitmentFinalized.
+	// Commitment is the level at which transaction submission and Withdrawal PDA
+	// reads are observed. Security-sensitive Config reads are always finalized.
+	// Empty → CommitmentFinalized.
 	//
 	// NOTE: production should use CommitmentFinalized — a withdrawal is only
 	// truly settled once finalized (no rollback). CommitmentConfirmed is a
@@ -80,6 +81,10 @@ var _ core.VaultWithdrawalFinalizer = (*WithdrawalFinalizer)(nil)
 func NewWithdrawalFinalizer(rpcURL string, programID solana.PublicKey, signer, feePayer sign.Signer, cfg Config, assets blockchain.AssetResolver) (*WithdrawalFinalizer, error) {
 	if assets == nil {
 		return nil, fmt.Errorf("sol: asset resolver is required")
+	}
+	artifactWindow := time.Duration(custody.WITHDRAWAL_EXECUTION_WINDOW_SECONDS) * time.Second
+	if artifactWindow != core.WithdrawalExecutionWindow {
+		return nil, fmt.Errorf("sol: withdrawal execution window mismatch: artifact=%s sdk=%s", artifactWindow, core.WithdrawalExecutionWindow)
 	}
 	nodePub, err := solanaPub(signer)
 	if err != nil {
@@ -128,7 +133,14 @@ type solPacked struct {
 // Pack resolves the withdrawal target and returns canonical JSON bound to the
 // live program rotation nonce. Retry after rotation repacks under the new nonce.
 func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) ([]byte, error) {
-	p, err := f.packedFromOp(ctx, op, withdrawalID, bounds)
+	if err := bounds.Validate(); err != nil {
+		return nil, err
+	}
+	cfg, err := fetchConfig(ctx, f.client, f.programID, rpc.CommitmentFinalized)
+	if err != nil {
+		return nil, err
+	}
+	p, err := f.packedFromOp(ctx, op, withdrawalID, bounds, cfg.RotationNonce)
 	if err != nil {
 		return nil, err
 	}
@@ -136,13 +148,17 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 }
 
 // Validate re-derives the canonical payload from the operation, authenticated
-// time bounds, and current signer generation before signing.
+// time bounds, and candidate's canonical signer generation without another
+// mutable chain read. PrepareSignatureValidator checks that generation is live.
 func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) error {
+	if err := bounds.Validate(); err != nil {
+		return err
+	}
 	var got solPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("sol: decode packed: %w", err)
 	}
-	want, err := f.packedFromOp(ctx, op, withdrawalID, bounds)
+	want, err := f.packedFromOp(ctx, op, withdrawalID, bounds, got.RotationNonce)
 	if err != nil {
 		return err
 	}
@@ -183,7 +199,7 @@ func (f *WithdrawalFinalizer) PrepareSignatureValidator(ctx context.Context, pac
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
+	cfg, err := fetchConfig(ctx, f.client, f.programID, rpc.CommitmentFinalized)
 	if err != nil {
 		return nil, err
 	}
@@ -302,8 +318,8 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 
 // VerifyExecutionAtSlot checks execution using a view no older than minContextSlot.
 // Reads use the finalizer's configured commitment. Expiry callers must configure
-// finalized commitment, establish that this slot is past the authorization
-// deadline, then require absence at this slot or later.
+// finalized commitment, establish that this slot is past ValidUntil, then
+// require absence at this slot or later.
 func (f *WithdrawalFinalizer) VerifyExecutionAtSlot(ctx context.Context, withdrawalID [32]byte, minContextSlot uint64) (string, bool, error) {
 	return f.verifyExecution(ctx, withdrawalID, &minContextSlot)
 }
@@ -342,7 +358,7 @@ func (f *WithdrawalFinalizer) waitExecuted(ctx context.Context, withdrawalID [32
 
 // --- helpers ---
 
-func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) (solPacked, error) {
+func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds, rotationNonce uint64) (solPacked, error) {
 	if err := bounds.Validate(); err != nil {
 		return solPacked{}, err
 	}
@@ -378,17 +394,13 @@ func (f *WithdrawalFinalizer) packedFromOp(ctx context.Context, op *core.Withdra
 	if err != nil {
 		return solPacked{}, err
 	}
-	cfg, err := fetchConfig(ctx, f.client, f.programID, f.commitment)
-	if err != nil {
-		return solPacked{}, err
-	}
 	return solPacked{
 		To:            to.String(),
 		Mint:          mint.String(),
 		Amount:        amt.Uint64(),
 		WithdrawalID:  hex.EncodeToString(withdrawalID[:]),
 		FinalizedAt:   bounds.FinalizedAt,
-		RotationNonce: cfg.RotationNonce,
+		RotationNonce: rotationNonce,
 	}, nil
 }
 

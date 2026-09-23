@@ -12,9 +12,9 @@ def verified(runs, sdk_revision, custody_revision):
     return any(
         run.get("status") == "completed"
         and run.get("conclusion") == "success"
-        and ((run.get("event") == "workflow_dispatch" and run.get("display_title") == f"EIP-712 parity {sdk_revision}")
-             or (run.get("event") == "push" and run.get("display_title") == "EIP-712 parity pinned candidate"))
-        and run.get("path") == ".github/workflows/test-eip712-artifacts.yml"
+        and run.get("event") == "workflow_dispatch"
+        and run.get("display_title") == f"SDK artifact parity {sdk_revision}"
+        and run.get("path") == ".github/workflows/test-sdk-artifact-parity.yml"
         and run.get("head_sha") == custody_revision
         and run.get("head_repository", {}).get("full_name") == "layer-3/custody"
         for run in runs

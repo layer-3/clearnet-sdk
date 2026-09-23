@@ -93,9 +93,9 @@ func TestEIP712DeploymentAllOperations(t *testing.T) {
 	auth.Value = nil
 	recipient := common.HexToAddress("0x1234")
 	wid := [32]byte{1}
-	deadline := big.NewInt(4000000000)
+	finalizedAt := big.NewInt(4000000000)
 	rotationNonce := big.NewInt(0)
-	mined(vault.Execute(auth, recipient, common.Address{}, big.NewInt(100), wid, deadline, rotationNonce, sign(evm.ComputeWithdrawalDigest(1337, vaultAddr, recipient, common.Address{}, big.NewInt(100), wid, deadline, rotationNonce))))
+	mined(vault.Execute(auth, recipient, common.Address{}, big.NewInt(100), wid, finalizedAt, rotationNonce, sign(evm.ComputeWithdrawalDigest(1337, vaultAddr, recipient, common.Address{}, big.NewInt(100), wid, finalizedAt, rotationNonce))))
 	balance, err := client.BalanceAt(ctx, recipient, nil)
 	if err != nil || balance.Cmp(big.NewInt(100)) != 0 {
 		t.Fatalf("withdrawal balance %v: %v", balance, err)

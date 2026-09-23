@@ -63,10 +63,10 @@ const (
 	LedgerBudget = uint32(30)
 	// MaxLedgerBudget is the upper bound a follower accepts on (LLS - current):
 	// slack over LedgerBudget for the ledgers that close between build and
-	// validation, still far under the deadline.
+	// validation, still far under ValidUntil.
 	MaxLedgerBudget = uint32(120)
 	// minLedgerBudget is the floor: if fewer than this many ledgers fit before
-	// the deadline, Pack fails and the withdrawal parks and expires cleanly
+	// ValidUntil, Pack fails and the withdrawal parks and expires cleanly
 	// rather than being signed with a near-dead LLS.
 	minLedgerBudget = uint32(5)
 	// assumedLedgerCloseSec is the conservative average ledger close interval
@@ -87,7 +87,7 @@ var canonicalAllowedFields = map[string]struct{}{
 
 // LedgerState is a snapshot of the network's current validated ledger: its index
 // and close time (as a unix timestamp). Used to set and to bound a withdrawal's
-// LastLedgerSequence against its deadline.
+// LastLedgerSequence against its ValidUntil bound.
 type LedgerState struct {
 	ValidatedIndex uint32
 	CloseUnix      int64
@@ -101,11 +101,11 @@ type LedgerStateResolver func(ctx context.Context) (LedgerState, error)
 // signing. In standalone mode (test-only rippled with manual
 // ledger_accept) ledgers do not advance on their own, so LLS-based expiry is
 // meaningless and the field must be ABSENT; otherwise it must fall inside the
-// two-sided band and close before the deadline.
+// two-sided band and close by ValidUntil.
 type llsPolicy struct {
 	standalone bool
 	current    LedgerState
-	deadline   int64 // 0 = no deadline clamp (rotations)
+	validUntil int64 // 0 = no expiry clamp (rotations)
 }
 
 // estimatedCloseUnix estimates when ledger `index` will close, from the current
@@ -115,22 +115,22 @@ func (p llsPolicy) estimatedCloseUnix(index uint32) int64 {
 }
 
 // buildLLS computes the LastLedgerSequence a builder sets: current + budget,
-// where budget is min(LedgerBudget, ledgers that fit before the deadline). It
-// fails if fewer than minLedgerBudget ledgers fit before the deadline — the
+// where budget is min(LedgerBudget, ledgers that fit before ValidUntil). It
+// fails if fewer than minLedgerBudget ledgers fit before ValidUntil — the
 // withdrawal parks and expires cleanly rather than being signed with a near-dead
-// LLS. deadline == 0 (rotations) skips the deadline clamp.
-func buildLLS(state LedgerState, deadline int64) (uint32, error) {
+// LLS. validUntil == 0 (rotations) skips the expiry clamp.
+func buildLLS(state LedgerState, validUntil int64) (uint32, error) {
 	budget := LedgerBudget
-	if deadline != 0 {
-		if deadline <= state.CloseUnix {
-			return 0, fmt.Errorf("xrpl: deadline %d not after current close %d", deadline, state.CloseUnix)
+	if validUntil != 0 {
+		if validUntil <= state.CloseUnix {
+			return 0, fmt.Errorf("xrpl: valid_until %d not after current close %d", validUntil, state.CloseUnix)
 		}
-		if fit := (deadline - state.CloseUnix) / assumedLedgerCloseSec; fit < int64(budget) {
+		if fit := (validUntil - state.CloseUnix) / assumedLedgerCloseSec; fit < int64(budget) {
 			budget = uint32(fit)
 		}
 	}
 	if budget < minLedgerBudget {
-		return 0, fmt.Errorf("xrpl: only %d ledgers of budget before deadline, need %d — withdrawal parks", budget, minLedgerBudget)
+		return 0, fmt.Errorf("xrpl: only %d ledgers of budget before valid_until, need %d — withdrawal parks", budget, minLedgerBudget)
 	}
 	return state.ValidatedIndex + budget, nil
 }
@@ -171,8 +171,8 @@ func (p llsPolicy) checkField(raw any, present bool) error {
 	if lls > p.current.ValidatedIndex+MaxLedgerBudget {
 		return fmt.Errorf("xrpl canonical: LastLedgerSequence %d exceeds current %d + budget %d", lls, p.current.ValidatedIndex, MaxLedgerBudget)
 	}
-	if p.deadline != 0 && p.estimatedCloseUnix(lls) > p.deadline {
-		return fmt.Errorf("xrpl canonical: LastLedgerSequence %d estimated close %d past deadline %d", lls, p.estimatedCloseUnix(lls), p.deadline)
+	if p.validUntil != 0 && p.estimatedCloseUnix(lls) > p.validUntil {
+		return fmt.Errorf("xrpl canonical: LastLedgerSequence %d estimated close %d past valid_until %d", lls, p.estimatedCloseUnix(lls), p.validUntil)
 	}
 	return nil
 }

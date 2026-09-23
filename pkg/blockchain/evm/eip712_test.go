@@ -1,6 +1,8 @@
 package evm
 
 import (
+	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
@@ -110,6 +112,32 @@ func TestEIP712CanonicalVectors(t *testing.T) {
 				t.Fatal("signature drift")
 			}
 		})
+	}
+}
+
+func TestWithdrawalDigestBindsFinalizedAtAndRotationNonce(t *testing.T) {
+	address := common.HexToAddress("0x1234")
+	base := ComputeWithdrawalDigest(1, address, address, address, big.NewInt(10), [32]byte{1}, big.NewInt(100), big.NewInt(7))
+	if got := ComputeWithdrawalDigest(1, address, address, address, big.NewInt(10), [32]byte{1}, big.NewInt(101), big.NewInt(7)); got == base {
+		t.Fatal("finalizedAt mutation did not change withdrawal digest")
+	}
+	if got := ComputeWithdrawalDigest(1, address, address, address, big.NewInt(10), [32]byte{1}, big.NewInt(100), big.NewInt(8)); got == base {
+		t.Fatal("rotationNonce mutation did not change withdrawal digest")
+	}
+}
+
+func TestExecuteTypeHashAppearsInCustodyBytecode(t *testing.T) {
+	encoded, err := os.ReadFile("artifacts/Custody.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytecode, err := hex.DecodeString(strings.TrimPrefix(strings.TrimSpace(string(encoded)), "0x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	typeHash := crypto.Keccak256([]byte(executeType))
+	if !bytes.Contains(bytecode, typeHash) {
+		t.Fatalf("execute typehash %x not found in Custody bytecode", typeHash)
 	}
 }
 func TestEIP712EveryFieldAndArrayEncoding(t *testing.T) {

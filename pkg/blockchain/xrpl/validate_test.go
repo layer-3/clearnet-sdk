@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -15,6 +16,25 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
+
+func TestWithdrawalFinalizerRejectsInvalidBoundsBeforeChainRead(t *testing.T) {
+	f := &WithdrawalFinalizer{}
+	for _, bounds := range []core.WithdrawalTimeBounds{
+		{FinalizedAt: 1000, ValidUntil: 4599},
+		{FinalizedAt: 1000, ValidUntil: 4601},
+	} {
+		if _, err := f.Pack(context.Background(), nil, [32]byte{}, bounds); err == nil || !strings.Contains(err.Error(), "valid_until") {
+			t.Fatalf("Pack(%+v) error = %v, want bounds rejection", bounds, err)
+		}
+		err := f.Validate(context.Background(), nil, nil, [32]byte{}, bounds)
+		if err == nil || !strings.Contains(err.Error(), "valid_until") {
+			t.Fatalf("Validate(%+v) error = %v, want bounds rejection", bounds, err)
+		}
+		if errors.Is(err, ErrCandidateRejected) {
+			t.Fatalf("Validate(%+v) attributed local bounds error to peer", bounds)
+		}
+	}
+}
 
 // roundTrip marshals then unmarshals a flatTx, reproducing the numeric shape
 // (float64) the real Validate path sees after decoding the packed bytes.
@@ -88,7 +108,7 @@ func TestValidateCanonical_FlagsRejected(t *testing.T) {
 
 // TestValidateCanonical_LLSBand covers the LastLedgerSequence band a
 // follower enforces: present, ahead of current, within MaxLedgerBudget, and
-// estimated to close at or before the deadline.
+// estimated to close at or before ValidUntil.
 func TestValidateCanonical_LLSBand(t *testing.T) {
 	const vault = "rVaULtAdd1111111111111111111111111"
 	ctx := context.Background()
@@ -105,10 +125,10 @@ func TestValidateCanonical_LLSBand(t *testing.T) {
 	var wid [32]byte
 	wid[0], wid[31] = 0xAB, 0xCD
 
-	// current ledger 1000 closing at t=10000; deadline far in the future.
+	// current ledger 1000 closing at t=10000; ValidUntil far in the future.
 	current := LedgerState{ValidatedIndex: 1000, CloseUnix: 10_000}
-	deadline := int64(10_000 + 10_000) // ~2500 ledgers of headroom
-	policy := llsPolicy{current: current, deadline: deadline}
+	validUntil := int64(10_000 + 10_000) // ~2500 ledgers of headroom
+	policy := llsPolicy{current: current, validUntil: validUntil}
 
 	withLLS := func(lls uint32) transaction.FlatTransaction {
 		return roundTrip(t, transaction.FlatTransaction{
@@ -142,38 +162,38 @@ func TestValidateCanonical_LLSBand(t *testing.T) {
 	if err := ValidateCanonical(ctx, assets, withLLS(current.ValidatedIndex+MaxLedgerBudget+1), op, wid, vault, policy); err == nil {
 		t.Error("LLS beyond MaxLedgerBudget accepted")
 	}
-	// Estimated close past the deadline: tight deadline of only 4 ledgers.
-	tight := llsPolicy{current: current, deadline: current.CloseUnix + 4*assumedLedgerCloseSec}
+	// Estimated close past ValidUntil: a tight bound of only 4 ledgers.
+	tight := llsPolicy{current: current, validUntil: current.CloseUnix + 4*assumedLedgerCloseSec}
 	if err := ValidateCanonical(ctx, assets, withLLS(current.ValidatedIndex+LedgerBudget), op, wid, vault, tight); err == nil {
-		t.Error("LLS closing past deadline accepted")
+		t.Error("LLS closing past ValidUntil accepted")
 	}
 }
 
-// TestBuildLLS covers the builder's deadline clamp and the park-on-too-little
+// TestBuildLLS covers the builder's ValidUntil clamp and park-on-too-little
 // budget behavior.
 func TestBuildLLS(t *testing.T) {
 	current := LedgerState{ValidatedIndex: 1000, CloseUnix: 10_000}
 
-	// No deadline (rotation): current + full LedgerBudget.
+	// No expiry bound (rotation): current + full LedgerBudget.
 	if lls, err := buildLLS(current, 0); err != nil || lls != current.ValidatedIndex+LedgerBudget {
-		t.Fatalf("buildLLS(no deadline) = %d, %v; want %d", lls, err, current.ValidatedIndex+LedgerBudget)
+		t.Fatalf("buildLLS(no expiry) = %d, %v; want %d", lls, err, current.ValidatedIndex+LedgerBudget)
 	}
-	// Generous deadline: clamp does not bite.
+	// Generous ValidUntil: clamp does not bite.
 	if lls, err := buildLLS(current, current.CloseUnix+10_000); err != nil || lls != current.ValidatedIndex+LedgerBudget {
 		t.Fatalf("buildLLS(generous) = %d, %v; want %d", lls, err, current.ValidatedIndex+LedgerBudget)
 	}
-	// Tight-but-viable deadline: clamps below LedgerBudget but above the floor.
+	// Tight-but-viable ValidUntil: clamps below LedgerBudget but above the floor.
 	tight := current.CloseUnix + int64(10)*assumedLedgerCloseSec
 	if lls, err := buildLLS(current, tight); err != nil || lls != current.ValidatedIndex+10 {
 		t.Fatalf("buildLLS(tight) = %d, %v; want %d", lls, err, current.ValidatedIndex+10)
 	}
 	// Too little budget: parks (error).
 	if _, err := buildLLS(current, current.CloseUnix+int64(minLedgerBudget-1)*assumedLedgerCloseSec); err == nil {
-		t.Error("buildLLS accepted a deadline with less than minLedgerBudget")
+		t.Error("buildLLS accepted a ValidUntil with less than minLedgerBudget")
 	}
-	// Deadline already passed.
+	// ValidUntil already passed.
 	if _, err := buildLLS(current, current.CloseUnix-1); err == nil {
-		t.Error("buildLLS accepted a deadline before current close")
+		t.Error("buildLLS accepted a ValidUntil before current close")
 	}
 }
 

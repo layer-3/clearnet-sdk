@@ -69,3 +69,17 @@ func TestDigestVectors(t *testing.T) {
 		})
 	}
 }
+
+func TestWithdrawalDigestBindsFinalizedAtAndRotationNonce(t *testing.T) {
+	programID := solana.NewWallet().PublicKey()
+	vault := solana.NewWallet().PublicKey()
+	to := solana.NewWallet().PublicKey()
+	mint := solana.NewWallet().PublicKey()
+	base := WithdrawDigest(7, programID, vault, to, mint, 10, [32]byte{1}, 100, 7)
+	if got := WithdrawDigest(7, programID, vault, to, mint, 10, [32]byte{1}, 101, 7); got == base {
+		t.Fatal("finalizedAt mutation did not change withdrawal digest")
+	}
+	if got := WithdrawDigest(7, programID, vault, to, mint, 10, [32]byte{1}, 100, 8); got == base {
+		t.Fatal("rotationNonce mutation did not change withdrawal digest")
+	}
+}

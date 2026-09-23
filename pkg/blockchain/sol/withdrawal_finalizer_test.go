@@ -1,12 +1,15 @@
 package sol
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"strings"
 	"testing"
 
 	"github.com/gagliardetto/solana-go"
 
+	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
@@ -21,6 +24,21 @@ func mustEd25519Signer(t *testing.T) sign.Signer {
 		t.Fatalf("ed25519 signer: %v", err)
 	}
 	return s
+}
+
+func TestWithdrawalFinalizerRejectsInvalidBoundsBeforeChainRead(t *testing.T) {
+	f := &WithdrawalFinalizer{}
+	for _, bounds := range []core.WithdrawalTimeBounds{
+		{FinalizedAt: 1000, ValidUntil: 4599},
+		{FinalizedAt: 1000, ValidUntil: 4601},
+	} {
+		if _, err := f.Pack(context.Background(), nil, [32]byte{}, bounds); err == nil || !strings.Contains(err.Error(), "valid_until") {
+			t.Fatalf("Pack(%+v) error = %v, want bounds rejection", bounds, err)
+		}
+		if err := f.Validate(context.Background(), []byte("{}"), nil, [32]byte{}, bounds); err == nil || !strings.Contains(err.Error(), "valid_until") {
+			t.Fatalf("Validate(%+v) error = %v, want bounds rejection", bounds, err)
+		}
+	}
 }
 
 // TestBuildExecuteIx_SPLAccounts pins the account shape of the execute

@@ -10,6 +10,8 @@ Vendored artifacts for the custody Anchor program:
 - **`custody.so`** — the compiled BPF program (the bytecode analog). Used by the
   integration-test devnet, which preloads it into `solana-test-validator` at the
   fixed program id — no on-chain deploy or Anchor toolchain needed at test time.
+- **`custody-program-revision`** and **`custody.so.sha256`** pin the custody
+  source revision and exact program bytes accepted by the release artifact gate.
 
 Program id (fixed, `declare_id!`): `98eVpih8X9CAcgU9bzNB9V7VtkRrnFZUmqzEnsq7cfmg`.
 
@@ -46,3 +48,7 @@ and regenerates `../custody/*.go`. Review all three outputs together.
 Use that Linux amd64 container even on macOS. Native builds with the same tool
 versions can embed different platform-tools library paths and produce a
 different `.so`; they are not the canonical artifacts checked by custody CI.
+
+When either artifact changes, update the source revision and checksum together,
+run custody's parity workflow against the SDK artifact commit, and update
+`pkg/blockchain/evm/artifacts/validated-sdk-revision` to that SDK commit.

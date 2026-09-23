@@ -139,6 +139,24 @@ type vaultWithdrawalQuorumReader interface {
 	RotationNonce(*bind.CallOpts) (*big.Int, error)
 }
 
+// fetchLiveRotationNonce reads the signer-set generation at one explicit block.
+// The returned value is safe to thread through canonical payload derivation
+// without additional per-candidate chain reads.
+func fetchLiveRotationNonce(ctx context.Context, chain quorumBlockNumberReader, custody vaultWithdrawalQuorumReader) (*big.Int, error) {
+	block, err := chain.BlockNumber(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read rotation nonce block number: %w", err)
+	}
+	nonce, err := custody.RotationNonce(&bind.CallOpts{Context: ctx, BlockNumber: new(big.Int).SetUint64(block)})
+	if err != nil {
+		return nil, fmt.Errorf("read rotation nonce: %w", err)
+	}
+	if nonce == nil || nonce.Sign() < 0 || nonce.BitLen() > 256 {
+		return nil, fmt.Errorf("on-chain rotation nonce %v out of uint256 range", nonce)
+	}
+	return nonce, nil
+}
+
 // fetchLiveQuorum reads the vault's current authorized signer set and threshold
 // at one explicit block. Pinning both calls prevents a rotation between them
 // from producing a signer/threshold pair that never existed on chain.

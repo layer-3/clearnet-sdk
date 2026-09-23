@@ -20,10 +20,11 @@ import (
 )
 
 type configRPC struct {
-	t         *testing.T
-	programID solana.PublicKey
-	mu        sync.RWMutex
-	data      string
+	t           *testing.T
+	programID   solana.PublicKey
+	mu          sync.RWMutex
+	data        string
+	commitments []string
 }
 
 func newConfigRPC(t *testing.T, programID solana.PublicKey, cfg solcustody.Config) *configRPC {
@@ -50,8 +51,9 @@ func (s *configRPC) setConfig(cfg solcustody.Config) {
 
 func (s *configRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		ID     json.RawMessage `json:"id"`
-		Method string          `json:"method"`
+		ID     json.RawMessage   `json:"id"`
+		Method string            `json:"method"`
+		Params []json.RawMessage `json:"params"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		s.t.Errorf("decode RPC request: %v", err)
@@ -60,6 +62,20 @@ func (s *configRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Method != "getAccountInfo" {
 		s.t.Errorf("unexpected RPC method %q", request.Method)
+	}
+	if len(request.Params) != 2 {
+		s.t.Errorf("getAccountInfo params = %d, want 2", len(request.Params))
+	} else {
+		var opts struct {
+			Commitment string `json:"commitment"`
+		}
+		if err := json.Unmarshal(request.Params[1], &opts); err != nil {
+			s.t.Errorf("decode getAccountInfo opts: %v", err)
+		} else {
+			s.mu.Lock()
+			s.commitments = append(s.commitments, opts.Commitment)
+			s.mu.Unlock()
+		}
 	}
 	s.mu.RLock()
 	data := s.data
@@ -146,6 +162,9 @@ func TestSolanaPrepareSignatureValidatorsUseExactDigest(t *testing.T) {
 		t.Fatalf("old generation validator error = %v, want stale nonce", err)
 	}
 	bounds := core.WithdrawalTimeBounds{FinalizedAt: 123, ValidUntil: 3723}
+	config.mu.Lock()
+	config.commitments = nil
+	config.mu.Unlock()
 	repacked, err := withdrawal.Pack(context.Background(), &core.WithdrawalOp{
 		Recipient: solana.NewWallet().PublicKey().String(),
 		AssetURI:  "yellow://ynet/asset/0x0000000000000000000000000000000000001234/sol/0/0",
@@ -160,6 +179,25 @@ func TestSolanaPrepareSignatureValidatorsUseExactDigest(t *testing.T) {
 	}
 	if retryPayload.RotationNonce != 8 {
 		t.Fatalf("repacked rotation nonce = %d, want 8", retryPayload.RotationNonce)
+	}
+	config.mu.RLock()
+	commitments := append([]string(nil), config.commitments...)
+	config.mu.RUnlock()
+	if len(commitments) != 1 || commitments[0] != string(rpc.CommitmentFinalized) {
+		t.Fatalf("Pack config commitments = %v, want [finalized]", commitments)
+	}
+	if err := withdrawal.Validate(context.Background(), repacked, &core.WithdrawalOp{
+		Recipient: retryPayload.To,
+		AssetURI:  "yellow://ynet/asset/0x0000000000000000000000000000000000001234/sol/0/0",
+		Amount:    decimal.NewFromInt(1),
+	}, [32]byte{1}, bounds); err != nil {
+		t.Fatalf("Validate repacked: %v", err)
+	}
+	config.mu.RLock()
+	commitments = append([]string(nil), config.commitments...)
+	config.mu.RUnlock()
+	if len(commitments) != 1 {
+		t.Fatalf("Validate performed a config read: commitments = %v", commitments)
 	}
 	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), repacked); err != nil {
 		t.Fatalf("repacked generation rejected: %v", err)
