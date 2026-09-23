@@ -102,7 +102,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 		if _, e := signAndSend(ctx, client, []solana.Instruction{ix}, authorityPub, authority, rpc.CommitmentConfirmed, solana.PublicKey{}); e != nil {
 			t.Fatalf("initialize: %v", e)
 		}
-		waitConfig(ctx, t, client, programID)
+		waitConfig(ctx, t, client, programID, signerPubs)
 		t.Logf("initialized Config (signers=%d threshold=%d)", solSignerCount, solThreshold)
 	} else {
 		t.Logf("Config already initialized; reusing")
@@ -113,6 +113,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	rotCfg := Config{ChainID: solChainID, Commitment: rpc.CommitmentConfirmed}
 	rotatedSigners := solRotatedSigners(t)
 	ensureFixedSigners(ctx, t, rpcURL, programID, authority, rotCfg, signerPubs, rotatedSigners)
+	waitConfig(ctx, t, client, programID, signerPubs)
 
 	// ── Deposit flow ──────────────────────────────────────────────────────────
 	assets := NewAssetResolver(rpcURL, rpc.CommitmentConfirmed)
@@ -551,15 +552,24 @@ func waitBalance(ctx context.Context, t *testing.T, client *rpc.Client, pub sola
 	}
 }
 
-func waitConfig(ctx context.Context, t *testing.T, client *rpc.Client, programID solana.PublicKey) {
+func waitConfig(ctx context.Context, t *testing.T, client *rpc.Client, programID solana.PublicKey, want []solana.PublicKey) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		if _, err := fetchConfig(ctx, client, programID, rpc.CommitmentConfirmed); err == nil {
-			return
+		if cfg, err := fetchConfig(ctx, client, programID, rpc.CommitmentFinalized); err == nil {
+			matches := false
+			if len(cfg.Signers) == len(want) {
+				matches = true
+				for i := range cfg.Signers {
+					matches = matches && cfg.Signers[i] == want[i]
+				}
+			}
+			if matches {
+				return
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("Config not visible after initialize")
+			t.Fatal("expected Config signer set not finalized in time")
 		}
 		time.Sleep(time.Second)
 	}
