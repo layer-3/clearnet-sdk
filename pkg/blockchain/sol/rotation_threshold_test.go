@@ -21,9 +21,9 @@ func rotationThresholdSigners(count int) []string {
 
 func TestRotationFinalizerRejectsNonMajorityPackedTarget(t *testing.T) {
 	packed, err := json.Marshal(rotPacked{
-		NewSigners:   rotationThresholdSigners(3),
-		NewThreshold: 1,
-		SignerNonce:  0,
+		NewSigners:    rotationThresholdSigners(3),
+		NewThreshold:  1,
+		RotationNonce: 0,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -52,9 +52,9 @@ func TestRotationFinalizerRejectsNonMajorityPackedTarget(t *testing.T) {
 
 func TestRotationFinalizerAcceptsMajorityPackedTarget(t *testing.T) {
 	packed, err := json.Marshal(rotPacked{
-		NewSigners:   rotationThresholdSigners(3),
-		NewThreshold: 2,
-		SignerNonce:  0,
+		NewSigners:    rotationThresholdSigners(3),
+		NewThreshold:  2,
+		RotationNonce: 0,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -67,9 +67,9 @@ func TestRotationFinalizerAcceptsMajorityPackedTarget(t *testing.T) {
 func TestRotationFinalizerRejectsEvenNonMajorityTarget(t *testing.T) {
 	evenSigners := rotationThresholdSigners(4)
 	packed, err := json.Marshal(rotPacked{
-		NewSigners:   evenSigners,
-		NewThreshold: 2,
-		SignerNonce:  0,
+		NewSigners:    evenSigners,
+		NewThreshold:  2,
+		RotationNonce: 0,
 	})
 	if err != nil {
 		t.Fatal(err)

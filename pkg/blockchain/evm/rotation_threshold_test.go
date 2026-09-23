@@ -14,8 +14,8 @@ func TestRotationFinalizerRejectsNonMajorityPackedTarget(t *testing.T) {
 			"0x0000000000000000000000000000000000000002",
 			"0x0000000000000000000000000000000000000003",
 		},
-		NewThreshold: 1,
-		SignerNonce:  "0",
+		NewThreshold:  1,
+		RotationNonce: "0",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -61,8 +61,8 @@ func TestRotationFinalizerAcceptsMajorityPackedTarget(t *testing.T) {
 			"0x0000000000000000000000000000000000000002",
 			"0x0000000000000000000000000000000000000003",
 		},
-		NewThreshold: 2,
-		SignerNonce:  "0",
+		NewThreshold:  2,
+		RotationNonce: "0",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -80,9 +80,9 @@ func TestRotationFinalizerRejectsEvenNonMajorityTarget(t *testing.T) {
 		"0x0000000000000000000000000000000000000004",
 	}
 	packed, err := json.Marshal(evmRotPacked{
-		NewSigners:   evenSigners,
-		NewThreshold: 2,
-		SignerNonce:  "0",
+		NewSigners:    evenSigners,
+		NewThreshold:  2,
+		RotationNonce: "0",
 	})
 	if err != nil {
 		t.Fatal(err)
