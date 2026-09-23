@@ -97,9 +97,10 @@ type VaultDepositor interface {
 // at construction.
 //
 //   - Pack returns the canonical bytes to be signed for this withdrawal.
-//   - Validate re-derives the trust-bound shape from the op and asserts the
-//     packed bytes match — the defense against a Byzantine packer; every node
-//     runs it before Sign.
+//   - Validate re-derives the operation-bound shape and canonical encoding.
+//     Callers accepting a peer-built body run it before Sign. Chain-state fields
+//     carried by the body, such as EVM/Solana rotation nonce, are checked for
+//     liveness by the concrete finalizer's validation-first collection API.
 //   - Sign produces this node's signature over the packed bytes.
 //   - Submit merges the packed bytes with the collected quorum signatures into
 //     a submittable artifact and broadcasts it. It filters the signatures
