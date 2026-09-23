@@ -29,8 +29,8 @@ func NewWithdrawalTimeBounds(sealedAt, finalizedAt, localNow int64, challengeDur
 	if sealedAt < 0 {
 		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: sealed_at must be non-negative")
 	}
-	if challengeDuration <= 0 || challengeDuration > FinalizationAdmissionHorizon || challengeDuration%time.Second != 0 {
-		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: challenge duration must be whole seconds in (0, %s]", FinalizationAdmissionHorizon)
+	if challengeDuration <= 0 || challengeDuration >= FinalizationAdmissionHorizon || challengeDuration%time.Second != 0 {
+		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: challenge duration must be whole seconds in (0, %s)", FinalizationAdmissionHorizon)
 	}
 	if finalizedAt < sealedAt {
 		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: finalized_at %d before sealed_at %d", finalizedAt, sealedAt)
