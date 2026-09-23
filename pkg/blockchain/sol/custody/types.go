@@ -15,11 +15,11 @@ import (
 // signer set + threshold + nonce. `signers` is kept strictly ascending so a
 // linear membership scan in the Ed25519 verifier is unambiguous.
 type Config struct {
-	Signers     []solanago.PublicKey `json:"signers"`
-	Threshold   uint8                `json:"threshold"`
-	SignerNonce uint64               `json:"signerNonce"`
-	ChainId     uint64               `json:"chainId"`
-	Bump        uint8                `json:"bump"`
+	Signers       []solanago.PublicKey `json:"signers"`
+	Threshold     uint8                `json:"threshold"`
+	RotationNonce uint64               `json:"rotationNonce"`
+	ChainId       uint64               `json:"chainId"`
+	Bump          uint8                `json:"bump"`
 }
 
 func (obj Config) MarshalWithEncoder(encoder *binary.Encoder) (err error) {
@@ -33,10 +33,10 @@ func (obj Config) MarshalWithEncoder(encoder *binary.Encoder) (err error) {
 	if err != nil {
 		return errors.NewField("Threshold", err)
 	}
-	// Serialize `SignerNonce`:
-	err = encoder.Encode(obj.SignerNonce)
+	// Serialize `RotationNonce`:
+	err = encoder.Encode(obj.RotationNonce)
 	if err != nil {
-		return errors.NewField("SignerNonce", err)
+		return errors.NewField("RotationNonce", err)
 	}
 	// Serialize `ChainId`:
 	err = encoder.Encode(obj.ChainId)
@@ -72,10 +72,10 @@ func (obj *Config) UnmarshalWithDecoder(decoder *binary.Decoder) (err error) {
 	if err != nil {
 		return errors.NewField("Threshold", err)
 	}
-	// Deserialize `SignerNonce`:
-	err = decoder.Decode(&obj.SignerNonce)
+	// Deserialize `RotationNonce`:
+	err = decoder.Decode(&obj.RotationNonce)
 	if err != nil {
-		return errors.NewField("SignerNonce", err)
+		return errors.NewField("RotationNonce", err)
 	}
 	// Deserialize `ChainId`:
 	err = decoder.Decode(&obj.ChainId)
@@ -293,9 +293,9 @@ func UnmarshalExecuted(buf []byte) (*Executed, error) {
 
 // Emitted by `update_signers` via `emit_cpi!`.
 type SignersUpdated struct {
-	Signers     []solanago.PublicKey `json:"signers"`
-	Threshold   uint8                `json:"threshold"`
-	SignerNonce uint64               `json:"signerNonce"`
+	Signers       []solanago.PublicKey `json:"signers"`
+	Threshold     uint8                `json:"threshold"`
+	RotationNonce uint64               `json:"rotationNonce"`
 }
 
 func (obj SignersUpdated) MarshalWithEncoder(encoder *binary.Encoder) (err error) {
@@ -309,10 +309,10 @@ func (obj SignersUpdated) MarshalWithEncoder(encoder *binary.Encoder) (err error
 	if err != nil {
 		return errors.NewField("Threshold", err)
 	}
-	// Serialize `SignerNonce`:
-	err = encoder.Encode(obj.SignerNonce)
+	// Serialize `RotationNonce`:
+	err = encoder.Encode(obj.RotationNonce)
 	if err != nil {
-		return errors.NewField("SignerNonce", err)
+		return errors.NewField("RotationNonce", err)
 	}
 	return nil
 }
@@ -338,10 +338,10 @@ func (obj *SignersUpdated) UnmarshalWithDecoder(decoder *binary.Decoder) (err er
 	if err != nil {
 		return errors.NewField("Threshold", err)
 	}
-	// Deserialize `SignerNonce`:
-	err = decoder.Decode(&obj.SignerNonce)
+	// Deserialize `RotationNonce`:
+	err = decoder.Decode(&obj.RotationNonce)
 	if err != nil {
-		return errors.NewField("SignerNonce", err)
+		return errors.NewField("RotationNonce", err)
 	}
 	return nil
 }

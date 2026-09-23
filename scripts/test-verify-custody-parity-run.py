@@ -15,10 +15,9 @@ class ParityGateTest(unittest.TestCase):
     def test_exact_success_only(self):
         sdk, custody = "1" * 40, "2" * 40
         run = dict(status="completed", conclusion="success", event="workflow_dispatch",
-                   path=".github/workflows/test-eip712-artifacts.yml", head_sha=custody,
-                   display_title=f"EIP-712 parity {sdk}", head_repository={"full_name": "layer-3/custody"})
+                   path=".github/workflows/test-sdk-artifact-parity.yml", head_sha=custody,
+                   display_title=f"SDK artifact parity {sdk}", head_repository={"full_name": "layer-3/custody"})
         self.assertTrue(parity.verified([run], sdk, custody))
-        self.assertTrue(parity.verified([dict(run, event="push", display_title="EIP-712 parity pinned candidate")], sdk, custody))
         self.assertFalse(parity.verified([], sdk, custody))
         for field, wrong in dict(status="in_progress", conclusion="failure", event="pull_request",
                                  path="other.yml", head_sha="3"*40, display_title="EIP-712 parity other",
@@ -37,6 +36,10 @@ class ArtifactComparisonTest(unittest.TestCase):
                 for contract in ("Custody", "ConfigRegistry"):
                     (artifacts / f"{contract}.abi").write_text("[]")
                     (artifacts / f"{contract}.bin").write_text("6000")
+                sol_artifacts = root / "pkg/blockchain/sol/artifacts"
+                sol_artifacts.mkdir(parents=True)
+                (sol_artifacts / "custody.json").write_text("{}")
+                (sol_artifacts / "custody.so").write_bytes(b"program")
             command = [sys.executable, str(Path(__file__).with_name("compare-evm-artifacts.py")), *map(str, roots)]
             self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
             for contract in ("Custody", "ConfigRegistry"):
@@ -45,6 +48,18 @@ class ArtifactComparisonTest(unittest.TestCase):
                     with self.subTest(file=file.name):
                         file.write_text(changed)
                         self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+                        file.write_text(original)
+            for name, original, changed in (("custody.json", "{}", '{"constants":[]}'), ("custody.so", b"program", b"changed")):
+                file = roots[0] / "pkg/blockchain/sol/artifacts" / name
+                with self.subTest(file=name):
+                    if isinstance(original, bytes):
+                        file.write_bytes(changed)
+                    else:
+                        file.write_text(changed)
+                    self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+                    if isinstance(original, bytes):
+                        file.write_bytes(original)
+                    else:
                         file.write_text(original)
 
 if __name__ == "__main__":

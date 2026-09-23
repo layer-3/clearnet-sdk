@@ -1,4 +1,4 @@
-name: EIP-712 pre-release artifact gate
+name: Pre-release artifact gate
 
 # Run manually before publishing, and verify again on release tags. Source
 # compilation stays in private custody CI; this job reads only result metadata.
@@ -33,17 +33,22 @@ jobs:
           persist-credentials: false
       - name: Require the exact source-validated artifact set
         run: python3 scripts/compare-evm-artifacts.py . .validated-sdk
+      - name: Check Solana program provenance
+        run: |
+          cmp ../../evm/artifacts/custody-source-revision custody-program-revision
+          sha256sum --check custody.so.sha256
+        working-directory: pkg/blockchain/sol/artifacts
       - name: Read private parity results
         env:
           GH_TOKEN: ${{ secrets.CUSTODY_ACTIONS_READ_TOKEN }}
         run: |
           test -n "$GH_TOKEN" || { echo 'Configure CUSTODY_ACTIONS_READ_TOKEN with Actions read access to layer-3/custody'; exit 1; }
-          gh api 'repos/layer-3/custody/actions/workflows/test-eip712-artifacts.yml/runs?per_page=100' \
+          gh api 'repos/layer-3/custody/actions/workflows/test-sdk-artifact-parity.yml/runs?per_page=100' \
             --jq '.workflow_runs | map({status, conclusion, event, path, head_sha, display_title, head_repository: {full_name: .head_repository.full_name}})' \
             > "$RUNNER_TEMP/custody-parity-results.json"
       - name: Require exact successful source validation
         run: |
           python3 scripts/verify-custody-parity-run.py \
-            "$(git rev-parse HEAD)" \
+            "${{ steps.artifacts.outputs.revision }}" \
             pkg/blockchain/evm/artifacts/custody-source-revision \
             "$RUNNER_TEMP/custody-parity-results.json"

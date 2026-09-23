@@ -2,7 +2,9 @@ package evm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -42,15 +44,44 @@ func TestPackedFromOp_RejectsMalformedAddress(t *testing.T) {
 	addr := "0x" + strings.Repeat("ab", 20)
 	assetURI := core.AssetURI("yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0")
 	f := &WithdrawalFinalizer{chainID: 1, assets: testAssetResolver{}}
-
-	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: addr, AssetURI: assetURI, Amount: decimal.NewFromInt(1)}, wid, 0); err != nil {
+	bounds := core.WithdrawalTimeBounds{FinalizedAt: 123, ValidUntil: 3723}
+	op := &core.WithdrawalOp{Recipient: addr, AssetURI: assetURI, Amount: decimal.NewFromInt(1)}
+	got, err := f.packedFromOp(context.Background(), op, wid, bounds, big.NewInt(7))
+	if err != nil {
 		t.Fatalf("valid op rejected: %v", err)
 	}
-	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: "not-an-address", AssetURI: assetURI, Amount: decimal.NewFromInt(1)}, wid, 0); err == nil {
+	if got.RotationNonce != "7" || got.FinalizedAt != bounds.FinalizedAt {
+		t.Fatalf("packed context = nonce %s/finalizedAt %d", got.RotationNonce, got.FinalizedAt)
+	}
+
+	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: "not-an-address", AssetURI: assetURI, Amount: decimal.NewFromInt(1)}, wid, bounds, big.NewInt(7)); err == nil {
 		t.Error("malformed recipient accepted")
 	}
-	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: addr, AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0xzz", Amount: decimal.NewFromInt(1)}, wid, 0); err == nil {
+	if _, err := f.packedFromOp(context.Background(), &core.WithdrawalOp{Recipient: addr, AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0xzz", Amount: decimal.NewFromInt(1)}, wid, bounds, big.NewInt(7)); err == nil {
 		t.Error("malformed asset accepted")
+	}
+}
+
+func TestWithdrawalFinalizerRejectsInvalidBoundsBeforeChainRead(t *testing.T) {
+	f := &WithdrawalFinalizer{}
+	for _, bounds := range []core.WithdrawalTimeBounds{
+		{FinalizedAt: 1000, ValidUntil: 4599},
+		{FinalizedAt: 1000, ValidUntil: 4601},
+	} {
+		if _, err := f.Pack(context.Background(), nil, [32]byte{}, bounds); err == nil || !strings.Contains(err.Error(), "valid_until") {
+			t.Fatalf("Pack(%+v) error = %v, want bounds rejection", bounds, err)
+		}
+		if err := f.Validate(context.Background(), []byte("{}"), nil, [32]byte{}, bounds); err == nil || !strings.Contains(err.Error(), "valid_until") {
+			t.Fatalf("Validate(%+v) error = %v, want bounds rejection", bounds, err)
+		}
+	}
+}
+
+func TestParseCanonicalUint256(t *testing.T) {
+	for _, value := range []string{"+7", "0007", "-1", ""} {
+		if _, err := parseCanonicalUint256("rotation nonce", value); err == nil {
+			t.Fatalf("non-canonical value %q accepted", value)
+		}
 	}
 }
 
@@ -85,13 +116,17 @@ func TestWithdrawalFinalizerSignUsesAuthorizer(t *testing.T) {
 		authorizerAddr: authorizerAddr,
 	}
 	p := evmPacked{
-		To:           common.HexToAddress("0x000000000000000000000000000000000000b0b0").Hex(),
-		Asset:        common.Address{}.Hex(),
-		Amount:       "1",
-		WithdrawalID: strings.Repeat("11", 32),
-		Deadline:     123,
+		To:            common.HexToAddress("0x000000000000000000000000000000000000b0b0").Hex(),
+		Asset:         common.Address{}.Hex(),
+		Amount:        "1",
+		WithdrawalID:  strings.Repeat("11", 32),
+		FinalizedAt:   123,
+		RotationNonce: "7",
 	}
-	packed := []byte(fmt.Sprintf(`{"to":%q,"asset":%q,"amount":%q,"withdrawalId":%q,"deadline":%d}`, p.To, p.Asset, p.Amount, p.WithdrawalID, p.Deadline))
+	packed, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sig, err := f.Sign(ctx, packed)
 	if err != nil {
 		t.Fatal(err)

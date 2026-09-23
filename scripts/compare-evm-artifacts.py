@@ -11,4 +11,10 @@ for contract in ("Custody", "ConfigRegistry"):
     normalize = lambda path: path.read_text().strip().removeprefix("0x")
     if normalize(current / f"{contract}.bin") != normalize(validated / f"{contract}.bin"):
         sys.exit(f"{contract} bytecode differs from the source-validated revision")
+
+current, validated = (Path(root) / "pkg/blockchain/sol/artifacts" for root in sys.argv[1:])
+if json.loads((current / "custody.json").read_text()) != json.loads((validated / "custody.json").read_text()):
+    sys.exit("Solana custody IDL differs from the source-validated revision")
+if (current / "custody.so").read_bytes() != (validated / "custody.so").read_bytes():
+    sys.exit("Solana custody program differs from the source-validated revision")
 print("Current artifacts match the exact source-validated revision.")

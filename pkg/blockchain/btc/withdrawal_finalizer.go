@@ -3,8 +3,8 @@ package btc
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -24,6 +24,10 @@ import (
 // executionScanBlocks bounds how many recent blocks VerifyExecution scans for
 // the OP_RETURN <withdrawalID> marker.
 const executionScanBlocks = int64(100)
+
+// ErrPreparedWithdrawalRequired prevents callers from signing a canonical
+// transaction without the operation-bound authorization captured by Prepare.
+var ErrPreparedWithdrawalRequired = errors.New("btc: prepared withdrawal API required")
 
 // Config carries the per-chain tunables the finalizer needs.
 type Config struct {
@@ -157,14 +161,13 @@ func (f *WithdrawalFinalizer) resolveScript(pkScriptHex string) ([]byte, bool) {
 // Pack selects vault UTXOs, sizes the fee, and builds the canonical unsigned
 // transaction (recipient, optional change, OP_RETURN <withdrawalID>).
 //
-// deadline is accepted for interface symmetry but deliberately
-// ignored: a Bitcoin transaction has no consensus-level expiry, so the digest
-// carries no time bound. BTC's authorization lifetime is instead governed by the
-// UTXO set (the inputs stop existing once spent) and, for the re-credit path, by
-// a receipt-gated Expired ceremony that requires no local signature share ever
-// existed — see the adapter's AuthorizationDead.
-func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error) {
-	_ = deadline // no consensus expiry on BTC; see doc comment.
+// Time bounds are immutable authorization context but are not a Bitcoin
+// consensus expiry. Once prepared, the exact UTXO-bound transaction may be
+// signed and rebroadcast after ValidUntil.
+func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) ([]byte, error) {
+	if err := bounds.Validate(); err != nil {
+		return nil, err
+	}
 	recipient, amount, err := f.parseOp(ctx, op)
 	if err != nil {
 		return nil, err
@@ -196,8 +199,11 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 // tx matches: output 0 pays the exact recipient/amount, the final output is
 // OP_RETURN <withdrawalID>, any middle output is change to the vault, every
 // input is a confirmed vault UTXO, and the implied fee is within the ceiling.
-func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, deadline int64) error {
-	_, err := f.Prepare(ctx, packed, WithdrawalAuthorization{Operation: op, WithdrawalID: withdrawalID, Deadline: deadline})
+func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) error {
+	if err := bounds.Validate(); err != nil {
+		return err
+	}
+	_, err := f.Prepare(ctx, packed, WithdrawalAuthorization{Operation: op, WithdrawalID: withdrawalID, TimeBounds: bounds})
 	return err
 }
 
@@ -208,31 +214,16 @@ type SigShare struct {
 	Sigs   []string `json:"sigs"`
 }
 
-// Sign retains the core interface method. It captures and fully validates the
-// live previous outputs before signing through the prepared implementation.
-func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, error) {
-	legacyHash := sha256.Sum256(append([]byte("clearnet-sdk/btc/legacy-withdrawal/v1"), packed...))
-	prepared, err := f.prepareTransactionFromCanonical(ctx, packed, preparedOperationWithdrawal, legacyHash)
-	if err != nil {
-		return nil, fmt.Errorf("btc sign: %w", err)
-	}
-	return f.signPrepared(ctx, prepared)
+// Sign cannot carry the operation-bound authorization required by Bitcoin.
+// Call Prepare followed by SignPrepared instead.
+func (f *WithdrawalFinalizer) Sign(context.Context, []byte) ([]byte, error) {
+	return nil, fmt.Errorf("%w: use Prepare and SignPrepared", ErrPreparedWithdrawalRequired)
 }
 
-// Submit retains the core interface method. It recaptures and validates every
-// live input, cryptographically verifies shares and the finalized witnesses,
-// then broadcasts through the prepared implementation.
-func (f *WithdrawalFinalizer) Submit(ctx context.Context, packed []byte, shares [][]byte) (string, error) {
-	legacyHash := sha256.Sum256(append([]byte("clearnet-sdk/btc/legacy-withdrawal/v1"), packed...))
-	prepared, err := f.prepareTransactionFromCanonical(ctx, packed, preparedOperationWithdrawal, legacyHash)
-	if err != nil {
-		return "", fmt.Errorf("btc submit: %w", err)
-	}
-	raw, _, err := f.finalizePrepared(prepared, shares)
-	if err != nil {
-		return "", err
-	}
-	return f.broadcastPrepared(ctx, prepared, raw)
+// Submit cannot verify operation authorization from canonical bytes alone.
+// Call FinalizePrepared followed by BroadcastPrepared instead.
+func (f *WithdrawalFinalizer) Submit(context.Context, []byte, [][]byte) (string, error) {
+	return "", fmt.Errorf("%w: use FinalizePrepared and BroadcastPrepared", ErrPreparedWithdrawalRequired)
 }
 
 // VerifyExecution scans the most recent blocks for a tx carrying

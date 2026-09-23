@@ -2,3 +2,8 @@
 // This file contains constants.
 
 package custody
+
+// Constants defined in the IDL:
+
+// Fixed post-finalization authorization lifetime for this program artifact.
+const WITHDRAWAL_EXECUTION_WINDOW_SECONDS = int64(3600)

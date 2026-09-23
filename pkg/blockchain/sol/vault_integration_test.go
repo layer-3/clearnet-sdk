@@ -102,7 +102,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 		if _, e := signAndSend(ctx, client, []solana.Instruction{ix}, authorityPub, authority, rpc.CommitmentConfirmed, solana.PublicKey{}); e != nil {
 			t.Fatalf("initialize: %v", e)
 		}
-		waitConfig(ctx, t, client, programID)
+		waitConfig(ctx, t, client, programID, signerPubs)
 		t.Logf("initialized Config (signers=%d threshold=%d)", solSignerCount, solThreshold)
 	} else {
 		t.Logf("Config already initialized; reusing")
@@ -113,6 +113,7 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	rotCfg := Config{ChainID: solChainID, Commitment: rpc.CommitmentConfirmed}
 	rotatedSigners := solRotatedSigners(t)
 	ensureFixedSigners(ctx, t, rpcURL, programID, authority, rotCfg, signerPubs, rotatedSigners)
+	waitConfig(ctx, t, client, programID, signerPubs)
 
 	// ── Deposit flow ──────────────────────────────────────────────────────────
 	assets := NewAssetResolver(rpcURL, rpc.CommitmentConfirmed)
@@ -148,15 +149,18 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	recipientPub, _ := solanaPub(recipient)
 	op := &core.WithdrawalOp{Recipient: recipientPub.String(), AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/sol/0/0", Amount: decimal.NewFromBigInt(big.NewInt(40_000_000), -9)}
 
-	// Far-future deadline: the happy path must not expire mid-test.
-	deadline := time.Now().Add(24 * time.Hour).Unix()
-	packed, err := finalizers[0].Pack(ctx, op, wid, deadline)
+	finalizedAt := time.Now().Unix()
+	bounds, err := core.NewWithdrawalTimeBounds(finalizedAt-60, finalizedAt, finalizedAt, time.Minute)
+	if err != nil {
+		t.Fatalf("NewWithdrawalTimeBounds: %v", err)
+	}
+	packed, err := finalizers[0].Pack(ctx, op, wid, bounds)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
 	shares := make([][]byte, 0, len(finalizers))
 	for i, f := range finalizers {
-		if err := f.Validate(ctx, packed, op, wid, deadline); err != nil {
+		if err := f.Validate(ctx, packed, op, wid, bounds); err != nil {
 			t.Fatalf("Validate[%d]: %v", i, err)
 		}
 		s, e := f.Sign(ctx, packed)
@@ -206,13 +210,13 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	splRecipientPub, _ := solanaPub(splRecipient)
 	splOp := &core.WithdrawalOp{Recipient: splRecipientPub.String(), AssetURI: core.AssetURI("yellow://ynet/asset/0x0000000000000000000000000000000000001234/sol/0/" + mint.String()), Amount: decimal.NewFromInt(40)}
 
-	splPacked, err := splFinalizers[0].Pack(ctx, splOp, splWid, deadline)
+	splPacked, err := splFinalizers[0].Pack(ctx, splOp, splWid, bounds)
 	if err != nil {
 		t.Fatalf("SPL Pack: %v", err)
 	}
 	splShares := make([][]byte, 0, len(splFinalizers))
 	for i, f := range splFinalizers {
-		if err := f.Validate(ctx, splPacked, splOp, splWid, deadline); err != nil {
+		if err := f.Validate(ctx, splPacked, splOp, splWid, bounds); err != nil {
 			t.Fatalf("SPL Validate[%d]: %v", i, err)
 		}
 		s, e := f.Sign(ctx, splPacked)
@@ -548,15 +552,24 @@ func waitBalance(ctx context.Context, t *testing.T, client *rpc.Client, pub sola
 	}
 }
 
-func waitConfig(ctx context.Context, t *testing.T, client *rpc.Client, programID solana.PublicKey) {
+func waitConfig(ctx context.Context, t *testing.T, client *rpc.Client, programID solana.PublicKey, want []solana.PublicKey) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		if _, err := fetchConfig(ctx, client, programID, rpc.CommitmentConfirmed); err == nil {
-			return
+		if cfg, err := fetchConfig(ctx, client, programID, rpc.CommitmentFinalized); err == nil {
+			matches := false
+			if len(cfg.Signers) == len(want) {
+				matches = true
+				for i := range cfg.Signers {
+					matches = matches && cfg.Signers[i] == want[i]
+				}
+			}
+			if matches {
+				return
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("Config not visible after initialize")
+			t.Fatal("expected Config signer set not finalized in time")
 		}
 		time.Sleep(time.Second)
 	}

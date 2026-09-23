@@ -1,41 +1,91 @@
 package core
 
-import "time"
-
-// Withdrawal-authorization time bounds.
-//
-// Every withdrawal digest signed by the custody quorum embeds a `deadline`
-// (unix seconds) past which the authorization is void — on EVM/Solana it is a
-// consensus-enforced execution check, on XRPL it caps `LastLedgerSequence`, and
-// clearnet uses it to decide when a reverted/unbroadcast withdrawal may be
-// safely re-credited. Because the deadline is a *digest input*, these values
-// are compile-time constants: they cannot ride the config registry (ADR-017)
-// without opening a digest-divergence window across a rolling restart. Changing
-// them is therefore a coordinated binary upgrade, not a runtime config change.
-//
-// The values are provisional pre-mainnet. They are defined ONCE here in the SDK
-// (clearnet imports the SDK) so custody and clearnet cannot drift.
-const (
-	// MaxBlockAge bounds how stale a finalized block may be and still be
-	// signed/submitted (freshness cutoff on the signing path). It also anchors
-	// the withdrawal validity window: a block older than MaxBlockAge is never
-	// re-signed, so no fresh authorization can be minted past that point.
-	MaxBlockAge = 7 * 24 * time.Hour
-
-	// ExecutionMargin is the slack added on top of MaxBlockAge to cover the time
-	// a fresh authorization needs to be signed, submitted, and confirmed on L1.
-	// It bounds the per-attempt liveness budget on XRPL (see LedgerBudget).
-	ExecutionMargin = 2 * time.Hour
-
-	// WithdrawalValidityWindow is the total lifetime of a withdrawal
-	// authorization measured from the source block's SealedAt. Any signed
-	// digest is dead once SealedAt + WithdrawalValidityWindow has passed.
-	WithdrawalValidityWindow = MaxBlockAge + ExecutionMargin
+import (
+	"fmt"
+	"math"
+	"time"
 )
 
-// WithdrawalDeadline returns the unix-second time bound for a withdrawal whose
-// source block sealed at sealedAt (also unix seconds). This is the single value
-// threaded into every chain's withdrawal digest and enforced on-chain.
-func WithdrawalDeadline(sealedAt int64) int64 {
-	return sealedAt + int64(WithdrawalValidityWindow/time.Second)
+// Withdrawal-authorization time policy. ChallengeDuration is intentionally
+// supplied by custody configuration: it is not an SDK or on-chain constant.
+const (
+	FinalizationAdmissionHorizon = 24 * time.Hour
+	WithdrawalExecutionWindow    = time.Hour
+	ClockSkewTolerance           = 5 * time.Minute
+)
+
+// WithdrawalTimeBounds carries the authenticated finalization time and its
+// deterministic post-finalization execution ceiling. FinalizedAt is included
+// in the clearnet BLS attestation; ValidUntil is always FinalizedAt plus
+// WithdrawalExecutionWindow.
+type WithdrawalTimeBounds struct {
+	FinalizedAt int64
+	ValidUntil  int64
+}
+
+// NewWithdrawalTimeBounds validates a newly received finalized withdrawal.
+// sealedAt, finalizedAt, and localNow are Unix seconds.
+func NewWithdrawalTimeBounds(sealedAt, finalizedAt, localNow int64, challengeDuration time.Duration) (WithdrawalTimeBounds, error) {
+	if sealedAt < 0 {
+		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: sealed_at must be non-negative")
+	}
+	if challengeDuration <= 0 || challengeDuration >= FinalizationAdmissionHorizon || challengeDuration%time.Second != 0 {
+		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: challenge duration must be whole seconds in (0, %s)", FinalizationAdmissionHorizon)
+	}
+	if finalizedAt < sealedAt {
+		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: finalized_at %d before sealed_at %d", finalizedAt, sealedAt)
+	}
+	delay := finalizedAt - sealedAt
+	challengeSeconds := int64(challengeDuration / time.Second)
+	if delay < challengeSeconds {
+		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: finalization delay %ds below challenge duration %ds", delay, challengeSeconds)
+	}
+	if delay > int64(FinalizationAdmissionHorizon/time.Second) {
+		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: finalization delay %ds exceeds admission horizon", delay)
+	}
+	if localNow > math.MaxInt64-int64(ClockSkewTolerance/time.Second) || finalizedAt > localNow+int64(ClockSkewTolerance/time.Second) {
+		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: finalized_at %d exceeds local clock tolerance", finalizedAt)
+	}
+	if localNow > finalizedAt && localNow-finalizedAt > int64(FinalizationAdmissionHorizon/time.Second) {
+		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: finalized_at %d is older than admission horizon", finalizedAt)
+	}
+	if finalizedAt > math.MaxInt64-int64(WithdrawalExecutionWindow/time.Second) {
+		return WithdrawalTimeBounds{}, fmt.Errorf("withdrawal time bounds: valid_until overflow")
+	}
+	bounds := WithdrawalTimeBounds{
+		FinalizedAt: finalizedAt,
+		ValidUntil:  finalizedAt + int64(WithdrawalExecutionWindow/time.Second),
+	}
+	if err := bounds.Validate(); err != nil {
+		return WithdrawalTimeBounds{}, err
+	}
+	return bounds, nil
+}
+
+// Validate checks the chain-independent relationship without consulting a
+// clock or mutable configuration.
+func (b WithdrawalTimeBounds) Validate() error {
+	if b.FinalizedAt < 0 {
+		return fmt.Errorf("withdrawal time bounds: finalized_at must be non-negative")
+	}
+	if b.FinalizedAt > math.MaxInt64-int64(WithdrawalExecutionWindow/time.Second) {
+		return fmt.Errorf("withdrawal time bounds: valid_until overflow")
+	}
+	want := b.FinalizedAt + int64(WithdrawalExecutionWindow/time.Second)
+	if b.ValidUntil != want {
+		return fmt.Errorf("withdrawal time bounds: valid_until %d != finalized_at + %s (%d)", b.ValidUntil, WithdrawalExecutionWindow, want)
+	}
+	return nil
+}
+
+// RequireLive rejects starting a new expiring-chain ceremony after the exact
+// inclusive authorization boundary has passed.
+func (b WithdrawalTimeBounds) RequireLive(localNow int64) error {
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	if localNow > b.ValidUntil {
+		return fmt.Errorf("withdrawal time bounds: authorization expired at %d", b.ValidUntil)
+	}
+	return nil
 }

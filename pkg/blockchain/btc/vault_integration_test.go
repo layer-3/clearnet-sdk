@@ -158,14 +158,14 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 	wid[0], wid[31] = 0xB7, 0xC0
 	op := &core.WithdrawalOp{Recipient: miner, AssetURI: "yellow://ynet/asset/0x0000000000000000000000000000000000001234/btc/0/0", Amount: decimal.NewFromBigInt(big.NewInt(10_000_000), -8)} // 0.1 BTC to the miner addr
 
-	// deadline is accepted but ignored on BTC (no consensus expiry); a
-	// far-future value keeps parity with the other chains' happy-path tests.
-	deadline := time.Now().Add(24 * time.Hour).Unix()
-	packed, err := finalizers[0].Pack(ctx, op, wid, deadline)
+	// Deliberately use a long-expired informational bound: BTC has no consensus
+	// time expiry and must still sign and execute the committed transaction.
+	bounds := core.WithdrawalTimeBounds{FinalizedAt: 0, ValidUntil: 3600}
+	packed, err := finalizers[0].Pack(ctx, op, wid, bounds)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
-	auth := WithdrawalAuthorization{Operation: op, WithdrawalID: wid, Deadline: deadline}
+	auth := WithdrawalAuthorization{Operation: op, WithdrawalID: wid, TimeBounds: bounds}
 	prepared, err := finalizers[0].Prepare(ctx, packed, auth)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)

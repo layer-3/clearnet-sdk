@@ -72,16 +72,16 @@ func NewRotationFinalizer(ctx context.Context, client *ethclient.Client, vaultAd
 }
 
 // evmRotPacked is the canonical rotation payload: the new signer set (ascending)
-// + threshold, and the signer nonce the digest is bound to.
+// + threshold, and the rotation nonce the digest is bound to.
 type evmRotPacked struct {
-	NewSigners   []string `json:"newSigners"` // ascending hex addresses
-	NewThreshold int      `json:"newThreshold"`
-	SignerNonce  string   `json:"signerNonce"` // decimal
+	NewSigners    []string `json:"newSigners"` // ascending hex addresses
+	NewThreshold  int      `json:"newThreshold"`
+	RotationNonce string   `json:"rotationNonce"` // decimal
 }
 
-// Pack reads the live signer nonce and returns the canonical JSON for rotating
+// Pack reads the live rotation nonce and returns the canonical JSON for rotating
 // to newSigners / newThreshold (signers sorted ascending, as Custody requires).
-// opID is ignored: EVM binds rotation replay to the on-chain Custody signerNonce,
+// opID is ignored: EVM binds rotation replay to the on-chain Custody rotationNonce,
 // so the operation identity is not embedded in the payload.
 func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []string, newThreshold int) ([]byte, error) {
 	addrs, err := parseSignerAddresses(newSigners)
@@ -91,17 +91,17 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 	if newThreshold <= 0 || newThreshold > len(addrs) {
 		return nil, fmt.Errorf("evm: threshold %d out of range for %d signers", newThreshold, len(addrs))
 	}
-	nonce, err := f.custody.SignerNonce(&bind.CallOpts{Context: ctx})
+	nonce, err := f.custody.RotationNonce(&bind.CallOpts{Context: ctx})
 	if err != nil {
-		return nil, fmt.Errorf("read signer nonce: %w", err)
+		return nil, fmt.Errorf("read rotation nonce: %w", err)
 	}
-	p := evmRotPacked{NewSigners: addrsToHex(addrs), NewThreshold: newThreshold, SignerNonce: nonce.String()}
+	p := evmRotPacked{NewSigners: addrsToHex(addrs), NewThreshold: newThreshold, RotationNonce: nonce.String()}
 	return json.Marshal(p)
 }
 
 // Validate re-derives the rotation target from newSigners / newThreshold and
 // asserts the packed payload matches, including a re-read of the live nonce to
-// reject a packer that bound a stale or wrong signer nonce.
+// reject a packer that bound a stale or wrong rotation nonce.
 func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []byte, newSigners []string, newThreshold int) error {
 	var got evmRotPacked
 	if err := json.Unmarshal(packed, &got); err != nil {
@@ -115,12 +115,12 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 	if got.NewThreshold != want.NewThreshold || !equalStrings(got.NewSigners, want.NewSigners) {
 		return fmt.Errorf("packed rotation does not match request")
 	}
-	nonce, err := f.custody.SignerNonce(&bind.CallOpts{Context: ctx})
+	nonce, err := f.custody.RotationNonce(&bind.CallOpts{Context: ctx})
 	if err != nil {
-		return fmt.Errorf("read signer nonce: %w", err)
+		return fmt.Errorf("read rotation nonce: %w", err)
 	}
-	if got.SignerNonce != nonce.String() {
-		return fmt.Errorf("packed signer nonce %s != live %s", got.SignerNonce, nonce)
+	if got.RotationNonce != nonce.String() {
+		return fmt.Errorf("packed rotation nonce %s != live %s", got.RotationNonce, nonce)
 	}
 	return nil
 }
@@ -254,9 +254,9 @@ func (f *RotationFinalizer) digestFromPacked(packed []byte) ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, err
 	}
-	nonce, ok := new(big.Int).SetString(p.SignerNonce, 10)
+	nonce, ok := new(big.Int).SetString(p.RotationNonce, 10)
 	if !ok {
-		return [32]byte{}, fmt.Errorf("bad signer nonce %q", p.SignerNonce)
+		return [32]byte{}, fmt.Errorf("bad rotation nonce %q", p.RotationNonce)
 	}
 	return ComputeRotationDigest(f.chainID, f.vaultAddr, addrs, big.NewInt(int64(p.NewThreshold)), nonce), nil
 }

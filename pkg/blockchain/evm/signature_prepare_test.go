@@ -14,15 +14,19 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/layer-3/clearnet-sdk/pkg/core"
+	"github.com/layer-3/clearnet-sdk/pkg/decimal"
 )
 
 type quorumRPC struct {
 	t                      *testing.T
 	signersResult          string
 	thresholdResult        string
+	rotationNonceResult    string
 	issuerSettingsResult   string
 	signersSelector        string
 	thresholdSelector      string
+	rotationNonceSelector  string
 	issuerSettingsSelector string
 	mu                     sync.Mutex
 	callBlocks             []string
@@ -43,6 +47,10 @@ func newQuorumRPC(t *testing.T, signers []common.Address, threshold int) *quorum
 	if err != nil {
 		t.Fatal(err)
 	}
+	rotationNonceResult, err := parsed.Methods["rotationNonce"].Outputs.Pack(big.NewInt(7))
+	if err != nil {
+		t.Fatal(err)
+	}
 	registryABI, err := ConfigRegistryMetaData.GetAbi()
 	if err != nil {
 		t.Fatal(err)
@@ -55,11 +63,28 @@ func newQuorumRPC(t *testing.T, signers []common.Address, threshold int) *quorum
 		t:                      t,
 		signersResult:          hexutil.Encode(signersResult),
 		thresholdResult:        hexutil.Encode(thresholdResult),
+		rotationNonceResult:    hexutil.Encode(rotationNonceResult),
 		issuerSettingsResult:   hexutil.Encode(issuerSettingsResult),
 		signersSelector:        hexutil.Encode(parsed.Methods["signers"].ID),
 		thresholdSelector:      hexutil.Encode(parsed.Methods["threshold"].ID),
+		rotationNonceSelector:  hexutil.Encode(parsed.Methods["rotationNonce"].ID),
 		issuerSettingsSelector: hexutil.Encode(registryABI.Methods["issuerSettings"].ID),
 	}
+}
+
+func (q *quorumRPC) setRotationNonce(n int64) {
+	q.t.Helper()
+	parsed, err := CustodyMetaData.GetAbi()
+	if err != nil {
+		q.t.Fatal(err)
+	}
+	result, err := parsed.Methods["rotationNonce"].Outputs.Pack(big.NewInt(n))
+	if err != nil {
+		q.t.Fatal(err)
+	}
+	q.mu.Lock()
+	q.rotationNonceResult = hexutil.Encode(result)
+	q.mu.Unlock()
 }
 
 func (q *quorumRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +133,10 @@ func (q *quorumRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			result = q.signersResult
 		case strings.HasPrefix(input, q.thresholdSelector):
 			result = q.thresholdResult
+		case strings.HasPrefix(input, q.rotationNonceSelector):
+			q.mu.Lock()
+			result = q.rotationNonceResult
+			q.mu.Unlock()
 		case strings.HasPrefix(input, q.issuerSettingsSelector):
 			q.mu.Lock()
 			q.issuerSettingsCalls++
@@ -175,10 +204,10 @@ func TestEVMPrepareSignatureValidatorsUseExactDigestAndPinnedQuorum(t *testing.T
 		t.Fatal(err)
 	}
 
-	withdrawal := &WithdrawalFinalizer{client: client, custody: custody, chainID: 1, vaultAddr: vault}
+	withdrawal := &WithdrawalFinalizer{client: client, custody: custody, chainID: 1, vaultAddr: vault, assets: testAssetResolver{}}
 	withdrawalPacked, err := json.Marshal(evmPacked{
 		To:    common.HexToAddress("0x0000000000000000000000000000000000000003").Hex(),
-		Asset: common.Address{}.Hex(), Amount: "1", WithdrawalID: strings.Repeat("11", 32), Deadline: 123,
+		Asset: common.Address{}.Hex(), Amount: "1", WithdrawalID: strings.Repeat("11", 32), FinalizedAt: 123, RotationNonce: "7",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +226,7 @@ func TestEVMPrepareSignatureValidatorsUseExactDigestAndPinnedQuorum(t *testing.T
 
 	rotation := &RotationFinalizer{client: client, custody: custody, chainID: 1, vaultAddr: vault}
 	rotationPacked, err := json.Marshal(evmRotPacked{
-		NewSigners: addrsToHex(signers), NewThreshold: 2, SignerNonce: "7",
+		NewSigners: addrsToHex(signers), NewThreshold: 2, RotationNonce: "7",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -215,14 +244,50 @@ func TestEVMPrepareSignatureValidatorsUseExactDigestAndPinnedQuorum(t *testing.T
 	}
 
 	rpcHandler.mu.Lock()
-	defer rpcHandler.mu.Unlock()
-	if len(rpcHandler.callBlocks) != 4 {
-		t.Fatalf("eth_call count = %d, want 4", len(rpcHandler.callBlocks))
+	callBlocks := append([]string(nil), rpcHandler.callBlocks...)
+	rpcHandler.mu.Unlock()
+	if len(callBlocks) != 5 {
+		t.Fatalf("eth_call count = %d, want 5", len(callBlocks))
 	}
-	for i, block := range rpcHandler.callBlocks {
+	for i, block := range callBlocks {
 		if block != "0x2a" {
 			t.Fatalf("eth_call[%d] block = %q, want 0x2a", i, block)
 		}
+	}
+
+	// A signer rotation invalidates the already packed generation. The same
+	// operation can be retried by repacking under the new nonce while its
+	// authenticated withdrawal time bounds remain live.
+	rpcHandler.setRotationNonce(8)
+	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), withdrawalPacked); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("old generation validator error = %v, want stale nonce", err)
+	}
+	bounds := core.WithdrawalTimeBounds{FinalizedAt: 123, ValidUntil: 3723}
+	repacked, err := withdrawal.Pack(context.Background(), &core.WithdrawalOp{
+		Recipient: common.HexToAddress("0x0000000000000000000000000000000000000003").Hex(),
+		AssetURI:  "yellow://ynet/asset/0x0000000000000000000000000000000000001234/evm/1/0",
+		Amount:    decimal.NewFromInt(1),
+	}, [32]byte{1}, bounds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retryPayload evmPacked
+	if err := json.Unmarshal(repacked, &retryPayload); err != nil {
+		t.Fatal(err)
+	}
+	if retryPayload.RotationNonce != "8" {
+		t.Fatalf("repacked rotation nonce = %s, want 8", retryPayload.RotationNonce)
+	}
+	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), repacked); err != nil {
+		t.Fatalf("repacked generation rejected: %v", err)
+	}
+
+	// The caller performs this fresh validation immediately before submit. A
+	// second rotation therefore rejects the collected context rather than
+	// broadcasting signatures from generation 8 under generation 9.
+	rpcHandler.setRotationNonce(9)
+	if _, err := withdrawal.PrepareSignatureValidator(context.Background(), repacked); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("changed pre-submit context error = %v, want stale nonce", err)
 	}
 }
 

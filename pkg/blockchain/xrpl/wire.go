@@ -53,21 +53,20 @@ const maxAcceptableFeeDrops uint64 = 1_000_000
 // canonical withdrawal instead carries a LastLedgerSequence: rippled drops the
 // tx once the network passes that ledger, so each blob dies at the ledger level.
 //
-// The critical correctness property: the budget is per-attempt
-// and small — derived from ExecutionMargin, NOT the full validity window — so
-// every blob a retry can produce dies before SealedAt + MaxBlockAge + margin =
-// deadline. A full-window budget would let a blob signed near the freshness
-// cutoff outlive clearnet's re-credit and double-spend.
+// The critical correctness property is that the budget is per-attempt and
+// small, and every accepted LastLedgerSequence has an estimated close no later
+// than the authenticated withdrawal's ValidUntil. A full-window ledger budget
+// created near the cutoff could otherwise outlive that authorization bound.
 const (
 	// LedgerBudget is the number of ledgers of headroom the builder targets when
 	// setting LastLedgerSequence (~2min at ~4s/ledger).
 	LedgerBudget = uint32(30)
 	// MaxLedgerBudget is the upper bound a follower accepts on (LLS - current):
 	// slack over LedgerBudget for the ledgers that close between build and
-	// validation, still far under the deadline.
+	// validation, still far under ValidUntil.
 	MaxLedgerBudget = uint32(120)
 	// minLedgerBudget is the floor: if fewer than this many ledgers fit before
-	// the deadline, Pack fails and the withdrawal parks and expires cleanly
+	// ValidUntil, Pack fails and the withdrawal parks and expires cleanly
 	// rather than being signed with a near-dead LLS.
 	minLedgerBudget = uint32(5)
 	// assumedLedgerCloseSec is the conservative average ledger close interval
@@ -88,7 +87,7 @@ var canonicalAllowedFields = map[string]struct{}{
 
 // LedgerState is a snapshot of the network's current validated ledger: its index
 // and close time (as a unix timestamp). Used to set and to bound a withdrawal's
-// LastLedgerSequence against its deadline.
+// LastLedgerSequence against its ValidUntil bound.
 type LedgerState struct {
 	ValidatedIndex uint32
 	CloseUnix      int64
@@ -102,11 +101,11 @@ type LedgerStateResolver func(ctx context.Context) (LedgerState, error)
 // signing. In standalone mode (test-only rippled with manual
 // ledger_accept) ledgers do not advance on their own, so LLS-based expiry is
 // meaningless and the field must be ABSENT; otherwise it must fall inside the
-// two-sided band and close before the deadline.
+// two-sided band and close by ValidUntil.
 type llsPolicy struct {
 	standalone bool
 	current    LedgerState
-	deadline   int64 // 0 = no deadline clamp (rotations)
+	validUntil int64 // 0 = no expiry clamp (rotations)
 }
 
 // estimatedCloseUnix estimates when ledger `index` will close, from the current
@@ -116,22 +115,22 @@ func (p llsPolicy) estimatedCloseUnix(index uint32) int64 {
 }
 
 // buildLLS computes the LastLedgerSequence a builder sets: current + budget,
-// where budget is min(LedgerBudget, ledgers that fit before the deadline). It
-// fails if fewer than minLedgerBudget ledgers fit before the deadline — the
+// where budget is min(LedgerBudget, ledgers that fit before ValidUntil). It
+// fails if fewer than minLedgerBudget ledgers fit before ValidUntil — the
 // withdrawal parks and expires cleanly rather than being signed with a near-dead
-// LLS. deadline == 0 (rotations) skips the deadline clamp.
-func buildLLS(state LedgerState, deadline int64) (uint32, error) {
+// LLS. validUntil == 0 (rotations) skips the expiry clamp.
+func buildLLS(state LedgerState, validUntil int64) (uint32, error) {
 	budget := LedgerBudget
-	if deadline != 0 {
-		if deadline <= state.CloseUnix {
-			return 0, fmt.Errorf("xrpl: deadline %d not after current close %d", deadline, state.CloseUnix)
+	if validUntil != 0 {
+		if validUntil <= state.CloseUnix {
+			return 0, fmt.Errorf("xrpl: valid_until %d not after current close %d", validUntil, state.CloseUnix)
 		}
-		if fit := (deadline - state.CloseUnix) / assumedLedgerCloseSec; fit < int64(budget) {
+		if fit := (validUntil - state.CloseUnix) / assumedLedgerCloseSec; fit < int64(budget) {
 			budget = uint32(fit)
 		}
 	}
 	if budget < minLedgerBudget {
-		return 0, fmt.Errorf("xrpl: only %d ledgers of budget before deadline, need %d — withdrawal parks", budget, minLedgerBudget)
+		return 0, fmt.Errorf("xrpl: only %d ledgers of budget before valid_until, need %d — withdrawal parks", budget, minLedgerBudget)
 	}
 	return state.ValidatedIndex + budget, nil
 }
@@ -172,10 +171,29 @@ func (p llsPolicy) checkField(raw any, present bool) error {
 	if lls > p.current.ValidatedIndex+MaxLedgerBudget {
 		return fmt.Errorf("xrpl canonical: LastLedgerSequence %d exceeds current %d + budget %d", lls, p.current.ValidatedIndex, MaxLedgerBudget)
 	}
-	if p.deadline != 0 && p.estimatedCloseUnix(lls) > p.deadline {
-		return fmt.Errorf("xrpl canonical: LastLedgerSequence %d estimated close %d past deadline %d", lls, p.estimatedCloseUnix(lls), p.deadline)
+	if p.validUntil != 0 && p.estimatedCloseUnix(lls) > p.validUntil {
+		return fmt.Errorf("xrpl canonical: LastLedgerSequence %d estimated close %d past valid_until %d", lls, p.estimatedCloseUnix(lls), p.validUntil)
 	}
 	return nil
+}
+
+// WithdrawalLastLedgerSequence extracts the exact ledger expiry committed in a
+// canonical withdrawal body. It is intentionally strict: callers use this
+// value to decide when every signature over that body is consensus-dead.
+func WithdrawalLastLedgerSequence(packed []byte) (uint32, error) {
+	var flat transaction.FlatTransaction
+	if err := json.Unmarshal(packed, &flat); err != nil {
+		return 0, fmt.Errorf("xrpl: decode canonical withdrawal: %w", err)
+	}
+	raw, present := flat["LastLedgerSequence"]
+	if !present {
+		return 0, fmt.Errorf("xrpl: canonical withdrawal missing LastLedgerSequence")
+	}
+	number, ok := raw.(float64)
+	if !ok || number < 0 || number > math.MaxUint32 || math.Trunc(number) != number {
+		return 0, fmt.Errorf("xrpl: canonical withdrawal has invalid LastLedgerSequence %v", raw)
+	}
+	return uint32(number), nil
 }
 
 // Identity is a signer's XRPL classic address + signing pubkey hex.

@@ -1,6 +1,8 @@
 package evm
 
 import (
+	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
@@ -56,9 +58,9 @@ func vectorDigest(td apitypes.TypedData) common.Hash {
 	contract := common.HexToAddress(td.Domain.VerifyingContract)
 	switch td.PrimaryType {
 	case "Execute":
-		return ComputeWithdrawalDigest(chain, contract, addr("to"), addr("asset"), num("amount"), hash("withdrawalId"), num("deadline"))
+		return ComputeWithdrawalDigest(chain, contract, addr("to"), addr("asset"), num("amount"), hash("withdrawalId"), num("finalizedAt"), num("rotationNonce"))
 	case "UpdateSigners":
-		return ComputeRotationDigest(chain, contract, keys("newSigners"), num("newThreshold"), num("signerNonce"))
+		return ComputeRotationDigest(chain, contract, keys("newSigners"), num("newThreshold"), num("rotationNonce"))
 	case "RegisterIssuer":
 		return ComputeConfigRegistryRegistrationDigest(chain, contract, keys("issuerKeys"), num("threshold"))
 	case "SetConfig":
@@ -112,6 +114,32 @@ func TestEIP712CanonicalVectors(t *testing.T) {
 		})
 	}
 }
+
+func TestWithdrawalDigestBindsFinalizedAtAndRotationNonce(t *testing.T) {
+	address := common.HexToAddress("0x1234")
+	base := ComputeWithdrawalDigest(1, address, address, address, big.NewInt(10), [32]byte{1}, big.NewInt(100), big.NewInt(7))
+	if got := ComputeWithdrawalDigest(1, address, address, address, big.NewInt(10), [32]byte{1}, big.NewInt(101), big.NewInt(7)); got == base {
+		t.Fatal("finalizedAt mutation did not change withdrawal digest")
+	}
+	if got := ComputeWithdrawalDigest(1, address, address, address, big.NewInt(10), [32]byte{1}, big.NewInt(100), big.NewInt(8)); got == base {
+		t.Fatal("rotationNonce mutation did not change withdrawal digest")
+	}
+}
+
+func TestExecuteTypeHashAppearsInCustodyBytecode(t *testing.T) {
+	encoded, err := os.ReadFile("artifacts/Custody.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytecode, err := hex.DecodeString(strings.TrimPrefix(strings.TrimSpace(string(encoded)), "0x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	typeHash := crypto.Keccak256([]byte(executeType))
+	if !bytes.Contains(bytecode, typeHash) {
+		t.Fatalf("execute typehash %x not found in Custody bytecode", typeHash)
+	}
+}
 func TestEIP712EveryFieldAndArrayEncoding(t *testing.T) {
 	for _, v := range readTypedVectors(t) {
 		t.Run(v.TypedData.PrimaryType, func(t *testing.T) {
@@ -158,13 +186,16 @@ func TestEIP712InvalidUint256NamesField(t *testing.T) {
 		digest func(*big.Int) common.Hash
 	}{
 		{"amount", func(n *big.Int) common.Hash {
-			return ComputeWithdrawalDigest(1, address, address, address, n, [32]byte{}, good)
+			return ComputeWithdrawalDigest(1, address, address, address, n, [32]byte{}, good, good)
 		}},
-		{"deadline", func(n *big.Int) common.Hash {
-			return ComputeWithdrawalDigest(1, address, address, address, good, [32]byte{}, n)
+		{"finalizedAt", func(n *big.Int) common.Hash {
+			return ComputeWithdrawalDigest(1, address, address, address, good, [32]byte{}, n, good)
+		}},
+		{"rotationNonce", func(n *big.Int) common.Hash {
+			return ComputeWithdrawalDigest(1, address, address, address, good, [32]byte{}, good, n)
 		}},
 		{"newThreshold", func(n *big.Int) common.Hash { return ComputeRotationDigest(1, address, keys, n, good) }},
-		{"signerNonce", func(n *big.Int) common.Hash { return ComputeRotationDigest(1, address, keys, good, n) }},
+		{"rotationNonce", func(n *big.Int) common.Hash { return ComputeRotationDigest(1, address, keys, good, n) }},
 		{"threshold", func(n *big.Int) common.Hash { return ComputeConfigRegistryRegistrationDigest(1, address, keys, n) }},
 		{"expectedNonce", func(n *big.Int) common.Hash {
 			return ComputeConfigRegistrySetConfigDigest(1, address, address, [32]byte{}, [32]byte{}, n)

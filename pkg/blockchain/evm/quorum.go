@@ -134,6 +134,29 @@ type vaultQuorumReader interface {
 	Threshold(*bind.CallOpts) (*big.Int, error)
 }
 
+type vaultWithdrawalQuorumReader interface {
+	vaultQuorumReader
+	RotationNonce(*bind.CallOpts) (*big.Int, error)
+}
+
+// fetchLiveRotationNonce reads the signer-set generation at one explicit block.
+// The returned value is safe to thread through canonical payload derivation
+// without additional per-candidate chain reads.
+func fetchLiveRotationNonce(ctx context.Context, chain quorumBlockNumberReader, custody vaultWithdrawalQuorumReader) (*big.Int, error) {
+	block, err := chain.BlockNumber(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read rotation nonce block number: %w", err)
+	}
+	nonce, err := custody.RotationNonce(&bind.CallOpts{Context: ctx, BlockNumber: new(big.Int).SetUint64(block)})
+	if err != nil {
+		return nil, fmt.Errorf("read rotation nonce: %w", err)
+	}
+	if nonce == nil || nonce.Sign() < 0 || nonce.BitLen() > 256 {
+		return nil, fmt.Errorf("on-chain rotation nonce %v out of uint256 range", nonce)
+	}
+	return nonce, nil
+}
+
 // fetchLiveQuorum reads the vault's current authorized signer set and threshold
 // at one explicit block. Pinning both calls prevents a rotation between them
 // from producing a signer/threshold pair that never existed on chain.
@@ -155,4 +178,33 @@ func fetchLiveQuorum(ctx context.Context, chain quorumBlockNumberReader, custody
 		return nil, 0, fmt.Errorf("on-chain threshold %v out of range for %d signers", thr, len(signers))
 	}
 	return signers, int(thr.Int64()), nil
+}
+
+// fetchLiveWithdrawalQuorum extends the pinned signer/threshold snapshot with
+// the signer-set generation bound into withdrawal signatures.
+func fetchLiveWithdrawalQuorum(ctx context.Context, chain quorumBlockNumberReader, custody vaultWithdrawalQuorumReader) ([]common.Address, int, *big.Int, error) {
+	block, err := chain.BlockNumber(ctx)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("read quorum block number: %w", err)
+	}
+	opts := &bind.CallOpts{Context: ctx, BlockNumber: new(big.Int).SetUint64(block)}
+	signers, err := custody.Signers(opts)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("read signers: %w", err)
+	}
+	thr, err := custody.Threshold(opts)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("read threshold: %w", err)
+	}
+	nonce, err := custody.RotationNonce(opts)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("read rotation nonce: %w", err)
+	}
+	if thr == nil || !thr.IsInt64() || thr.Int64() <= 0 || thr.Int64() > int64(len(signers)) {
+		return nil, 0, nil, fmt.Errorf("on-chain threshold %v out of range for %d signers", thr, len(signers))
+	}
+	if nonce == nil || nonce.Sign() < 0 || nonce.BitLen() > 256 {
+		return nil, 0, nil, fmt.Errorf("on-chain rotation nonce %v out of uint256 range", nonce)
+	}
+	return signers, int(thr.Int64()), nonce, nil
 }

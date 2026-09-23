@@ -97,9 +97,10 @@ type VaultDepositor interface {
 // at construction.
 //
 //   - Pack returns the canonical bytes to be signed for this withdrawal.
-//   - Validate re-derives the trust-bound shape from the op and asserts the
-//     packed bytes match — the defense against a Byzantine packer; every node
-//     runs it before Sign.
+//   - Validate re-derives the operation-bound shape and canonical encoding.
+//     Callers accepting a peer-built body run it before Sign. Chain-state fields
+//     carried by the body, such as EVM/Solana rotation nonce, are checked for
+//     liveness by the concrete finalizer's validation-first collection API.
 //   - Sign produces this node's signature over the packed bytes.
 //   - Submit merges the packed bytes with the collected quorum signatures into
 //     a submittable artifact and broadcasts it. It filters the signatures
@@ -108,15 +109,15 @@ type VaultDepositor interface {
 //   - VerifyExecution reads canonical chain state to answer "already executed?"
 //     for the retry/finalize loop.
 //
-// deadline (unix seconds) is threaded into Pack/Validate: it is a
-// digest input on every chain, so the packed bytes — and thus the signature —
-// bind it. Sign/Submit are unchanged; the packed body already carries it.
+// bounds carries the authenticated FinalizedAt and its exactly derived
+// ValidUntil. Chain implementations bind the appropriate fields into their
+// canonical body; Sign/Submit are unchanged because that body carries them.
 // Chain-specific validation-first collection APIs are exposed by the concrete
 // EVM and Solana finalizers rather than this cross-chain interface; BTC and XRPL
 // use their own prepared/finalized validation models.
 type VaultWithdrawalFinalizer interface {
-	Pack(ctx context.Context, op *WithdrawalOp, withdrawalID [32]byte, deadline int64) ([]byte, error)
-	Validate(ctx context.Context, packed []byte, op *WithdrawalOp, withdrawalID [32]byte, deadline int64) error
+	Pack(ctx context.Context, op *WithdrawalOp, withdrawalID [32]byte, bounds WithdrawalTimeBounds) ([]byte, error)
+	Validate(ctx context.Context, packed []byte, op *WithdrawalOp, withdrawalID [32]byte, bounds WithdrawalTimeBounds) error
 	Sign(ctx context.Context, packed []byte) ([]byte, error)
 	Submit(ctx context.Context, packed []byte, signatures [][]byte) (string, error)
 	VerifyExecution(ctx context.Context, withdrawalID [32]byte) (txID string, executed bool, err error)
@@ -125,7 +126,7 @@ type VaultWithdrawalFinalizer interface {
 // SignerRotationFinalizer rotates the vault's authorized signer set. It is the
 // same build→sign→merge→submit→verify shape as VaultWithdrawalFinalizer, but the
 // signed payload commits to the new signer set + threshold + the chain's local
-// replay token (EVM signerNonce, XRPL account sequence, Solana program nonce)
+// replay token (EVM rotationNonce, XRPL account sequence, Solana program nonce)
 // rather than a withdrawal. Signature collection (mesh) and submitter selection
 // stay with the caller; the implementation owns the node's signer and the
 // chain-specific authorization supplied at construction.
@@ -136,7 +137,7 @@ type VaultWithdrawalFinalizer interface {
 //
 // opID is the caller's unique identifier for this rotation operation (custody's
 // RotationRequest.RequestID). In-place chains bind replay protection on-chain
-// (EVM signerNonce, XRPL account sequence, Solana program nonce) and accept opID
+// (EVM rotationNonce, XRPL account sequence, Solana program nonce) and accept opID
 // only to keep one uniform signature — they do not embed it in the packed
 // payload. BTC has no on-chain op record: it embeds opID as an OP_RETURN marker
 // in the sweep so an external watcher can attribute the swept transaction to
