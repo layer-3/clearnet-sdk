@@ -138,8 +138,13 @@ func TestSolanaPrepareSignatureValidatorsUseExactDigest(t *testing.T) {
 		client: client, programID: programID, configPDA: ConfigPDA(programID),
 		chainID: 1, commitment: rpc.CommitmentConfirmed,
 	}
+	rotationSigners := append(append([]solana.PublicKey(nil), signers...), solana.NewWallet().PublicKey())
 	rotationPacked, err := json.Marshal(rotPacked{
-		NewSigners:   []string{hex.EncodeToString(signers[0][:]), hex.EncodeToString(signers[1][:])},
+		NewSigners: []string{
+			hex.EncodeToString(rotationSigners[0][:]),
+			hex.EncodeToString(rotationSigners[1][:]),
+			hex.EncodeToString(rotationSigners[2][:]),
+		},
 		NewThreshold: 2, RotationNonce: 7,
 	})
 	if err != nil {

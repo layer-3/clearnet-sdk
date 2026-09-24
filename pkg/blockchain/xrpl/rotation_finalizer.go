@@ -256,7 +256,8 @@ func (f *RotationFinalizer) VerifyRotation(_ context.Context, newSigners []strin
 
 // signerEntries builds the SignerListSet SignerEntries (each member weight 1),
 // sorted by account ascending for a deterministic canonical payload. Validates
-// the set is non-empty, duplicate-free, and quorum-consistent.
+// the set is non-empty, duplicate-free, and structurally quorum-consistent.
+// Policy beyond 1 <= k <= n belongs to the caller.
 func signerEntries(newSigners []string, newThreshold int) ([]any, error) {
 	if len(newSigners) == 0 {
 		return nil, fmt.Errorf("xrpl: empty new signer set")

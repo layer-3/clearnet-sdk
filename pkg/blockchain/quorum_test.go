@@ -1,6 +1,7 @@
 package blockchain
 
 import (
+	"errors"
 	"math"
 	"testing"
 )
@@ -36,6 +37,15 @@ func TestValidateMajorityThreshold(t *testing.T) {
 			err := ValidateMajorityThreshold(tt.threshold, tt.signerCount)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ValidateMajorityThreshold(%d, %d) error = %v, wantErr %v", tt.threshold, tt.signerCount, err, tt.wantErr)
+			}
+			if tt.wantErr {
+				var majorityErr *MajorityThresholdError
+				if !errors.As(err, &majorityErr) {
+					t.Fatalf("ValidateMajorityThreshold(%d, %d) error type = %T, want *MajorityThresholdError", tt.threshold, tt.signerCount, err)
+				}
+				if majorityErr.Threshold != tt.threshold || majorityErr.SignerCount != tt.signerCount {
+					t.Fatalf("MajorityThresholdError = %+v, want threshold=%d signerCount=%d", majorityErr, tt.threshold, tt.signerCount)
+				}
 			}
 		})
 	}
