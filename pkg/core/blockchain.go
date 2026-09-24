@@ -132,8 +132,14 @@ type VaultWithdrawalFinalizer interface {
 // chain-specific authorization supplied at construction.
 //
 // newSigners is the chain-native encoding of the incoming set — EVM/XRPL
-// addresses, BTC 33-byte compressed pubkeys (hex), Solana ed25519 pubkeys (hex)
-// — matching custody's RotationRequest. newThreshold is the new k-of-n quorum.
+// addresses, BTC 33-byte compressed pubkeys (hex), and Solana ed25519 pubkeys
+// (base58 or 32-byte hex) — matching custody's RotationRequest. Implementations
+// normalize aliases and ordering into their canonical packed representation.
+// newThreshold is the new k-of-n quorum.
+// Threshold policy is chain- and caller-specific: the EVM and Solana custody
+// implementations require a strict majority, while the generic BTC and XRPL
+// implementations accept any structurally valid k-of-n tuple so consumers can
+// layer their own policy (custody uses the stronger 3t > 2N rule).
 //
 // opID is the caller's unique identifier for this rotation operation (custody's
 // RotationRequest.RequestID). In-place chains bind replay protection on-chain
@@ -148,12 +154,14 @@ type VaultWithdrawalFinalizer interface {
 // of the signer set, so rotation is a sweep of every old-vault UTXO into the
 // newly-derived vault. The BTC implementation hides that behind the same
 // interface via a vault store supplied at construction (it pivots to the new
-// vault on confirmation); to callers all four chains rotate identically.
+// vault on confirmation); to callers all four chains expose the same lifecycle
+// even though target-validity policy remains chain- and caller-specific.
 //
 //   - Pack returns the canonical bytes to be signed for this rotation.
 //   - Validate re-derives the trust-bound shape and asserts the packed bytes
 //     match — the Byzantine-packer defense; every node runs it before Sign.
-//   - Sign produces this node's signature over the packed bytes.
+//   - Sign produces this node's signature over the chain-specific digest
+//     derived from the canonical target encoded by the packed payload.
 //   - Submit merges the collected signatures against the live (outgoing) signer
 //     set and broadcasts the rotation. Idempotent against an already-applied
 //     rotation.

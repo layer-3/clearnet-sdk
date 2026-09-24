@@ -94,8 +94,9 @@ func DepositAddress(accountURI string, threshold int, pubkeys [][]byte, net *cha
 	return addr, redeem, nil
 }
 
-// sortedPubkeys validates the key set and returns BIP-67 (lexicographically)
-// sorted copies of the compressed pubkeys.
+// sortedPubkeys validates the structurally valid k-of-n key set and returns
+// BIP-67 (lexicographically) sorted copies of the compressed pubkeys. Quorum
+// policy beyond 1 <= k <= n belongs to the caller.
 func sortedPubkeys(threshold int, pubkeys [][]byte) ([][]byte, error) {
 	if threshold < 1 || threshold > len(pubkeys) {
 		return nil, fmt.Errorf("btc: threshold %d out of range for %d keys", threshold, len(pubkeys))

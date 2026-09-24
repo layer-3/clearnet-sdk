@@ -225,8 +225,9 @@ func TestEVMPrepareSignatureValidatorsUseExactDigestAndPinnedQuorum(t *testing.T
 	}
 
 	rotation := &RotationFinalizer{client: client, custody: custody, chainID: 1, vaultAddr: vault}
+	rotationSigners := append(append([]common.Address(nil), signers...), common.HexToAddress("0x0000000000000000000000000000000000000003"))
 	rotationPacked, err := json.Marshal(evmRotPacked{
-		NewSigners: addrsToHex(signers), NewThreshold: 2, RotationNonce: "7",
+		NewSigners: addrsToHex(rotationSigners), NewThreshold: 2, RotationNonce: "7",
 	})
 	if err != nil {
 		t.Fatal(err)

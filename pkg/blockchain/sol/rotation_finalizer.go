@@ -13,6 +13,7 @@ import (
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/rpc"
 
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain"
 	"github.com/layer-3/clearnet-sdk/pkg/blockchain/sol/custody"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
@@ -39,6 +40,9 @@ type RotationFinalizer struct {
 }
 
 var _ core.SignerRotationFinalizer = (*RotationFinalizer)(nil)
+
+// maxRotationSigners mirrors the custody program's MAX_SIGNERS account bound.
+const maxRotationSigners = 16
 
 // NewRotationFinalizer builds the finalizer. signer is this node's ed25519
 // custody key (one quorum share); feePayer pays for and submits the
@@ -117,6 +121,13 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 	if err := json.Unmarshal(packed, &got); err != nil {
 		return fmt.Errorf("sol: decode packed: %w", err)
 	}
+	gotPubs, err := parseRotationSigners(got.NewSigners)
+	if err != nil {
+		return err
+	}
+	if _, err := checkThreshold(int(got.NewThreshold), len(gotPubs)); err != nil {
+		return err
+	}
 	pubs, err := parseRotationSigners(newSigners)
 	if err != nil {
 		return err
@@ -189,6 +200,9 @@ func (f *RotationFinalizer) Submit(ctx context.Context, packed []byte, shares []
 	newPubs, err := parseRotationSigners(p.NewSigners)
 	if err != nil {
 		return "", err
+	}
+	if _, err := checkThreshold(int(p.NewThreshold), len(newPubs)); err != nil {
+		return "", fmt.Errorf("submit target: %w", err)
 	}
 	if _, done, _ := f.VerifyRotation(ctx, p.NewSigners, int(p.NewThreshold)); done {
 		return "", nil
@@ -292,7 +306,11 @@ func (f *RotationFinalizer) digestFromPacked(packed []byte) ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, err
 	}
-	commitment := SignersCommitment(pubs, p.NewThreshold)
+	threshold, err := checkThreshold(int(p.NewThreshold), len(pubs))
+	if err != nil {
+		return [32]byte{}, err
+	}
+	commitment := SignersCommitment(pubs, threshold)
 	return RotateDigest(f.chainID, f.programID, f.configPDA, commitment, p.RotationNonce), nil
 }
 
@@ -300,8 +318,11 @@ func (f *RotationFinalizer) digestFromPacked(packed []byte) ([32]byte, error) {
 // into solana pubkeys sorted ascending — the order the program stores and the
 // commitment binds. Rejects duplicates.
 func parseRotationSigners(newSigners []string) ([]solana.PublicKey, error) {
-	if len(newSigners) == 0 {
-		return nil, fmt.Errorf("sol: empty new signer set")
+	if len(newSigners) < 3 {
+		return nil, fmt.Errorf("sol: need at least 3 signers, got %d", len(newSigners))
+	}
+	if len(newSigners) > maxRotationSigners {
+		return nil, fmt.Errorf("sol: too many signers (%d; max %d)", len(newSigners), maxRotationSigners)
 	}
 	out := make([]solana.PublicKey, 0, len(newSigners))
 	seen := make(map[solana.PublicKey]struct{}, len(newSigners))
@@ -309,6 +330,9 @@ func parseRotationSigners(newSigners []string) ([]solana.PublicKey, error) {
 		pk, err := parsePubkey(s)
 		if err != nil {
 			return nil, err
+		}
+		if pk.IsZero() {
+			return nil, fmt.Errorf("sol: default signer is not allowed")
 		}
 		if _, dup := seen[pk]; dup {
 			return nil, fmt.Errorf("sol: duplicate signer %s", pk)
@@ -333,11 +357,14 @@ func parsePubkey(s string) (solana.PublicKey, error) {
 }
 
 func checkThreshold(newThreshold, n int) (uint8, error) {
-	if newThreshold <= 0 || newThreshold > n {
-		return 0, fmt.Errorf("sol: threshold %d out of range for %d signers", newThreshold, n)
+	if n < 3 {
+		return 0, fmt.Errorf("sol: need at least 3 signers, got %d", n)
 	}
-	if n > 255 {
-		return 0, fmt.Errorf("sol: too many signers (%d)", n)
+	if n > maxRotationSigners {
+		return 0, fmt.Errorf("sol: too many signers (%d; max %d)", n, maxRotationSigners)
+	}
+	if err := blockchain.ValidateMajorityThreshold(newThreshold, n); err != nil {
+		return 0, fmt.Errorf("sol: %w", err)
 	}
 	return uint8(newThreshold), nil
 }
