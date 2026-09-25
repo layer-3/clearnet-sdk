@@ -1,18 +1,21 @@
 import { Buffer } from "node:buffer";
+import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vite";
 import type { Plugin, ViteDevServer } from "vite";
 
+const custodyConfig = readCustodyConfig();
 const rpcTarget = process.env.BTC_RPC_URL ?? "http://127.0.0.1:18443";
-const rpcUser = process.env.BTC_RPC_USER ?? "sdk";
-const rpcPass = process.env.BTC_RPC_PASS ?? "sdk";
+const rpcUser = process.env.BTC_RPC_USER ?? (custodyConfig === undefined ? "sdk" : "devnet");
+const rpcPass = process.env.BTC_RPC_PASS ?? (custodyConfig === undefined ? "sdk" : "devnet");
 const rpcWallet = process.env.BTC_RPC_WALLET ?? "sdk";
 const rpcAuth = Buffer.from(`${rpcUser}:${rpcPass}`).toString("base64");
 const rpcBaseUrl = trimTrailingSlash(rpcTarget);
 
 export default defineConfig({
-  plugins: [bitcoinElectrsFacade()],
+  plugins: [custodyDevnetConfig(), bitcoinElectrsFacade()],
   server: {
     cors: true,
     proxy: {
@@ -29,6 +32,65 @@ export default defineConfig({
     },
   },
 });
+
+interface CustodyConfig {
+  depositAddress: string;
+  network: string;
+  pubkeys: string[];
+  threshold: number;
+}
+
+function custodyDevnetConfig(): Plugin {
+  return {
+    name: "custody-devnet-config",
+    configureServer(server: ViteDevServer) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url?.split("?", 1)[0] !== "/custody-config") {
+          next();
+          return;
+        }
+        if (custodyConfig === undefined) {
+          sendJson(res, 503, {
+            error: "custody testenv/btc.env was not found; run `make start` in the custody repository",
+          });
+          return;
+        }
+        sendJson(res, 200, custodyConfig);
+      });
+    },
+  };
+}
+
+function readCustodyConfig(): CustodyConfig | undefined {
+  const path = process.env.CUSTODY_BTC_ENV ?? fileURLToPath(
+    new URL("../../../../../custody/testenv/btc.env", import.meta.url),
+  );
+  let source: string;
+  try {
+    source = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  const values = new Map<string, string>();
+  for (const line of source.split(/\r?\n/u)) {
+    const match = line.match(/^([A-Z0-9_]+)=(.*)$/u);
+    if (match?.[1] !== undefined && match[2] !== undefined) {
+      values.set(match[1], match[2]);
+    }
+  }
+  const threshold = Number(values.get("BTC_THRESHOLD"));
+  const pubkeys = values.get("BTC_PUBKEYS_CSV")?.split(",").filter(Boolean);
+  const depositAddress = values.get("BTC_DEPOSIT_ADDRESS");
+  const network = values.get("BTC_NETWORK");
+  if (
+    !Number.isSafeInteger(threshold) || threshold <= 0 ||
+    pubkeys === undefined || pubkeys.length === 0 ||
+    depositAddress === undefined || network === undefined
+  ) {
+    return undefined;
+  }
+  return { depositAddress, network, pubkeys, threshold };
+}
 
 function bitcoinElectrsFacade(): Plugin {
   return {

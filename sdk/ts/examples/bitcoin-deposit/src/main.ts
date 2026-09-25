@@ -37,6 +37,14 @@ let signer: BitcoinSigner | undefined;
 let depositor: BitcoinVaultDepositor | undefined;
 let xverseWallet: XverseWallet | undefined;
 let lastRef: string | undefined;
+let custodyConfig: CustodyConfig | undefined;
+
+interface CustodyConfig {
+  depositAddress: string;
+  network: BitcoinNetwork;
+  pubkeys: string[];
+  threshold: number;
+}
 
 generateButton.addEventListener("click", () => {
   generateKeys();
@@ -76,8 +84,30 @@ verifyButton.addEventListener("click", () => {
 });
 
 initializeXverseRpcUrl();
-generateKeys();
-writeLog("Generate keys, fund a signer, then submit a native BTC deposit.");
+void initialize();
+
+async function initialize(): Promise<void> {
+  generateKeys();
+  try {
+    const response = await fetch("/custody-config");
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    custodyConfig = (await response.json()) as CustodyConfig;
+    setInput("network", custodyConfig.network);
+    setInput("threshold", String(custodyConfig.threshold));
+    setTextarea("vault-pubkeys", custodyConfig.pubkeys.join("\n"));
+    writeLog(
+        `Loaded custody devnet ${custodyConfig.threshold}-of-${custodyConfig.pubkeys.length} configuration\n` +
+        `expected deposit address: ${custodyConfig.depositAddress}\n` +
+        "Fund a signer, submit a deposit, then mine blocks as needed.",
+    );
+  } catch {
+    setTextarea("vault-pubkeys", generateVaultPubkeys(3).join("\n"));
+    setInput("threshold", "2");
+    writeLog("Custody devnet configuration not found; using a standalone 2-of-3 demo vault.");
+  }
+}
 
 function initializeXverseRpcUrl(): void {
   const input = mustElement<HTMLInputElement>("xverse-rpc-url");
@@ -90,7 +120,6 @@ function generateKeys(): void {
   const local = createLocalBitcoinSigner();
   signer = local.signer;
   setInput("depositor-private-key", local.privateKeyHex);
-  setTextarea("vault-pubkeys", generateVaultPubkeys(3).join("\n"));
   depositor = undefined;
   lastRef = undefined;
   verifyButton.disabled = true;
@@ -367,6 +396,14 @@ function createDepositor(depositSigner?: BitcoinSigner): BitcoinVaultDepositor {
     config.signer = depositSigner;
   }
   depositor = new BitcoinVaultDepositor(config);
+  if (
+    custodyConfig !== undefined &&
+    depositor.depositAddress() !== custodyConfig.depositAddress
+  ) {
+    throw new Error(
+      `Refusing deposit: derived address ${depositor.depositAddress()} does not match active custody address ${custodyConfig.depositAddress}`,
+    );
+  }
   return depositor;
 }
 
