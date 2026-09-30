@@ -62,29 +62,31 @@ func normalizeDepositAssetAddress(assetAddress string) string {
 // dest.Account via a `ynet-account` memo carrying the 20-byte account and the
 // 32-byte ADR-015 dest.Ref. assetAddress is "" for native or "CUR.rIssuer" for
 // an issued currency.
-func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (string, error) {
+// DepositID == TxHash (the upper-case transaction hash). TODO: XRPL deposit ID
+// matching custody's TxID.
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.SubmitDepositResult, error) {
 	memo, err := accountMemo(dest)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	assetAddress = normalizeDepositAssetAddress(assetAddress)
 	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	if amount.Sign() <= 0 {
-		return "", fmt.Errorf("xrpl: amount must be positive")
+		return core.SubmitDepositResult{}, fmt.Errorf("xrpl: amount must be positive")
 	}
 	decimals, err := d.assets.AssetDecimals(ctx, assetAddress)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	baseUnits, err := blockchain.DecimalToBaseUnits(amount, decimals)
 	if err != nil {
-		return "", fmt.Errorf("xrpl: amount: %w", err)
+		return core.SubmitDepositResult{}, fmt.Errorf("xrpl: amount: %w", err)
 	}
 	xrplAmount, err := currencyAmountFromBaseUnits(assetAddress, baseUnits, decimals)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 
 	payment := transaction.Payment{
@@ -97,29 +99,30 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 	}
 	flatTx := payment.Flatten()
 	if err := ensureNetworkID(d.client); err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	if err := d.client.Autofill(&flatTx); err != nil {
-		return "", fmt.Errorf("xrpl: autofill: %w", err)
+		return core.SubmitDepositResult{}, fmt.Errorf("xrpl: autofill: %w", err)
 	}
 
 	blob, err := signSingle(ctx, d.signer, d.id, flatTx)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	hash, err := computeTxHash(blob)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	result, err := d.client.SubmitTxBlob(blob, false)
 	if err != nil {
-		return "", fmt.Errorf("xrpl: submit: %w", err)
+		return core.SubmitDepositResult{}, fmt.Errorf("xrpl: submit: %w", err)
 	}
 	switch result.EngineResult {
 	case "tesSUCCESS", "terQUEUED":
-		return hashHex(hash), nil
+		id := hashHex(hash)
+		return core.SubmitDepositResult{TxHash: id, DepositID: id}, nil
 	default:
-		return "", fmt.Errorf("xrpl: deposit rejected: %s - %s", result.EngineResult, result.EngineResultMessage)
+		return core.SubmitDepositResult{}, fmt.Errorf("xrpl: deposit rejected: %s - %s", result.EngineResult, result.EngineResultMessage)
 	}
 }
 
@@ -144,13 +147,12 @@ func accountMemo(dest core.DepositDestination) (types.MemoWrapper, error) {
 	}}, nil
 }
 
-// VerifyDeposit reports the on-chain status of the deposit txID. XRPL finality
-// is binary — a validated transaction cannot be reorged — so minConf is not a
-// depth here: a validated tx is DepositConfirmed, one found but not yet
-// validated is DepositPending, and an unknown hash (never submitted, or dropped
-// before validation) is DepositAbsent.
-func (d *Depositor) VerifyDeposit(_ context.Context, txID string, _ uint64) (core.DepositStatus, error) {
-	res, err := d.client.Request(&transactions.TxRequest{Transaction: txID})
+// ChainDepositStatus reports the on-chain status of the deposit identified by
+// txHash; depositId is the same hash and unused. XRPL finality is binary, so
+// minConf is not a depth: a validated tx is DepositConfirmed, a found but
+// unvalidated one DepositPending, an unknown hash DepositAbsent.
+func (d *Depositor) ChainDepositStatus(_ context.Context, txHash, _ string, _ uint64) (core.DepositStatus, error) {
+	res, err := d.client.Request(&transactions.TxRequest{Transaction: txHash})
 	if err != nil {
 		if strings.Contains(err.Error(), "txnNotFound") {
 			return core.DepositAbsent, nil

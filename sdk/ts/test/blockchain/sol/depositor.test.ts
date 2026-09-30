@@ -35,6 +35,7 @@ import type {
   SolanaSigner,
   SolanaSubmitDepositInput,
   SubmitDepositOptions,
+  SubmitDepositResult,
   VaultDepositor,
 } from "../../../src/index.js";
 
@@ -73,7 +74,10 @@ describe("SolanaVaultDepositor", () => {
       VaultDepositor<SolanaSubmitDepositInput>
     >();
     expectTypeOf<SolanaVaultDepositor["prepareDeposit"]>().toBeFunction();
-    expectTypeOf<string>().toEqualTypeOf<string>();
+    expectTypeOf<SubmitDepositResult>().toEqualTypeOf<{
+      txHash: string;
+      depositId: string;
+    }>();
     expectTypeOf<DepositStatus>().toEqualTypeOf<
       "absent" | "pending" | "confirmed"
     >();
@@ -120,7 +124,8 @@ describe("SolanaVaultDepositor", () => {
       { onSubmitted },
     );
 
-    expect(ref).toEqual(txIDForSignature(SIGNATURE));
+    expect(ref.txHash).toEqual(txIDForSignature(SIGNATURE));
+    expect(ref.depositId).toEqual(txIDForSignature(SIGNATURE));
     expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(ref);
 
     const tx = signedTransaction(signer);
@@ -158,7 +163,8 @@ describe("SolanaVaultDepositor", () => {
       destination: { account: ACCOUNT },
     });
 
-    expect(ref).toEqual(txIDForSignature(SIGNATURE));
+    expect(ref.txHash).toEqual(txIDForSignature(SIGNATURE));
+    expect(ref.depositId).toEqual(txIDForSignature(SIGNATURE));
 
     const instruction = signedTransaction(signer).instructions[0]!;
     expect(instruction.programId.toBase58()).toBe(EXPECTED_PROGRAM_ID);
@@ -365,7 +371,7 @@ describe("SolanaVaultDepositor", () => {
     ).rejects.toMatchObject({
       code: "RPC_ERROR",
       cause,
-      txID: undefined,
+      txHash: undefined,
     });
     expect(onSubmitted).not.toHaveBeenCalled();
   });
@@ -405,7 +411,7 @@ describe("SolanaVaultDepositor", () => {
       }),
     ).rejects.toMatchObject({
       code: "RPC_ERROR",
-      txID: expectedRef,
+      txHash: expectedRef,
       cause: rpcError,
     });
   });
@@ -427,7 +433,7 @@ describe("SolanaVaultDepositor", () => {
       }),
     ).rejects.toMatchObject({
       code: "TX_REVERTED",
-      txID: expectedRef,
+      txHash: expectedRef,
     });
   });
 
@@ -448,7 +454,7 @@ describe("SolanaVaultDepositor", () => {
     );
     const assertion = expect(promise).rejects.toMatchObject({
       code: "RECEIPT_TIMEOUT",
-      txID: expectedRef,
+      txHash: expectedRef,
     });
     await vi.advanceTimersByTimeAsync(1_000);
     await assertion;
@@ -478,7 +484,7 @@ describe("SolanaVaultDepositor", () => {
     );
     const assertion = expect(promise).rejects.toMatchObject({
       code: "RECEIPT_TIMEOUT",
-      txID: expectedRef,
+      txHash: expectedRef,
     });
     await vi.advanceTimersByTimeAsync(1);
     await assertion;
@@ -530,7 +536,7 @@ describe("SolanaVaultDepositor", () => {
     );
     const assertion = expect(promise).rejects.toMatchObject({
       code: "RECEIPT_TIMEOUT",
-      txID: expectedRef,
+      txHash: expectedRef,
     });
     await vi.advanceTimersByTimeAsync(1_000);
     await assertion;
@@ -540,37 +546,37 @@ describe("SolanaVaultDepositor", () => {
     const depositor = createDepositor(createSigner());
 
     stubSignatureStatus({ confirmationStatus: "confirmed" });
-    await expect(depositor.verifyDeposit(txIDForSignature(SIGNATURE), 0)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 0)).resolves.toBe(
       "confirmed",
     );
 
     stubSignatureStatus({ confirmationStatus: "confirmed" });
-    await expect(depositor.verifyDeposit(txIDForSignature(SIGNATURE), 1)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 1)).resolves.toBe(
       "pending",
     );
 
     stubSignatureStatus({ confirmationStatus: "finalized" });
-    await expect(depositor.verifyDeposit(txIDForSignature(SIGNATURE), 1n)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 1n)).resolves.toBe(
       "confirmed",
     );
 
     stubSignatureStatus({ confirmationStatus: "finalized" });
     await expect(
-      depositor.verifyDeposit(txIDForSignature(SIGNATURE), 1n << 80n),
+      depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 1n << 80n),
     ).resolves.toBe("confirmed");
 
     stubSignatureStatus({ confirmationStatus: "processed" });
-    await expect(depositor.verifyDeposit(txIDForSignature(SIGNATURE), 0)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 0)).resolves.toBe(
       "pending",
     );
 
     stubSignatureStatus(null);
-    await expect(depositor.verifyDeposit(txIDForSignature(SIGNATURE), 0)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 0)).resolves.toBe(
       "absent",
     );
 
     stubSignatureStatus({ confirmationStatus: "finalized", err: { InstructionError: [0, "Custom"] } });
-    await expect(depositor.verifyDeposit(txIDForSignature(SIGNATURE), 0)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 0)).resolves.toBe(
       "absent",
     );
   });
@@ -581,33 +587,37 @@ describe("SolanaVaultDepositor", () => {
     const depositor = createDepositor(createSigner());
 
     await expect(
-      depositor.verifyDeposit("bad sig", 0),
+      depositor.chainDepositStatus("bad sig", "bad sig", 0),
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(
-      depositor.verifyDeposit("0x1234", 0),
+      depositor.chainDepositStatus("0x1234", "0x1234", 0),
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(
-      depositor.verifyDeposit(bs58.encode(new Uint8Array(63).fill(9)), 0),
+      depositor.chainDepositStatus(
+        bs58.encode(new Uint8Array(63).fill(9)),
+        bs58.encode(new Uint8Array(63).fill(9)),
+        0,
+      ),
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(
-      depositor.verifyDeposit(txIDForSignature(SIGNATURE), -1),
+      depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), -1),
     ).rejects.toMatchObject({ code: "INVALID_CONFIRMATIONS" });
     await expect(
-      depositor.verifyDeposit(txIDForSignature(SIGNATURE), 1.5),
+      depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 1.5),
     ).rejects.toMatchObject({ code: "INVALID_CONFIRMATIONS" });
 
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("preserves txID when verifyDeposit status lookup fails", async () => {
+  it("preserves txHash when chainDepositStatus status lookup fails", async () => {
     const rpcError = new Error("node offline");
     stubRpcFailure(rpcError);
     const depositor = createDepositor(createSigner());
     const ref = txIDForSignature(SIGNATURE);
 
-    await expect(depositor.verifyDeposit(ref, 0)).rejects.toMatchObject({
+    await expect(depositor.chainDepositStatus(ref, ref, 0)).rejects.toMatchObject({
       code: "RPC_ERROR",
-      txID: ref,
+      txHash: ref,
       cause: rpcError,
     });
   });

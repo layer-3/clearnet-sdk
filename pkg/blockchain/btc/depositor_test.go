@@ -203,7 +203,7 @@ func TestDepositorSendsToGenericAddressWithVersion1Marker(t *testing.T) {
 		ScriptPubKey:  hex.EncodeToString(depositor.sender.sourceScript),
 	}}
 	accountAddr, account := depositorTestAccount(0xaa)
-	txID, err := depositor.SubmitDeposit(ctx, "", decimal.RequireFromString("0.0001"), core.DepositDestination{Account: account})
+	result, err := depositor.SubmitDeposit(ctx, "", decimal.RequireFromString("0.0001"), core.DepositDestination{Account: account})
 	if err != nil {
 		t.Fatalf("SubmitDeposit: %v", err)
 	}
@@ -215,8 +215,11 @@ func TestDepositorSendsToGenericAddressWithVersion1Marker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if txID != tx.TxHash().String() {
-		t.Fatalf("SubmitDeposit txid = %s, local = %s", txID, tx.TxHash())
+	if result.TxHash != tx.TxHash().String() {
+		t.Fatalf("SubmitDeposit txid = %s, local = %s", result.TxHash, tx.TxHash())
+	}
+	if result.DepositID != result.TxHash {
+		t.Fatalf("SubmitDeposit DepositID = %s, want == TxHash %s", result.DepositID, result.TxHash)
 	}
 
 	wantAddress, wantScript := genericDepositTestAddress(t, 2, vaultKeys, net)
@@ -461,8 +464,8 @@ func TestDepositorBroadcastAlreadyAcceptedIsIdempotent(t *testing.T) {
 				if err != nil {
 					t.Fatalf("SubmitDeposit: %v", err)
 				}
-				if got != localTxID {
-					t.Fatalf("SubmitDeposit txid = %q, want locally calculated %q", got, localTxID)
+				if got.TxHash != localTxID {
+					t.Fatalf("SubmitDeposit txid = %q, want locally calculated %q", got.TxHash, localTxID)
 				}
 			} else {
 				if err == nil {
@@ -518,7 +521,7 @@ func TestDepositorSubmitValidationRemainsDepositSpecific(t *testing.T) {
 	}
 }
 
-func TestDepositorVerifyDepositStatusCompatibility(t *testing.T) {
+func TestDepositorChainDepositStatusCompatibility(t *testing.T) {
 	txID := strings.Repeat("a", 64)
 	rpc := &depositorTestRPC{}
 	signer, vaultKeys := depositorTestVaultKeys(t)
@@ -546,9 +549,9 @@ func TestDepositorVerifyDepositStatusCompatibility(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rpc.rawTx, rpc.rawErr = tc.raw, tc.err
-			got, err := depositor.VerifyDeposit(context.Background(), txID, tc.minConf)
+			got, err := depositor.ChainDepositStatus(context.Background(), txID, txID, tc.minConf)
 			if (err != nil) != tc.wantErr || got != tc.want {
-				t.Fatalf("VerifyDeposit = (%v,%v), want (%v,error=%v)", got, err, tc.want, tc.wantErr)
+				t.Fatalf("ChainDepositStatus = (%v,%v), want (%v,error=%v)", got, err, tc.want, tc.wantErr)
 			}
 			if tc.err != nil && tc.wantErr && !errors.Is(err, tc.err) {
 				t.Fatalf("error %v does not wrap %v", err, tc.err)

@@ -6,12 +6,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"math/big"
 	"os"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -118,7 +120,17 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
-	t.Logf("deposit tx %s", depRef)
+	chainID, err := client.ChainID(ctx)
+	if err != nil {
+		t.Fatalf("chain id: %v", err)
+	}
+	if want := DepositID(chainID, custodyAddr, account, big.NewInt(0)); depRef.DepositID != want {
+		t.Fatalf("DepositID = %s, want %s", depRef.DepositID, want)
+	}
+	if st, err := depositor.ChainDepositStatus(ctx, depRef.TxHash, depRef.DepositID, 1); err != nil || st != core.DepositConfirmed {
+		t.Fatalf("ChainDepositStatus = (%v, %v), want confirmed", st, err)
+	}
+	t.Logf("deposit tx %s id %s", depRef.TxHash, depRef.DepositID)
 
 	// ── Withdrawal flow (the quorum runs in-process) ──────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, len(signers))
@@ -231,6 +243,199 @@ func TestIntegrationEVM_DepositAndWithdraw(t *testing.T) {
 	} else if !done {
 		t.Fatal("rotation not reported done")
 	}
+}
+
+// The deposit nonce flow against a real chain: consecutive nonces, a
+// non-default key, the pending-to-confirmed transition, a wrong ID, a stale
+// nonce, and an ERC-20 retry that sends no second approve.
+func TestIntegrationEVM_DepositNonceFlow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	client, err := ethclient.Dial(envOr("EVM_RPC_URL", defaultAnvilRPC))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	deployerKey, err := crypto.HexToECDSA(envOr("EVM_DEPLOYER_KEY", defaultAnvilDeployer))
+	if err != nil {
+		t.Fatalf("parse deployer key: %v", err)
+	}
+	deployer := sign.NewKeySignerFromECDSA(deployerKey)
+	depositorAddr := crypto.PubkeyToAddress(deployerKey.PublicKey)
+
+	signerAddrs := make([]common.Address, integrationSignerCount)
+	for i := range signerAddrs {
+		k, err := crypto.GenerateKey()
+		if err != nil {
+			t.Fatalf("gen signer key: %v", err)
+		}
+		signerAddrs[i] = crypto.PubkeyToAddress(k.PublicKey)
+	}
+	sort.Slice(signerAddrs, func(i, j int) bool {
+		return bytes.Compare(signerAddrs[i][:], signerAddrs[j][:]) < 0
+	})
+	opts, _, err := signerTransactOpts(ctx, client, deployer)
+	if err != nil {
+		t.Fatalf("deploy opts: %v", err)
+	}
+	custodyAddr, deployTx, custody, err := DeployCustody(opts, client, signerAddrs, big.NewInt(integrationThreshold))
+	if err != nil {
+		t.Fatalf("deploy custody: %v", err)
+	}
+	if err := waitMined(ctx, client, deployTx); err != nil {
+		t.Fatalf("deploy wait: %v", err)
+	}
+	chainID, err := client.ChainID(ctx)
+	if err != nil {
+		t.Fatalf("chain id: %v", err)
+	}
+	depositor, err := NewDepositor(client, custodyAddr, deployer, NewAssetResolver(client, AssetResolverConfig{}))
+	if err != nil {
+		t.Fatalf("NewDepositor: %v", err)
+	}
+	dest := core.DepositDestination{Account: depositorAddr.Hex()}
+	amount := decimal.NewFromBigInt(big.NewInt(1_000_000_000_000), -18)
+
+	// Consecutive nonces n and n+1, IDs from (chainid, vault, depositor, nonce).
+	var first core.SubmitDepositResult
+	for seq := int64(0); seq < 2; seq++ {
+		res, err := depositor.SubmitDeposit(ctx, "", amount, dest)
+		if err != nil {
+			t.Fatalf("deposit %d: %v", seq, err)
+		}
+		if want := DepositID(chainID, custodyAddr, depositorAddr, big.NewInt(seq)); res.DepositID != want {
+			t.Fatalf("deposit %d: DepositID = %s, want %s", seq, res.DepositID, want)
+		}
+		if seq == 0 {
+			first = res
+		}
+	}
+
+	// Key 7 uses nonce 7<<64.
+	keyed, err := depositor.SubmitDepositWithKey(ctx, "", amount, dest, big.NewInt(7))
+	if err != nil {
+		t.Fatalf("keyed deposit: %v", err)
+	}
+	if want := DepositID(chainID, custodyAddr, depositorAddr, ComposeNonce(big.NewInt(7), 0)); keyed.DepositID != want {
+		t.Fatalf("keyed DepositID = %s, want %s", keyed.DepositID, want)
+	}
+
+	// Pending below the requested depth, confirmed once enough blocks exist.
+	head, err := client.BlockNumber(ctx)
+	if err != nil {
+		t.Fatalf("block number: %v", err)
+	}
+	receipt, err := client.TransactionReceipt(ctx, common.HexToHash(keyed.TxHash))
+	if err != nil {
+		t.Fatalf("receipt: %v", err)
+	}
+	depth := head - receipt.BlockNumber.Uint64() + 1
+	if st, err := depositor.ChainDepositStatus(ctx, keyed.TxHash, keyed.DepositID, depth+2); err != nil || st != core.DepositPending {
+		t.Fatalf("below depth: (%v, %v), want pending", st, err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := client.Client().CallContext(ctx, nil, "evm_mine"); err != nil {
+			t.Fatalf("evm_mine: %v", err)
+		}
+	}
+	if st, err := depositor.ChainDepositStatus(ctx, keyed.TxHash, keyed.DepositID, depth+2); err != nil || st != core.DepositConfirmed {
+		t.Fatalf("at depth: (%v, %v), want confirmed", st, err)
+	}
+
+	// A wrong ID for a real deposit transaction is absent.
+	if st, err := depositor.ChainDepositStatus(ctx, first.TxHash, keyed.DepositID, 1); err != nil || st != core.DepositAbsent {
+		t.Fatalf("wrong ID: (%v, %v), want absent", st, err)
+	}
+
+	// Stale nonce: with automine off, a direct deposit from the same account
+	// takes nonce 2 in the pool; SubmitDeposit still reads 2 at `latest`, and
+	// its transaction reverts (or fails estimation) once the first mines.
+	setAutomine := func(on bool) {
+		if err := client.Client().CallContext(ctx, nil, "evm_setAutomine", on); err != nil {
+			t.Fatalf("evm_setAutomine(%v): %v", on, err)
+		}
+	}
+	setAutomine(false)
+	defer setAutomine(true)
+	directOpts, _, err := signerTransactOpts(ctx, client, deployer)
+	if err != nil {
+		t.Fatalf("direct opts: %v", err)
+	}
+	directOpts.Value = big.NewInt(1_000_000_000_000)
+	if _, err := custody.Deposit(directOpts, depositorAddr, common.Address{}, directOpts.Value, [32]byte{}, big.NewInt(2)); err != nil {
+		t.Fatalf("direct deposit: %v", err)
+	}
+	staleErr := make(chan error, 1)
+	go func() {
+		_, err := depositor.SubmitDeposit(ctx, "", amount, dest)
+		staleErr <- err
+	}()
+	mineUntil := time.After(30 * time.Second)
+	for done := false; !done; {
+		select {
+		case err := <-staleErr:
+			if !errors.Is(err, ErrStaleNonce) {
+				t.Fatalf("stale deposit err = %v, want ErrStaleNonce", err)
+			}
+			done = true
+		case <-time.After(500 * time.Millisecond):
+			if err := client.Client().CallContext(ctx, nil, "evm_mine"); err != nil {
+				t.Fatalf("evm_mine: %v", err)
+			}
+		case <-mineUntil:
+			t.Fatal("stale deposit did not return")
+		}
+	}
+	setAutomine(true)
+
+	// ERC-20: an allowance left by an earlier approve means the retry sends
+	// only the deposit transaction.
+	tokenAddr, tokenTx, token, err := DeployMockERC20(mustOpts(ctx, t, client, deployer), client, "Test", "TST")
+	if err != nil {
+		t.Fatalf("deploy token: %v", err)
+	}
+	if err := waitMined(ctx, client, tokenTx); err != nil {
+		t.Fatalf("token deploy wait: %v", err)
+	}
+	units := big.NewInt(1_000_000_000_000_000_000)
+	mintTx, err := token.Mint(mustOpts(ctx, t, client, deployer), depositorAddr, units)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if err := waitMined(ctx, client, mintTx); err != nil {
+		t.Fatalf("mint wait: %v", err)
+	}
+	approveTx, err := token.Approve(mustOpts(ctx, t, client, deployer), custodyAddr, units)
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if err := waitMined(ctx, client, approveTx); err != nil {
+		t.Fatalf("approve wait: %v", err)
+	}
+	before, err := client.PendingNonceAt(ctx, depositorAddr)
+	if err != nil {
+		t.Fatalf("account nonce: %v", err)
+	}
+	if _, err := depositor.SubmitDeposit(ctx, tokenAddr.Hex(), decimal.NewFromInt(1), dest); err != nil {
+		t.Fatalf("ERC-20 deposit: %v", err)
+	}
+	after, err := client.PendingNonceAt(ctx, depositorAddr)
+	if err != nil {
+		t.Fatalf("account nonce: %v", err)
+	}
+	if after-before != 1 {
+		t.Fatalf("ERC-20 deposit sent %d transactions, want 1 (no approve)", after-before)
+	}
+}
+
+func mustOpts(ctx context.Context, t *testing.T, client *ethclient.Client, s sign.Signer) *bind.TransactOpts {
+	t.Helper()
+	opts, _, err := signerTransactOpts(ctx, client, s)
+	if err != nil {
+		t.Fatalf("transact opts: %v", err)
+	}
+	return opts
 }
 
 // fundETH sends value from key to addr via a raw anvil tx and waits for it.

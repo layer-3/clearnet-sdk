@@ -20,6 +20,7 @@ import {
 import type {
   SolanaCommitment,
   SolanaSigner,
+  SubmitDepositResult,
 } from "@yellow-org/clearnet-sdk";
 
 type SolanaWalletChain =
@@ -39,7 +40,7 @@ const verifyButton = mustElement<HTMLButtonElement>("verify");
 const logOutput = mustElement<HTMLOutputElement>("log");
 
 let signer: BrowserSolanaSigner | undefined;
-let lastRef: string | undefined;
+let lastRef: SubmitDepositResult | undefined;
 
 connectButton.addEventListener("click", () => {
   void connectWallet();
@@ -106,18 +107,18 @@ async function submitDeposit(): Promise<void> {
         amount: readInput("amount"),
       },
       {
-        onSubmitted(ref) {
-          lastRef = ref;
+        onSubmitted(result) {
+          lastRef = result;
           verifyButton.disabled = false;
-          writeLog(`Submitted ${ref}\nhash: ${ref}`);
+          writeLog(`Submitted ${result.txHash}\ndeposit ID: ${result.depositId}`);
         },
       },
     );
     verifyButton.disabled = false;
-    writeLog(`Confirmed ${lastRef}\nhash: ${lastRef}`);
+    writeLog(`Confirmed ${lastRef.txHash}\ndeposit ID: ${lastRef.depositId}`);
   } catch (error) {
-    const txID = errorTxID(error);
-    writeError(error, txID === undefined ? undefined : `Submitted ${txID}`);
+    const txHash = errorTxHash(error);
+    writeError(error, txHash === undefined ? undefined : `Submitted ${txHash}`);
   } finally {
     setBusy(submitButton, false);
   }
@@ -138,8 +139,12 @@ async function verifyLastTx(): Promise<void> {
       commitment: signer.commitment,
     });
 
-    const status = await depositor.verifyDeposit(lastRef, 0);
-    writeLog(`Verify ${lastRef}\nstatus: ${status}`);
+    const status = await depositor.chainDepositStatus(
+      lastRef.txHash,
+      lastRef.depositId,
+      0,
+    );
+    writeLog(`Verify ${lastRef.txHash}\nstatus: ${status}`);
   } catch (error) {
     writeError(error);
   } finally {
@@ -265,9 +270,9 @@ function firstSupportedAccount(
   return account;
 }
 
-function errorTxID(error: unknown): string | undefined {
-  if (error && typeof error === "object" && "txID" in error) {
-    return (error as { txID?: string }).txID;
+function errorTxHash(error: unknown): string | undefined {
+  if (error && typeof error === "object" && "txHash" in error) {
+    return (error as { txHash?: string }).txHash;
   }
   return undefined;
 }

@@ -69,10 +69,15 @@ describe("BitcoinVaultDepositor regtest integration", () => {
       destination: { account: ACCOUNT },
     });
 
-    expect(txID).toMatch(/^[a-f0-9]{64}$/);
-    await expect(depositor.verifyDeposit(txID, 1)).resolves.toBe("pending");
+    expect(txID.txHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(txID.depositId).toEqual(txID.txHash);
+    await expect(
+      depositor.chainDepositStatus(txID.txHash, txID.depositId, 1),
+    ).resolves.toBe("pending");
     await admin.call("generatetoaddress", [1, miningAddress]);
-    await expect(depositor.verifyDeposit(txID, 1)).resolves.toBe("confirmed");
+    await expect(
+      depositor.chainDepositStatus(txID.txHash, txID.depositId, 1),
+    ).resolves.toBe("confirmed");
   }, 120_000);
 });
 

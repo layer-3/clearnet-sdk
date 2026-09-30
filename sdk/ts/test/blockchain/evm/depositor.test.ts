@@ -12,10 +12,12 @@ import {
   ClearnetSdkError,
   EVM_NATIVE_ASSET,
   EvmVaultDepositor,
+  depositId,
 } from "../../../src/index.js";
 import type {
   DepositStatus,
   EvmSubmitDepositInput,
+  SubmitDepositResult,
   VaultDepositor,
 } from "../../../src/index.js";
 import { custodyAbi } from "../../../src/blockchain/evm/abi.js";
@@ -32,7 +34,9 @@ const APPROVAL_HASH =
   "0x2222222222222222222222222222222222222222222222222222222222222222" as Hash;
 const DEPOSIT_REFERENCE =
   "0x3333333333333333333333333333333333333333333333333333333333333333" as Hash;
-const DEPOSIT_TX_ID = `${DEPOSIT_HASH}/0`;
+// The depositor address is ACCOUNT, nonce key 0, sequence 0 (the default
+// getNonce mock), matching how createClients()/createDepositor() are wired.
+const DEPOSIT_ID = depositId(BigInt(CHAIN_ID), CUSTODY_ADDRESS, ACCOUNT, 0n);
 
 interface ClientMocks {
   publicClient: PublicClient;
@@ -56,7 +60,10 @@ describe("EvmVaultDepositor", () => {
     expectTypeOf<EvmVaultDepositor>().toMatchTypeOf<
       VaultDepositor<EvmSubmitDepositInput>
     >();
-    expectTypeOf<string>().toEqualTypeOf<string>();
+    expectTypeOf<SubmitDepositResult>().toEqualTypeOf<{
+      txHash: string;
+      depositId: string;
+    }>();
     expectTypeOf<DepositStatus>().toEqualTypeOf<
       "absent" | "pending" | "confirmed"
     >();
@@ -66,13 +73,13 @@ describe("EvmVaultDepositor", () => {
     expect(EVM_NATIVE_ASSET).toBe("");
   });
 
-  it("submits a native ETH deposit with matching value and returns the deposit hash", async () => {
+  it("submits a native ETH deposit with matching value and returns both identifiers", async () => {
     const clients = createClients();
     clients.walletMock.writeContract.mockResolvedValueOnce(DEPOSIT_HASH);
 
     const depositor = createDepositor(clients);
     const onSubmitted = vi.fn();
-    const ref = await depositor.submitDeposit(
+    const result = await depositor.submitDeposit(
       {
         destination: { account: ACCOUNT, ref: DEPOSIT_REFERENCE },
         asset: EVM_NATIVE_ASSET,
@@ -81,13 +88,13 @@ describe("EvmVaultDepositor", () => {
       { onSubmitted },
     );
 
-    expect(ref).toBe(DEPOSIT_TX_ID);
-    expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(ref);
+    expect(result).toEqual({ txHash: DEPOSIT_HASH, depositId: DEPOSIT_ID });
+    expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(result);
     expect(clients.walletMock.writeContract).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         address: CUSTODY_ADDRESS,
         functionName: "deposit",
-        args: [ACCOUNT, zeroAddress, 10n, DEPOSIT_REFERENCE],
+        args: [ACCOUNT, zeroAddress, 10n, DEPOSIT_REFERENCE, 0n],
         value: 10n,
         account: ACCOUNT,
         chain: null,
@@ -98,7 +105,34 @@ describe("EvmVaultDepositor", () => {
     });
   });
 
-  it("approves an exact ERC-20 amount before depositing and returns the deposit hash", async () => {
+  it("uses the nonce key an EvmSubmitDepositInput requests", async () => {
+    const key = 7n;
+    const nonce = (key << 64n) | 3n;
+    const clients = createClients({ nonce, waitReceipt: receipt({ nonce }) });
+    clients.walletMock.writeContract.mockResolvedValueOnce(DEPOSIT_HASH);
+    const depositor = createDepositor(clients);
+
+    const result = await depositor.submitDeposit({
+      destination: { account: ACCOUNT },
+      asset: EVM_NATIVE_ASSET,
+      amount: "1",
+      nonceKey: key,
+    });
+
+    expect(result.depositId).toBe(
+      depositId(BigInt(CHAIN_ID), CUSTODY_ADDRESS, ACCOUNT, nonce),
+    );
+    expect(clients.publicMock.readContract).toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: "getNonce", args: [ACCOUNT, key] }),
+    );
+    expect(clients.walletMock.writeContract).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        args: [ACCOUNT, zeroAddress, 1n, zeroHash, nonce],
+      }),
+    );
+  });
+
+  it("approves an exact ERC-20 amount before depositing and returns both identifiers", async () => {
     const clients = createClients();
     clients.publicMock.waitForTransactionReceipt
       .mockResolvedValueOnce(receipt())
@@ -111,13 +145,13 @@ describe("EvmVaultDepositor", () => {
 
     const depositor = createDepositor(clients);
     const onSubmitted = vi.fn();
-    const ref = await depositor.submitDeposit(
+    const result = await depositor.submitDeposit(
       { destination: { account: ACCOUNT }, asset: TOKEN, amount: "25" },
       { onSubmitted },
     );
 
-    expect(ref).toBe(DEPOSIT_TX_ID);
-    expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(ref);
+    expect(result).toEqual({ txHash: DEPOSIT_HASH, depositId: DEPOSIT_ID });
+    expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(result);
     expect(clients.walletMock.writeContract).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
@@ -133,7 +167,7 @@ describe("EvmVaultDepositor", () => {
       expect.objectContaining({
         address: CUSTODY_ADDRESS,
         functionName: "deposit",
-        args: [ACCOUNT, TOKEN, 25n, zeroHash],
+        args: [ACCOUNT, TOKEN, 25n, zeroHash, 0n],
         account: ACCOUNT,
         chain: null,
       }),
@@ -148,7 +182,64 @@ describe("EvmVaultDepositor", () => {
     );
   });
 
-  it("throws TX_REVERTED with txID when the deposit receipt fails", async () => {
+  it("reads the nonce before the allowance and before the approve is sent", async () => {
+    const clients = createClients();
+    const order: string[] = [];
+    const readImpl = defaultRead(clients);
+    clients.publicMock.readContract.mockImplementation(
+      (args: { functionName: string }) => {
+        order.push(args.functionName);
+        return readImpl(args);
+      },
+    );
+    clients.walletMock.writeContract.mockImplementation(
+      (args: { functionName: string }) => {
+        order.push(`write:${args.functionName}`);
+        return Promise.resolve(
+          args.functionName === "approve" ? APPROVAL_HASH : DEPOSIT_HASH,
+        );
+      },
+    );
+    clients.publicMock.waitForTransactionReceipt.mockResolvedValue(
+      receipt({ asset: TOKEN, amount: 25n, reference: zeroHash }),
+    );
+    const depositor = createDepositor(clients);
+
+    await depositor.submitDeposit({
+      destination: { account: ACCOUNT },
+      asset: TOKEN,
+      amount: "25",
+    });
+
+    expect(order.filter((c) => c !== "decimals")).toEqual([
+      "getNonce",
+      "allowance",
+      "write:approve",
+      "write:deposit",
+    ]);
+  });
+
+  it("skips a redundant ERC-20 approval when the allowance already covers the amount", async () => {
+    const clients = createClients({ allowance: 100n });
+    clients.walletMock.writeContract.mockResolvedValueOnce(DEPOSIT_HASH);
+    clients.publicMock.waitForTransactionReceipt.mockResolvedValueOnce(
+      receipt({ asset: TOKEN, amount: 25n, reference: zeroHash }),
+    );
+    const depositor = createDepositor(clients);
+
+    const result = await depositor.submitDeposit({
+      destination: { account: ACCOUNT },
+      asset: TOKEN,
+      amount: "25",
+    });
+
+    expect(result.txHash).toBe(DEPOSIT_HASH);
+    expect(clients.walletMock.writeContract).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ functionName: "deposit" }),
+    );
+  });
+
+  it("throws TX_REVERTED with the deposit step, txHash and depositId when the deposit receipt fails", async () => {
     const clients = createClients({
       waitReceipt: receipt({ status: "reverted" }),
     });
@@ -163,11 +254,135 @@ describe("EvmVaultDepositor", () => {
       }),
     ).rejects.toMatchObject({
       code: "TX_REVERTED",
-      txID: DEPOSIT_HASH,
+      txHash: DEPOSIT_HASH,
+      step: "deposit",
+      depositId: DEPOSIT_ID,
     });
   });
 
-  it("throws TX_REVERTED when the ERC-20 approval receipt fails", async () => {
+  it("throws STALE_NONCE with txHash when a mined deposit reverts and getNonce has moved past its nonce", async () => {
+    const clients = createClients({
+      waitReceipt: receipt({ status: "reverted" }),
+    });
+    let nonceReads = 0;
+    const readImpl = defaultRead(clients);
+    clients.publicMock.readContract.mockImplementation(
+      (args: { functionName: string }) => {
+        if (args.functionName === "getNonce") {
+          nonceReads++;
+          return Promise.resolve(nonceReads === 1 ? 0n : 1n);
+        }
+        return readImpl(args);
+      },
+    );
+    clients.walletMock.writeContract.mockResolvedValueOnce(DEPOSIT_HASH);
+    const depositor = createDepositor(clients);
+
+    await expect(
+      depositor.submitDeposit({
+        destination: { account: ACCOUNT },
+        asset: EVM_NATIVE_ASSET,
+        amount: "1",
+      }),
+    ).rejects.toMatchObject({
+      code: "STALE_NONCE",
+      txHash: DEPOSIT_HASH,
+      step: "deposit",
+      depositId: DEPOSIT_ID,
+      nonceKey: 0n,
+      nonce: 0n,
+    });
+  });
+
+  it.each([
+    ["has no Deposited log", { ...receipt(), logs: [] } as TransactionReceipt],
+    [
+      "has the Deposited topic only from another contract",
+      {
+        ...receipt(),
+        logs: receipt().logs.map((log) => ({
+          ...log,
+          address: "0x0000000000000000000000000000000000009999" as Address,
+        })),
+      } as TransactionReceipt,
+    ],
+    ["has a Deposited log for another nonce", receipt({ nonce: 1n })],
+  ])(
+    "throws DEPOSIT_EVENT_NOT_FOUND with txHash and depositId when the mined receipt %s",
+    async (_name, mined) => {
+      const clients = createClients({ waitReceipt: mined });
+      clients.walletMock.writeContract.mockResolvedValueOnce(DEPOSIT_HASH);
+      const depositor = createDepositor(clients);
+      const onSubmitted = vi.fn();
+
+      await expect(
+        depositor.submitDeposit(
+          { destination: { account: ACCOUNT }, asset: EVM_NATIVE_ASSET, amount: "1" },
+          { onSubmitted },
+        ),
+      ).rejects.toMatchObject({
+        code: "DEPOSIT_EVENT_NOT_FOUND",
+        txHash: DEPOSIT_HASH,
+        step: "deposit",
+        depositId: DEPOSIT_ID,
+        nonceKey: 0n,
+        nonce: 0n,
+      });
+      expect(onSubmitted).not.toHaveBeenCalled();
+    },
+  );
+
+  it("throws RECEIPT_TIMEOUT with the deposit identity when the receipt wait is aborted", async () => {
+    const clients = createClients({
+      waitReceiptPromise: new Promise<TransactionReceipt>(() => undefined),
+    });
+    clients.walletMock.writeContract.mockResolvedValueOnce(DEPOSIT_HASH);
+    const depositor = createDepositor(clients);
+    const controller = new AbortController();
+
+    const pending = depositor.submitDeposit(
+      { destination: { account: ACCOUNT }, asset: EVM_NATIVE_ASSET, amount: "1" },
+      { signal: controller.signal, receiptTimeoutMs: 60_000 },
+    );
+    setTimeout(() => controller.abort(), 1);
+
+    await expect(pending).rejects.toMatchObject({
+      code: "RECEIPT_TIMEOUT",
+      txHash: DEPOSIT_HASH,
+      step: "deposit",
+      depositId: DEPOSIT_ID,
+      nonceKey: 0n,
+      nonce: 0n,
+    });
+  });
+
+  it("carries the deposit identity on an allowance read failure, before anything is sent", async () => {
+    const clients = createClients();
+    const readImpl = defaultRead(clients);
+    clients.publicMock.readContract.mockImplementation(
+      (args: { functionName: string }) =>
+        args.functionName === "allowance"
+          ? Promise.reject(new Error("rpc down"))
+          : readImpl(args),
+    );
+    const depositor = createDepositor(clients);
+
+    const error = await depositor
+      .submitDeposit({ destination: { account: ACCOUNT }, asset: TOKEN, amount: "1" })
+      .catch((e: unknown) => e);
+
+    expect(error).toMatchObject({
+      code: "RPC_ERROR",
+      step: "approve",
+      depositId: DEPOSIT_ID,
+      nonceKey: 0n,
+      nonce: 0n,
+    });
+    expect((error as ClearnetSdkError).txHash).toBeUndefined();
+    expect(clients.walletMock.writeContract).not.toHaveBeenCalled();
+  });
+
+  it("throws TX_REVERTED with the approve step when the ERC-20 approval receipt fails", async () => {
     const clients = createClients({
       waitReceipt: receipt({ status: "reverted" }),
     });
@@ -182,12 +397,14 @@ describe("EvmVaultDepositor", () => {
       }),
     ).rejects.toMatchObject({
       code: "TX_REVERTED",
-      txID: APPROVAL_HASH,
+      txHash: APPROVAL_HASH,
+      step: "approve",
+      depositId: DEPOSIT_ID,
     });
     expect(clients.walletMock.writeContract).toHaveBeenCalledTimes(1);
   });
 
-  it("throws RECEIPT_TIMEOUT with txID after a submitted deposit times out", async () => {
+  it("throws RECEIPT_TIMEOUT with txHash after a submitted deposit times out", async () => {
     const clients = createClients({
       waitReceiptPromise: new Promise<TransactionReceipt>(() => undefined),
     });
@@ -201,7 +418,32 @@ describe("EvmVaultDepositor", () => {
       ),
     ).rejects.toMatchObject({
       code: "RECEIPT_TIMEOUT",
-      txID: DEPOSIT_HASH,
+      txHash: DEPOSIT_HASH,
+      step: "deposit",
+      depositId: DEPOSIT_ID,
+    });
+  });
+
+  it("classifies an Invalid nonce revert as STALE_NONCE, carrying the depositId but no txHash", async () => {
+    const clients = createClients();
+    clients.walletMock.writeContract.mockRejectedValueOnce(
+      new Error("execution reverted: Invalid nonce"),
+    );
+    const depositor = createDepositor(clients);
+
+    await expect(
+      depositor.submitDeposit({
+        destination: { account: ACCOUNT },
+        asset: EVM_NATIVE_ASSET,
+        amount: "1",
+      }),
+    ).rejects.toMatchObject({
+      code: "STALE_NONCE",
+      step: "deposit",
+      depositId: DEPOSIT_ID,
+      nonceKey: 0n,
+      nonce: 0n,
+      txHash: undefined,
     });
   });
 
@@ -334,20 +576,48 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
 
     await expect(
-      depositor.verifyDeposit(DEPOSIT_TX_ID, 1),
+      depositor.chainDepositStatus(DEPOSIT_HASH, DEPOSIT_ID, 1),
     ).resolves.toBe("confirmed");
     await expect(
-      depositor.verifyDeposit(DEPOSIT_TX_ID, 2),
+      depositor.chainDepositStatus(DEPOSIT_HASH, DEPOSIT_ID, 2),
     ).resolves.toBe("pending");
     await expect(
-      depositor.verifyDeposit(
-        DEPOSIT_TX_ID,
-        1n << 80n,
-      ),
+      depositor.chainDepositStatus(DEPOSIT_HASH, DEPOSIT_ID, 1n << 80n),
     ).resolves.toBe("pending");
     expect(clients.publicMock.getBlockNumber).toHaveBeenCalledWith({
       cacheTime: 0,
     });
+  });
+
+  it("maps a mismatched depositId to absent even with a successful receipt", async () => {
+    const clients = createClients({
+      txReceipt: receipt({ status: "success", blockNumber: 10n }),
+      headBlock: 10n,
+    });
+    const depositor = createDepositor(clients);
+    const otherId = depositId(BigInt(CHAIN_ID), CUSTODY_ADDRESS, ACCOUNT, 1n);
+
+    await expect(
+      depositor.chainDepositStatus(DEPOSIT_HASH, otherId, 1),
+    ).resolves.toBe("absent");
+  });
+
+  it("maps a same-topic Deposited log from another contract to absent", async () => {
+    const mined = receipt();
+    const clients = createClients({
+      txReceipt: {
+        ...mined,
+        logs: mined.logs.map((log) => ({
+          ...log,
+          address: "0x0000000000000000000000000000000000009999" as Address,
+        })),
+      } as TransactionReceipt,
+    });
+    const depositor = createDepositor(clients);
+
+    await expect(
+      depositor.chainDepositStatus(DEPOSIT_HASH, DEPOSIT_ID, 1),
+    ).resolves.toBe("absent");
   });
 
   it("maps failed receipts to absent", async () => {
@@ -357,7 +627,7 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
 
     await expect(
-      depositor.verifyDeposit(DEPOSIT_TX_ID, 1n),
+      depositor.chainDepositStatus(DEPOSIT_HASH, DEPOSIT_ID, 1n),
     ).resolves.toBe("absent");
   });
 
@@ -369,7 +639,7 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
 
     await expect(
-      depositor.verifyDeposit(DEPOSIT_HASH, 1),
+      depositor.chainDepositStatus(DEPOSIT_HASH, DEPOSIT_ID, 1),
     ).resolves.toBe("pending");
   });
 
@@ -381,7 +651,7 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
 
     await expect(
-      depositor.verifyDeposit(DEPOSIT_HASH, 1),
+      depositor.chainDepositStatus(DEPOSIT_HASH, DEPOSIT_ID, 1),
     ).resolves.toBe("absent");
   });
 
@@ -391,21 +661,31 @@ describe("EvmVaultDepositor", () => {
     const depositor = createDepositor(clients);
 
     await expect(
-      depositor.verifyDeposit(DEPOSIT_HASH, 1),
+      depositor.chainDepositStatus(DEPOSIT_HASH, DEPOSIT_ID, 1),
     ).rejects.toMatchObject({ code: "RPC_ERROR", cause: rpcError });
   });
 
-  it("validates tx refs and confirmation depths", async () => {
+  it("validates the tx hash, deposit ID and confirmation depths", async () => {
     const depositor = createDepositor(createClients());
 
     await expect(
-      depositor.verifyDeposit("0x1234", 1),
+      depositor.chainDepositStatus("0x1234", DEPOSIT_ID, 1),
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(
-      depositor.verifyDeposit(DEPOSIT_HASH, -1),
+      depositor.chainDepositStatus(DEPOSIT_HASH, "0x1234", 1),
+    ).rejects.toMatchObject({ code: "INVALID_DEPOSIT_ID" });
+    await expect(
+      depositor.chainDepositStatus(
+        DEPOSIT_HASH,
+        `${DEPOSIT_HASH}/0`,
+        1,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_DEPOSIT_ID" });
+    await expect(
+      depositor.chainDepositStatus(DEPOSIT_HASH, DEPOSIT_ID, -1),
     ).rejects.toMatchObject({ code: "INVALID_CONFIRMATIONS" });
     await expect(
-      depositor.verifyDeposit(DEPOSIT_HASH, 1.5),
+      depositor.chainDepositStatus(DEPOSIT_HASH, DEPOSIT_ID, 1.5),
     ).rejects.toMatchObject({ code: "INVALID_CONFIRMATIONS" });
   });
 });
@@ -431,10 +711,24 @@ function createClients(options: {
   txReceiptError?: unknown;
   headBlock?: bigint;
   pendingTransactionKnown?: boolean;
+  nonce?: bigint;
+  allowance?: bigint;
+  tokenDecimals?: number;
 } = {}): ClientMocks {
   const publicMock = {
     getChainId: vi.fn().mockResolvedValue(options.publicChainId ?? CHAIN_ID),
-    readContract: vi.fn().mockResolvedValue(0),
+    readContract: vi.fn().mockImplementation((args: { functionName: string }) => {
+      switch (args.functionName) {
+        case "getNonce":
+          return Promise.resolve(options.nonce ?? 0n);
+        case "allowance":
+          return Promise.resolve(options.allowance ?? 0n);
+        case "decimals":
+          return Promise.resolve(options.tokenDecimals ?? 0);
+        default:
+          return Promise.resolve(0n);
+      }
+    }),
     waitForTransactionReceipt: vi
       .fn()
       .mockImplementation(() =>
@@ -478,6 +772,7 @@ function receipt(options: {
   asset?: Address;
   amount?: bigint;
   reference?: Hash;
+  nonce?: bigint;
 } = {}): TransactionReceipt {
   const topics = encodeEventTopics({
     abi: custodyAbi,
@@ -492,8 +787,9 @@ function receipt(options: {
       { name: "depositor", type: "address" },
       { name: "asset", type: "address" },
       { name: "amount", type: "uint256" },
+      { name: "nonce", type: "uint256" },
     ],
-    [ACCOUNT, options.asset ?? zeroAddress, options.amount ?? 10n],
+    [ACCOUNT, options.asset ?? zeroAddress, options.amount ?? 10n, options.nonce ?? 0n],
   );
   return {
     status: options.status ?? "success",
@@ -509,6 +805,16 @@ function receipt(options: {
       },
     ],
   } as TransactionReceipt;
+}
+
+// defaultRead returns the readContract behaviour createClients installed, so
+// a test can wrap it.
+function defaultRead(
+  clients: ClientMocks,
+): (args: { functionName: string }) => Promise<unknown> {
+  return clients.publicMock.readContract.getMockImplementation() as (args: {
+    functionName: string;
+  }) => Promise<unknown>;
 }
 
 function transactionNotFound(name: string): Error {

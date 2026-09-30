@@ -89,7 +89,7 @@ func TestEIP712DeploymentAllOperations(t *testing.T) {
 		t.Fatal("registry domain mismatch")
 	}
 	auth.Value = big.NewInt(1000)
-	mined(vault.Deposit(auth, keys[0], common.Address{}, big.NewInt(1000), [32]byte{}))
+	mined(vault.Deposit(auth, keys[0], common.Address{}, big.NewInt(1000), [32]byte{}, big.NewInt(0)))
 	auth.Value = nil
 	recipient := common.HexToAddress("0x1234")
 	wid := [32]byte{1}

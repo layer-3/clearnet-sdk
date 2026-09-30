@@ -11,6 +11,7 @@ import { ClearnetSdkError } from "../../core/errors.js";
 import type {
   DepositStatus,
   SubmitDepositOptions,
+  SubmitDepositResult,
   VaultDepositor,
 } from "../../core/types.js";
 import { decimalToBaseUnits } from "../amounts.js";
@@ -90,19 +91,22 @@ export class SolanaVaultDepositor
     });
   }
 
+  // depositId === txHash. TODO: chain-specific deposit ID matching custody's
+  // TxID.
   async submitDeposit(
     input: SolanaSubmitDepositInput,
     options: SubmitDepositOptions = {},
-  ): Promise<string> {
+  ): Promise<SubmitDepositResult> {
     const waitOptions = requireSubmitDepositOptions(options);
     validateWaitOptions(waitOptions);
     const transaction = await this.prepareDeposit(input);
 
     const signature = await this.signAndSend(transaction);
     const txID = normalizeSolanaTxID(signature);
-    waitOptions.onSubmitted?.(txID);
+    const result: SubmitDepositResult = { txHash: txID, depositId: txID };
+    waitOptions.onSubmitted?.(result);
     await this.waitForCommitment(signature, txID, waitOptions);
-    return txID;
+    return result;
   }
 
   /** Builds the exact unsigned custody transaction without a recent blockhash. */
@@ -132,13 +136,16 @@ export class SolanaVaultDepositor
     return transaction;
   }
 
-  async verifyDeposit(
-    txID: string,
+  // Looks the deposit up by txHash only; depositId is the same base58 signature and
+  // unused.
+  async chainDepositStatus(
+    txHash: string,
+    _depositId: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
-    requireTxID(txID);
+    requireTxID(txHash);
     const minConf = normalizeMinConfirmations(minConfirmations);
-    const status = await this.getSignatureStatus(txID, txID);
+    const status = await this.getSignatureStatus(txHash, txHash);
     return mapStatus(status, minConf);
   }
 
@@ -272,7 +279,7 @@ export class SolanaVaultDepositor
     for (;;) {
       if (options.signal?.aborted === true) {
         throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-          txID,
+          txHash: txID,
         });
       }
       const status = await waitWithControls(
@@ -283,7 +290,7 @@ export class SolanaVaultDepositor
       );
       if (status?.err != null) {
         throw new ClearnetSdkError("TX_REVERTED", "sol: transaction failed", {
-          txID,
+          txHash: txID,
         });
       }
       if (statusSatisfiesCommitment(status, this.commitment)) {
@@ -291,7 +298,7 @@ export class SolanaVaultDepositor
       }
       if (Date.now() >= deadline) {
         throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt timeout", {
-          txID,
+          txHash: txID,
         });
       }
       await sleep(Math.min(POLL_INTERVAL_MS, remainingMs(deadline, txID)), options.signal, txID);
@@ -311,7 +318,7 @@ export class SolanaVaultDepositor
       throw new ClearnetSdkError(
         "RPC_ERROR",
         "sol: signature status",
-        txID === undefined ? { cause: error } : { txID, cause: error },
+        txID === undefined ? { cause: error } : { txHash: txID, cause: error },
       );
     }
   }
@@ -415,7 +422,7 @@ function remainingMs(deadline: number, txID: string): number {
   const remaining = deadline - Date.now();
   if (remaining <= 0) {
     throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt timeout", {
-      txID,
+      txHash: txID,
     });
   }
   return remaining;
@@ -429,7 +436,7 @@ async function waitWithControls<T>(
 ): Promise<T> {
   if (signal?.aborted === true) {
     throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-      txID,
+      txHash: txID,
     });
   }
 
@@ -440,7 +447,7 @@ async function waitWithControls<T>(
     timeoutId = setTimeout(() => {
       reject(
         new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt timeout", {
-          txID,
+          txHash: txID,
         }),
       );
     }, timeoutMs);
@@ -453,7 +460,7 @@ async function waitWithControls<T>(
           abortHandler = () => {
             reject(
               new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-                txID,
+                txHash: txID,
               }),
             );
           };
@@ -485,7 +492,7 @@ async function sleep(
     if (signal?.aborted === true) {
       reject(
         new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-          txID,
+          txHash: txID,
         }),
       );
       return;
@@ -509,7 +516,7 @@ async function sleep(
         cleanup();
         reject(
           new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-            txID,
+            txHash: txID,
           }),
         );
       };

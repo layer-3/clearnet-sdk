@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"strconv"
 	"strings"
 
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -44,79 +44,211 @@ func NewDepositor(client *ethclient.Client, custodyAddr common.Address, signer s
 	return &Depositor{client: client, custody: custody, custodyAddr: custodyAddr, signer: signer, assets: assets}, nil
 }
 
-// SubmitDeposit credits dest.Account with amount of assetAddress. For an ERC-20
-// (assetAddress is a non-zero hex address) it approves the vault then calls
-// Custody.deposit; for the native marker it sends ETH with msg.value == amount.
-// Blocks until the deposit tx mines.
-func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (string, error) {
+// DepositSubmitError is returned by SubmitDeposit/SubmitDepositWithKey for any
+// failure after the nonce has been read, so Key, Nonce and DepositID are always
+// set. Step names the failed step; TxHash is set when that step's transaction
+// was signed, empty when nothing was broadcast.
+//
+// Never retry blindly: a blind retry reads the next nonce and can create a
+// second real deposit. Resolve the outcome first:
+//   - Step "deposit" with a TxHash: call ChainDepositStatus(TxHash, DepositID,
+//     minConf). DepositConfirmed or DepositPending means the deposit exists;
+//     DepositAbsent means that transaction did not produce it.
+//   - No TxHash, or Step "approve": this call did not broadcast a deposit. Read
+//     the vault's current nonce with the Custody binding
+//     (Custody.GetNonce(depositor, Key)) at `latest`. If it is greater than
+//     Nonce, a deposit with that nonce has landed (this one or another from
+//     the same depositor and key); otherwise the nonce is unused and calling
+//     SubmitDeposit again is safe.
+type DepositSubmitError struct {
+	// Step is "approve" or "deposit".
+	Step      string
+	Key       *big.Int
+	Nonce     *big.Int
+	DepositID string
+	// TxHash is the transaction hash, when it could be determined even though
+	// the step ultimately failed (e.g. broadcast or mining failed, but signing
+	// succeeded so the hash was already known).
+	TxHash string
+	Err    error
+}
+
+func (e *DepositSubmitError) Error() string {
+	if e.TxHash != "" {
+		return fmt.Sprintf("evm: %s step failed (key=%s nonce=%s depositId=%s txHash=%s): %v",
+			e.Step, e.Key, e.Nonce, e.DepositID, e.TxHash, e.Err)
+	}
+	return fmt.Sprintf("evm: %s step failed (key=%s nonce=%s depositId=%s): %v",
+		e.Step, e.Key, e.Nonce, e.DepositID, e.Err)
+}
+
+func (e *DepositSubmitError) Unwrap() error { return e.Err }
+
+// ErrStaleNonce indicates the nonce read at the start of SubmitDeposit was
+// already consumed by submission time (for example a load-balanced RPC node
+// lagging behind another). Liveness only: a fresh call reads the current nonce.
+// See DepositSubmitError on retrying safely.
+var ErrStaleNonce = errors.New("evm: nonce already consumed by another deposit (stale read)")
+
+// ErrDepositEventNotFound indicates the deposit transaction mined successfully
+// but its receipt has no Deposited log, emitted by the vault, whose depositor
+// and nonce reproduce the expected DepositID (for example the vault address
+// or the chain ID does not match the contract that ran). The returned
+// DepositSubmitError carries TxHash and DepositID; no receipt will be signed
+// for that DepositID.
+var ErrDepositEventNotFound = errors.New("evm: deposited event not found")
+
+// SubmitDeposit credits dest.Account with amount of assetAddress, using nonce
+// key 0. Equivalent to SubmitDepositWithKey(..., big.NewInt(0)).
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.SubmitDepositResult, error) {
+	return d.SubmitDepositWithKey(ctx, assetAddress, amount, dest, big.NewInt(0))
+}
+
+// SubmitDepositWithKey selects the upper 192 bits of the 2D nonce. Each key has
+// its own consecutive sequence, so one depositor address can keep several
+// independent deposit streams (IDeposit.sol recommends key =
+// uint192(uint160(user)) when depositing for many users).
+//
+// It reads getNonce itself, so it is for an account that submits its own
+// deposits. A contract depositing for users must take the sequence from the
+// user's signed input, never from chain state (double credit after a deep
+// reorg).
+//
+// ERC-20: approves the vault for exactly amount, then calls Custody.deposit;
+// the approve is skipped when the allowance already covers amount. Native
+// marker: sends ETH with msg.value == amount. Blocks until the deposit mines,
+// then requires the vault's Deposited log for the returned DepositID
+// (ErrDepositEventNotFound otherwise).
+//
+// Do not call concurrently for the same (depositor, key): both race one
+// on-chain counter and one reverts. After an error return, see
+// DepositSubmitError before retrying.
+func (d *Depositor) SubmitDepositWithKey(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination, key *big.Int) (core.SubmitDepositResult, error) {
 	assetAddress = normalizeDepositAssetAddress(assetAddress)
 	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	if amount.Sign() <= 0 {
-		return "", fmt.Errorf("evm: amount must be positive")
+		return core.SubmitDepositResult{}, fmt.Errorf("evm: amount must be positive")
 	}
 	decimals, err := d.assets.AssetDecimals(ctx, assetAddress)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	amt, err := blockchain.DecimalToBaseUnits(amount, decimals)
 	if err != nil {
-		return "", fmt.Errorf("evm: amount: %w", err)
+		return core.SubmitDepositResult{}, fmt.Errorf("evm: amount: %w", err)
 	}
 	assetAddr := depositAssetAddress(assetAddress)
 	accountAddr, err := parseClearnetAccount(dest.Account)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
+	}
+	if key == nil {
+		key = big.NewInt(0)
 	}
 
-	if assetAddr == (common.Address{}) {
-		opts, _, err := signerTransactOpts(ctx, d.client, d.signer)
-		if err != nil {
-			return "", err
-		}
-		opts.Value = amt
-		tx, err := d.custody.Deposit(opts, accountAddr, common.Address{}, amt, dest.Ref)
-		if err != nil {
-			return "", fmt.Errorf("ETH deposit: %w", err)
-		}
-		receipt, err := waitMinedReceipt(ctx, d.client, tx)
-		if err != nil {
-			return "", err
-		}
-		return d.depositTxID(receipt, accountAddr, common.Address{}, amt, dest.Ref)
+	depositorAddr, err := sign.EthAddress(d.signer)
+	if err != nil {
+		return core.SubmitDepositResult{}, fmt.Errorf("evm: depositor address: %w", err)
 	}
+	chainID, err := d.client.ChainID(ctx)
+	if err != nil {
+		return core.SubmitDepositResult{}, fmt.Errorf("evm: chain id: %w", err)
+	}
+	// Read at `latest`, never `pending` (that would turn a blind retry into a
+	// second deposit), and before the approve so both steps share one identity.
+	nonce, err := d.custody.GetNonce(&bind.CallOpts{Context: ctx}, depositorAddr, key)
+	if err != nil {
+		return core.SubmitDepositResult{}, fmt.Errorf("evm: get nonce: %w", err)
+	}
+	depositID := DepositID(chainID, d.custodyAddr, depositorAddr, nonce)
 
-	// ERC-20: approve the vault, then deposit.
-	token, err := NewMockERC20(assetAddr, d.client)
-	if err != nil {
-		return "", fmt.Errorf("ERC20 bind %s: %w", assetAddr.Hex(), err)
-	}
-	approveOpts, _, err := signerTransactOpts(ctx, d.client, d.signer)
-	if err != nil {
-		return "", err
-	}
-	approveTx, err := token.Approve(approveOpts, d.custodyAddr, amt)
-	if err != nil {
-		return "", fmt.Errorf("ERC20 approve: %w", err)
-	}
-	if err := waitMined(ctx, d.client, approveTx); err != nil {
-		return "", fmt.Errorf("ERC20 approve wait: %w", err)
+	if assetAddr != (common.Address{}) {
+		// ERC-20: approve exactly amt unless the allowance already covers it.
+		// Known gap: a nonzero allowance below amt still sends a
+		// nonzero-to-nonzero approve, which USDT-style tokens reject; reset
+		// the allowance to zero first.
+		token, err := NewMockERC20(assetAddr, d.client)
+		if err != nil {
+			return core.SubmitDepositResult{}, &DepositSubmitError{Step: "approve", Key: key, Nonce: nonce, DepositID: depositID, Err: fmt.Errorf("ERC20 bind %s: %w", assetAddr.Hex(), err)}
+		}
+		current, err := token.Allowance(&bind.CallOpts{Context: ctx}, depositorAddr, d.custodyAddr)
+		if err != nil {
+			return core.SubmitDepositResult{}, &DepositSubmitError{Step: "approve", Key: key, Nonce: nonce, DepositID: depositID, Err: fmt.Errorf("read allowance: %w", err)}
+		}
+		if current.Cmp(amt) < 0 {
+			approveOpts, _, err := signerTransactOpts(ctx, d.client, d.signer)
+			if err != nil {
+				return core.SubmitDepositResult{}, &DepositSubmitError{Step: "approve", Key: key, Nonce: nonce, DepositID: depositID, Err: err}
+			}
+			approveOpts.NoSend = true
+			approveTx, err := token.Approve(approveOpts, d.custodyAddr, amt)
+			if err != nil {
+				return core.SubmitDepositResult{}, &DepositSubmitError{Step: "approve", Key: key, Nonce: nonce, DepositID: depositID, Err: fmt.Errorf("ERC20 approve: %w", err)}
+			}
+			approveHash := approveTx.Hash().Hex()
+			if err := d.client.SendTransaction(ctx, approveTx); err != nil {
+				return core.SubmitDepositResult{}, &DepositSubmitError{Step: "approve", Key: key, Nonce: nonce, DepositID: depositID, TxHash: approveHash, Err: fmt.Errorf("send ERC20 approve: %w", err)}
+			}
+			if err := waitMined(ctx, d.client, approveTx); err != nil {
+				return core.SubmitDepositResult{}, &DepositSubmitError{Step: "approve", Key: key, Nonce: nonce, DepositID: depositID, TxHash: approveHash, Err: fmt.Errorf("ERC20 approve wait: %w", err)}
+			}
+		}
 	}
 
 	depositOpts, _, err := signerTransactOpts(ctx, d.client, d.signer)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, &DepositSubmitError{Step: "deposit", Key: key, Nonce: nonce, DepositID: depositID, Err: err}
 	}
-	tx, err := d.custody.Deposit(depositOpts, accountAddr, assetAddr, amt, dest.Ref)
+	if assetAddr == (common.Address{}) {
+		depositOpts.Value = amt
+	}
+	depositOpts.NoSend = true
+	tx, err := d.custody.Deposit(depositOpts, accountAddr, assetAddr, amt, dest.Ref, nonce)
 	if err != nil {
-		return "", fmt.Errorf("ERC20 deposit: %w", err)
+		return core.SubmitDepositResult{}, &DepositSubmitError{
+			Step: "deposit", Key: key, Nonce: nonce, DepositID: depositID,
+			Err: d.classifyDepositRevert(ctx, fmt.Errorf("deposit: %w", err), depositorAddr, key, nonce),
+		}
+	}
+	txHash := tx.Hash().Hex()
+	if err := d.client.SendTransaction(ctx, tx); err != nil {
+		return core.SubmitDepositResult{}, &DepositSubmitError{Step: "deposit", Key: key, Nonce: nonce, DepositID: depositID, TxHash: txHash, Err: fmt.Errorf("send deposit: %w", err)}
 	}
 	receipt, err := waitMinedReceipt(ctx, d.client, tx)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, &DepositSubmitError{
+			Step: "deposit", Key: key, Nonce: nonce, DepositID: depositID, TxHash: txHash,
+			Err: d.classifyDepositRevert(ctx, err, depositorAddr, key, nonce),
+		}
 	}
-	return d.depositTxID(receipt, accountAddr, assetAddr, amt, dest.Ref)
+	if !d.hasDepositLog(receipt, chainID, depositID) {
+		return core.SubmitDepositResult{}, &DepositSubmitError{
+			Step: "deposit", Key: key, Nonce: nonce, DepositID: depositID, TxHash: txHash,
+			Err: ErrDepositEventNotFound,
+		}
+	}
+	return core.SubmitDepositResult{TxHash: txHash, DepositID: depositID}, nil
+}
+
+// classifyDepositRevert re-labels err as ErrStaleNonce when it can tell the
+// deposit call above failed because the nonce it used was no longer next:
+// either the revert reason names Custody's own check directly, or —
+// for a mined revert with no reason — a fresh getNonce read shows the chain
+// has already moved past the nonce this call used.
+func (d *Depositor) classifyDepositRevert(ctx context.Context, err error, depositor common.Address, key, nonce *big.Int) error {
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "Invalid nonce") {
+		return fmt.Errorf("%w: %v", ErrStaleNonce, err)
+	}
+	current, gerr := d.custody.GetNonce(&bind.CallOpts{Context: ctx}, depositor, key)
+	if gerr == nil && current.Cmp(nonce) > 0 {
+		return fmt.Errorf("%w: %v", ErrStaleNonce, err)
+	}
+	return err
 }
 
 func normalizeDepositAssetAddress(assetAddress string) string {
@@ -137,11 +269,16 @@ func parseClearnetAccount(account string) (common.Address, error) {
 	return common.Address(acct), nil
 }
 
-// VerifyDeposit reports the on-chain status of the deposit txID. EVM deposit
-// txIDs are event-level IDs of the form txHash/logIndex. A raw txHash is
-// accepted for transaction-level status checks.
-func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint64) (core.DepositStatus, error) {
-	hash, logIndex, err := parseEVMDepositTxID(txID)
+// ChainDepositStatus reports the on-chain status of a deposit identified by
+// txHash and depositId (both returned by SubmitDeposit), by fetching the
+// receipt at txHash and finding the vault's Deposited log whose depositor and
+// nonce reproduce depositId. It is a pure on-chain read: it does not check
+// clearing/crediting.
+func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, depositId string, minConf uint64) (core.DepositStatus, error) {
+	if _, err := ParseDepositID(depositId); err != nil {
+		return core.DepositAbsent, err
+	}
+	hash, err := parseEVMTxHash(txHash)
 	if err != nil {
 		return core.DepositAbsent, err
 	}
@@ -159,7 +296,11 @@ func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint
 	if receipt.Status != types.ReceiptStatusSuccessful {
 		return core.DepositAbsent, nil
 	}
-	if logIndex != nil && !d.hasDepositLog(receipt, *logIndex) {
+	chainID, err := d.client.ChainID(ctx)
+	if err != nil {
+		return core.DepositPending, fmt.Errorf("evm: chain id: %w", err)
+	}
+	if !d.hasDepositLog(receipt, chainID, depositId) {
 		return core.DepositAbsent, nil
 	}
 	head, err := d.client.BlockNumber(ctx)
@@ -176,7 +317,9 @@ func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint
 	return core.DepositPending, nil
 }
 
-func (d *Depositor) depositTxID(receipt *types.Receipt, account common.Address, asset common.Address, amount *big.Int, ref [32]byte) (string, error) {
+// hasDepositLog reports whether receipt contains a Deposited log, emitted by
+// the vault itself, whose depositor and nonce reproduce wantDepositID.
+func (d *Depositor) hasDepositLog(receipt *types.Receipt, chainID *big.Int, wantDepositID string) bool {
 	for _, raw := range receipt.Logs {
 		if raw.Address != d.custodyAddr {
 			continue
@@ -185,39 +328,20 @@ func (d *Depositor) depositTxID(receipt *types.Receipt, account common.Address, 
 		if err != nil {
 			continue
 		}
-		if event.Account == account && event.DepositReference == ref && event.Asset == asset && event.Amount.Cmp(amount) == 0 {
-			return fmt.Sprintf("%s/%d", raw.TxHash.Hex(), raw.Index), nil
-		}
-	}
-	return "", fmt.Errorf("evm: deposited event not found in tx %s", receipt.TxHash.Hex())
-}
-
-func (d *Depositor) hasDepositLog(receipt *types.Receipt, logIndex uint) bool {
-	for _, raw := range receipt.Logs {
-		if raw.Index != logIndex || raw.Address != d.custodyAddr {
-			continue
-		}
-		if _, err := d.custody.ParseDeposited(*raw); err == nil {
+		if DepositID(chainID, d.custodyAddr, event.Depositor, event.Nonce) == wantDepositID {
 			return true
 		}
 	}
 	return false
 }
 
-func parseEVMDepositTxID(txID string) (common.Hash, *uint, error) {
-	txID = strings.TrimSpace(txID)
-	hashText, indexText, hasIndex := strings.Cut(txID, "/")
-	if !common.IsHexHash(hashText) {
-		return common.Hash{}, nil, fmt.Errorf("evm: txID must be a transaction hash or txHash/logIndex")
+// parseEVMTxHash validates that txHash is a transaction hash. A
+// "txHash/logIndex" combined form is rejected: the hash and DepositID are
+// always passed separately.
+func parseEVMTxHash(txHash string) (common.Hash, error) {
+	txHash = strings.TrimSpace(txHash)
+	if !common.IsHexHash(txHash) {
+		return common.Hash{}, fmt.Errorf("evm: txHash must be a transaction hash")
 	}
-	hash := common.HexToHash(hashText)
-	if !hasIndex {
-		return hash, nil, nil
-	}
-	index64, err := strconv.ParseUint(indexText, 10, 32)
-	if err != nil {
-		return common.Hash{}, nil, fmt.Errorf("evm: bad txID log index %q: %w", indexText, err)
-	}
-	index := uint(index64)
-	return hash, &index, nil
+	return common.HexToHash(txHash), nil
 }

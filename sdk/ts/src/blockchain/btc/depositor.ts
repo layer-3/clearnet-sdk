@@ -9,6 +9,7 @@ import { ClearnetSdkError } from "../../core/errors.js";
 import type {
   DepositStatus,
   SubmitDepositOptions,
+  SubmitDepositResult,
   VaultDepositor,
 } from "../../core/types.js";
 import { normalizeMinConfirmations as normalizeSharedMinConfirmations } from "../../core/validation.js";
@@ -64,10 +65,12 @@ export class BitcoinVaultDepositor
     this.config = normalizeConfig(config);
   }
 
+  // depositId === txHash. TODO: chain-specific deposit ID matching custody's
+  // TxID.
   async submitDeposit(
     input: BitcoinSubmitDepositInput,
     options: SubmitDepositOptions = {},
-  ): Promise<string> {
+  ): Promise<SubmitDepositResult> {
     const submitOptions = requireSubmitDepositOptions(options);
     const fields = this.requireDepositFields(input);
     const signer = requireConfiguredSigner(this.config.signer);
@@ -119,18 +122,21 @@ export class BitcoinVaultDepositor
     psbtHex: string,
     expectedOutputs: readonly BitcoinExpectedDepositOutput[],
     options: SubmitDepositOptions = {},
-  ): Promise<string> {
+  ): Promise<SubmitDepositResult> {
     const submitOptions = requireSubmitDepositOptions(options);
     const normalizedExpectedOutputs = requireExpectedDepositOutputs(expectedOutputs);
     const tx = finalizableTransactionFromPsbt(psbtHex, normalizedExpectedOutputs);
     return this.broadcastTransaction(tx, submitOptions);
   }
 
-  async verifyDeposit(
-    txID: string,
+  // Looks the deposit up by txHash only; depositId is the same BTC txid and
+  // unused.
+  async chainDepositStatus(
+    txHash: string,
+    _depositId: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
-    const normalized = requireBitcoinTxID(txID);
+    const normalized = requireBitcoinTxID(txHash);
     const minConf = normalizeMinConfirmations(minConfirmations);
     let raw;
     try {
@@ -348,16 +354,17 @@ export class BitcoinVaultDepositor
   private async broadcastTransaction(
     tx: Transaction,
     submitOptions: SubmitDepositOptions,
-  ): Promise<string> {
+  ): Promise<SubmitDepositResult> {
     const txID = txIDFromTxid(tx.id);
+    const result: SubmitDepositResult = { txHash: txID, depositId: txID };
     try {
       await this.config.rpc.sendRawTransaction(tx.hex);
-      submitOptions.onSubmitted?.(txID);
-      return txID;
+      submitOptions.onSubmitted?.(result);
+      return result;
     } catch (error) {
       if (isAlreadyKnown(error)) {
-        submitOptions.onSubmitted?.(txID);
-        return txID;
+        submitOptions.onSubmitted?.(result);
+        return result;
       }
       if (isMissingOrSpent(error)) {
         let raw;
@@ -367,15 +374,15 @@ export class BitcoinVaultDepositor
           raw = null;
         }
         if (raw?.txid.toLowerCase() === txID) {
-          submitOptions.onSubmitted?.(txID);
-          return txID;
+          submitOptions.onSubmitted?.(result);
+          return result;
         }
       }
       if (error instanceof ClearnetSdkError) {
         throw error;
       }
       throw new ClearnetSdkError("RPC_ERROR", "btc: sendrawtransaction", {
-        txID,
+        txHash: txID,
         cause: error,
       });
     }

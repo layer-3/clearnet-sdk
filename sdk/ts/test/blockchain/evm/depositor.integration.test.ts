@@ -18,6 +18,8 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { EvmVaultDepositor } from "../../../src/blockchain/evm/depositor.js";
 import { custodyAbi, erc20Abi } from "../../../src/blockchain/evm/abi.js";
+import { composeNonce, depositId } from "../../../src/blockchain/evm/depositId.js";
+import type { EvmSubmitDepositInput } from "../../../src/core/types.js";
 
 const RPC_URL = process.env.EVM_RPC_URL ?? "http://127.0.0.1:8545";
 const CHAIN_ID = 31_337;
@@ -70,12 +72,12 @@ describe("EvmVaultDepositor Anvil integration", () => {
       address: custodyAddress,
     });
 
-    const ref = await depositor.submitDeposit({
+    const result = await depositor.submitDeposit({
       destination: { account: deployer.address, ref: DEPOSIT_REFERENCE },
       asset: "",
       amount: "0.01",
     });
-    const txHash = txHashFromTxID(ref);
+    const txHash = result.txHash as Hash;
     const afterBalance = await publicClient.getBalance({
       address: custodyAddress,
     });
@@ -94,7 +96,9 @@ describe("EvmVaultDepositor Anvil integration", () => {
         amount,
       ),
     ).toBe(true);
-    await expect(depositor.verifyDeposit(ref, 1)).resolves.toBe("confirmed");
+    await expect(
+      depositor.chainDepositStatus(result.txHash, result.depositId, 1),
+    ).resolves.toBe("confirmed");
   });
 
   it("approves an exact ERC-20 amount, deposits, and verifies the deposit tx", async () => {
@@ -126,7 +130,7 @@ describe("EvmVaultDepositor Anvil integration", () => {
     });
     const startBlock = await publicClient.getBlockNumber();
 
-    const ref = await depositor.submitDeposit({
+    const result = await depositor.submitDeposit({
       destination: { account: deployer.address, ref: DEPOSIT_REFERENCE },
       asset: tokenAddress,
       amount: "25",
@@ -137,7 +141,7 @@ describe("EvmVaultDepositor Anvil integration", () => {
       functionName: "allowance",
       args: [deployer.address, custodyAddress],
     });
-    const txHash = txHashFromTxID(ref);
+    const txHash = result.txHash as Hash;
     const afterBalance = await publicClient.readContract({
       address: tokenAddress,
       abi: erc20Abi,
@@ -180,9 +184,165 @@ describe("EvmVaultDepositor Anvil integration", () => {
         amount,
       ),
     ).toBe(true);
-    await expect(depositor.verifyDeposit(ref, 1)).resolves.toBe("confirmed");
+    await expect(
+      depositor.chainDepositStatus(result.txHash, result.depositId, 1),
+    ).resolves.toBe("confirmed");
+  });
+
+  it("uses consecutive nonces and the requested key, and reports pending, confirmed and absent", async () => {
+    const custodyAddress = await deployCustody(publicClient, walletClient);
+    const depositor = new EvmVaultDepositor({
+      publicClient,
+      walletClient,
+      walletAccount: deployer,
+      custodyAddress,
+      chainId: CHAIN_ID,
+    });
+    const input: EvmSubmitDepositInput = {
+      destination: { account: deployer.address },
+      asset: "",
+      amount: "0.001",
+    };
+    const idFor = (nonce: bigint) =>
+      depositId(BigInt(CHAIN_ID), custodyAddress, deployer.address, nonce);
+
+    const first = await depositor.submitDeposit(input);
+    const second = await depositor.submitDeposit(input);
+    expect(first.depositId).toBe(idFor(0n));
+    expect(second.depositId).toBe(idFor(1n));
+
+    const keyed = await depositor.submitDeposit({ ...input, nonceKey: 7n });
+    expect(keyed.depositId).toBe(idFor(composeNonce(7n, 0n)));
+
+    const mined = await publicClient.getTransactionReceipt({
+      hash: keyed.txHash as Hash,
+    });
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
+    const depth = head - mined.blockNumber + 1n;
+    await expect(
+      depositor.chainDepositStatus(keyed.txHash, keyed.depositId, depth + 2n),
+    ).resolves.toBe("pending");
+    await anvilRpc("evm_mine");
+    await anvilRpc("evm_mine");
+    await expect(
+      depositor.chainDepositStatus(keyed.txHash, keyed.depositId, depth + 2n),
+    ).resolves.toBe("confirmed");
+
+    await expect(
+      depositor.chainDepositStatus(first.txHash, second.depositId, 1),
+    ).resolves.toBe("absent");
+  });
+
+  it("reports STALE_NONCE when another deposit consumed the nonce it read", async () => {
+    const custodyAddress = await deployCustody(publicClient, walletClient);
+    const depositor = new EvmVaultDepositor({
+      publicClient,
+      walletClient,
+      walletAccount: deployer,
+      custodyAddress,
+      chainId: CHAIN_ID,
+    });
+    const amount = parseEther("0.001");
+
+    await anvilRpc("evm_setAutomine", [false]);
+    try {
+      // Sits in the pool with nonce 0; getNonce at `latest` still reads 0.
+      await walletClient.writeContract({
+        address: custodyAddress,
+        abi: custodyAbi,
+        functionName: "deposit",
+        args: [deployer.address, zeroAddress, amount, DEPOSIT_REFERENCE, 0n],
+        value: amount,
+        gas: 200_000n,
+      });
+      const stale = depositor
+        .submitDeposit({
+          destination: { account: deployer.address },
+          asset: "",
+          amount: "0.001",
+        })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      const miner = setInterval(() => {
+        void anvilRpc("evm_mine");
+      }, 500);
+      try {
+        await expect(stale).resolves.toMatchObject({
+          code: "STALE_NONCE",
+          step: "deposit",
+          nonceKey: 0n,
+          nonce: 0n,
+        });
+      } finally {
+        clearInterval(miner);
+      }
+    } finally {
+      await anvilRpc("evm_setAutomine", [true]);
+    }
+  }, 60_000);
+
+  it("sends no second approve when an earlier approve already covers the amount", async () => {
+    const custodyAddress = await deployCustody(publicClient, walletClient);
+    const tokenAddress = await deployMockErc20(publicClient, walletClient);
+    const depositor = new EvmVaultDepositor({
+      publicClient,
+      walletClient,
+      walletAccount: deployer,
+      custodyAddress,
+      chainId: CHAIN_ID,
+    });
+    const amount = parseEther("5");
+    await mine(
+      publicClient,
+      await walletClient.writeContract({
+        address: tokenAddress,
+        abi: erc20Abi,
+        functionName: "mint",
+        args: [deployer.address, amount],
+      }),
+    );
+    await mine(
+      publicClient,
+      await walletClient.writeContract({
+        address: tokenAddress,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [custodyAddress, amount],
+      }),
+    );
+    const before = await publicClient.getTransactionCount({
+      address: deployer.address,
+      blockTag: "pending",
+    });
+
+    await depositor.submitDeposit({
+      destination: { account: deployer.address },
+      asset: tokenAddress,
+      amount: "5",
+    });
+
+    const after = await publicClient.getTransactionCount({
+      address: deployer.address,
+      blockTag: "pending",
+    });
+    expect(after - before).toBe(1);
   });
 });
+
+async function anvilRpc(method: string, params: unknown[] = []): Promise<unknown> {
+  const response = await fetch(RPC_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  const body = (await response.json()) as { result?: unknown; error?: unknown };
+  if (body.error !== undefined) {
+    throw new Error(`${method}: ${JSON.stringify(body.error)}`);
+  }
+  return body.result;
+}
 
 async function deployCustody(
   publicClient: AnvilPublicClient,
@@ -251,8 +411,4 @@ function hasDepositedLog(
       log.args.asset.toLowerCase() === asset.toLowerCase() &&
       log.args.amount === amount,
   );
-}
-
-function txHashFromTxID(txID: string): Hash {
-  return txID.split("/", 1)[0] as Hash;
 }

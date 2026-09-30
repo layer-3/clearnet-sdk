@@ -8,6 +8,7 @@ import type {
   BitcoinNetwork,
   BitcoinSigner,
   Bytes32Hex,
+  SubmitDepositResult,
 } from "@yellow-org/clearnet-sdk";
 
 import {
@@ -36,7 +37,7 @@ const logOutput = mustElement<HTMLOutputElement>("log");
 let signer: BitcoinSigner | undefined;
 let depositor: BitcoinVaultDepositor | undefined;
 let xverseWallet: XverseWallet | undefined;
-let lastRef: string | undefined;
+let lastRef: SubmitDepositResult | undefined;
 let custodyConfig: CustodyConfig | undefined;
 
 interface CustodyConfig {
@@ -175,26 +176,26 @@ async function submitLocalDeposit(): Promise<void> {
         amount: readInput("amount"),
       },
       {
-        onSubmitted(ref) {
-          lastRef = ref;
+        onSubmitted(result) {
+          lastRef = result;
           verifyButton.disabled = false;
-          writeLog(`Submitted ${ref}\nhash: ${ref}`);
+          writeLog(`Submitted ${result.txHash}\ndeposit ID: ${result.depositId}`);
         },
       },
     );
     verifyButton.disabled = false;
     writeLog(
-      `Submitted local signer tx ${lastRef}\n` +
-        `hash: ${lastRef}\n` +
+      `Submitted local signer tx ${lastRef.txHash}\n` +
+        `deposit ID: ${lastRef.depositId}\n` +
         "Verify before mining for pending status.",
     );
   } catch (error) {
-    const txID = errorTxID(error);
-    if (txID !== undefined) {
-      lastRef = txID;
+    const txHash = errorTxHash(error);
+    if (txHash !== undefined) {
+      lastRef = { txHash, depositId: txHash };
       verifyButton.disabled = false;
     }
-    writeError(error, txID === undefined ? undefined : `Submitted ${txID}`);
+    writeError(error, txHash === undefined ? undefined : `Submitted ${txHash}`);
   } finally {
     setBusy(submitButton, false);
   }
@@ -309,27 +310,27 @@ async function submitXverseDeposit(): Promise<void> {
       signedPsbt,
       prepared.expectedOutputs,
       {
-        onSubmitted(ref) {
-          lastRef = ref;
+        onSubmitted(result) {
+          lastRef = result;
           verifyButton.disabled = false;
-          writeLog(`Submitted Xverse tx ${ref}\nhash: ${ref}`);
+          writeLog(`Submitted Xverse tx ${result.txHash}\ndeposit ID: ${result.depositId}`);
         },
       },
     );
     depositor = activeDepositor;
     verifyButton.disabled = false;
     writeLog(
-      `Submitted Xverse tx ${lastRef}\n` +
-        `hash: ${lastRef}\n` +
+      `Submitted Xverse tx ${lastRef.txHash}\n` +
+        `deposit ID: ${lastRef.depositId}\n` +
         "Verify before mining for pending status.",
     );
   } catch (error) {
-    const txID = errorTxID(error);
-    if (txID !== undefined) {
-      lastRef = txID;
+    const txHash = errorTxHash(error);
+    if (txHash !== undefined) {
+      lastRef = { txHash, depositId: txHash };
       verifyButton.disabled = false;
     }
-    writeError(error, txID === undefined ? undefined : `Submitted ${txID}`);
+    writeError(error, txHash === undefined ? undefined : `Submitted ${txHash}`);
   } finally {
     setBusy(submitXverseButton, false);
   }
@@ -355,11 +356,12 @@ async function verifyLastTx(): Promise<void> {
   }
   setBusy(verifyButton, true);
   try {
-    const status = await (depositor ?? getWalletDepositor()).verifyDeposit(
-      lastRef,
+    const status = await (depositor ?? getWalletDepositor()).chainDepositStatus(
+      lastRef.txHash,
+      lastRef.depositId,
       readBigInt("min-confirmations"),
     );
-    writeLog(`Verify ${lastRef}\nstatus: ${status}`);
+    writeLog(`Verify ${lastRef.txHash}\nstatus: ${status}`);
   } catch (error) {
     writeError(error);
   } finally {
@@ -605,9 +607,9 @@ function writeError(error: unknown, prefix?: string): void {
   writeLog(prefix === undefined ? message : `${prefix}\n${message}`);
 }
 
-function errorTxID(error: unknown): string | undefined {
-  if (error && typeof error === "object" && "txID" in error) {
-    return (error as { txID?: string }).txID;
+function errorTxHash(error: unknown): string | undefined {
+  if (error && typeof error === "object" && "txHash" in error) {
+    return (error as { txHash?: string }).txHash;
   }
   return undefined;
 }

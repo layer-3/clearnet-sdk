@@ -99,9 +99,9 @@ func TestIntegrationBTC_DepositAndWithdraw(t *testing.T) {
 		t.Fatalf("Deposit: %v", err)
 	}
 	node.generateToAddress(ctx, t, 1, miner) // confirm the deposit UTXO
-	t.Logf("deposit tx %s -> %s", depRef, depositAddr.EncodeAddress())
+	t.Logf("deposit tx %s -> %s", depRef.TxHash, depositAddr.EncodeAddress())
 
-	rawDep, err := node.GetRawTransaction(ctx, depRef)
+	rawDep, err := node.GetRawTransaction(ctx, depRef.TxHash)
 	if err != nil {
 		t.Fatalf("GetRawTransaction(deposit): %v", err)
 	}

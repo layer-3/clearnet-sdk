@@ -59,8 +59,10 @@ describe("SolanaVaultDepositor validator integration", () => {
 
     const afterBalance = await waitForLamports(vault, beforeBalance + amount);
     expect(afterBalance - beforeBalance).toBe(amount);
-    await expect(depositor.verifyDeposit(ref, 0)).resolves.toBe("confirmed");
-    await expectDepositedEvent(ref, {
+    await expect(
+      depositor.chainDepositStatus(ref.txHash, ref.depositId, 0),
+    ).resolves.toBe("confirmed");
+    await expectDepositedEvent(ref.txHash, {
       depositor: depositorKeypair.publicKey,
       account: ACCOUNT,
       reference: REFERENCE,
@@ -106,8 +108,10 @@ describe("SolanaVaultDepositor validator integration", () => {
 
     const afterBalance = await waitForTokenBalance(vaultAta, beforeBalance + amount);
     expect(afterBalance - beforeBalance).toBe(amount);
-    await expect(depositor.verifyDeposit(ref, 0)).resolves.toBe("confirmed");
-    await expectDepositedEvent(ref, {
+    await expect(
+      depositor.chainDepositStatus(ref.txHash, ref.depositId, 0),
+    ).resolves.toBe("confirmed");
+    await expectDepositedEvent(ref.txHash, {
       depositor: payer.publicKey,
       account: ACCOUNT,
       reference: REFERENCE,

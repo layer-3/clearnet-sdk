@@ -5,6 +5,7 @@ import { ClearnetSdkError } from "../../core/errors.js";
 import type {
   DepositStatus,
   SubmitDepositOptions,
+  SubmitDepositResult,
   VaultDepositor,
 } from "../../core/types.js";
 import { encodeClearnetMemo } from "./encoding.js";
@@ -51,17 +52,20 @@ export class XrplVaultDepositor
     this.client = new Client(requireRpcUrl(config.rpcUrl));
   }
 
+  // depositId === txHash. TODO: chain-specific deposit ID matching custody's
+  // TxID.
   async submitDeposit(
     input: XrplSubmitDepositInput,
     options: SubmitDepositOptions = {},
-  ): Promise<string> {
+  ): Promise<SubmitDepositResult> {
     const submitOptions = requireSubmitDepositOptions(options);
     const prepared = await this.prepareDeposit(input);
     const signed = await this.sign(prepared);
     const txID = normalizeTxHash(signed.hash);
     await this.submit(signed.txBlob, txID);
-    submitOptions.onSubmitted?.(txID);
-    return txID;
+    const result: SubmitDepositResult = { txHash: txID, depositId: txID };
+    submitOptions.onSubmitted?.(result);
+    return result;
   }
 
   /** Builds and autofills the exact unsigned custody payment. */
@@ -91,11 +95,14 @@ export class XrplVaultDepositor
     return prepared;
   }
 
-  async verifyDeposit(
-    txID: string,
+  // Looks the deposit up by txHash only; depositId is the same upper-case transaction hash and
+  // unused.
+  async chainDepositStatus(
+    txHash: string,
+    _depositId: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
-    const normalized = requireTxID(txID);
+    const normalized = requireTxID(txHash);
     const minConf = normalizeMinConfirmations(minConfirmations);
     await this.ensureConnected();
     try {
@@ -181,7 +188,7 @@ export class XrplVaultDepositor
         throw new ClearnetSdkError(
           "TX_REVERTED",
           `xrpl: deposit rejected: ${engineResult}`,
-          { txID },
+          { txHash: txID },
         );
       }
     } catch (error) {
@@ -189,7 +196,7 @@ export class XrplVaultDepositor
         throw error;
       }
       throw new ClearnetSdkError("RPC_ERROR", "xrpl: submit", {
-        txID,
+        txHash: txID,
         cause: error,
       });
     }

@@ -27,7 +27,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "npm run test:core && npm run test:evm && npm run test:sol && npm run test:xrpl && npm run test:btc",
     "test:core": "vitest run test/core/validation.test.ts",
-    "test:evm": "vitest run test/blockchain/evm/depositor.test.ts",
+    "test:evm": "vitest run test/blockchain/evm/depositor.test.ts test/blockchain/evm/depositId.test.ts",
     "test:sol": "vitest run test/blockchain/sol/depositor.test.ts",
     "test:xrpl": "vitest run test/blockchain/xrpl/depositor.test.ts",
     "test:btc": "vitest run test/blockchain/btc/depositor.test.ts test/blockchain/btc/marker.test.ts test/examples/bitcoin-deposit/xverse.test.ts",

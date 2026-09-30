@@ -108,7 +108,7 @@ export interface BitcoinPreparedDepositPsbt {
   /**
    * Transaction ID for the unsigned PSBT transaction shape. Wallet finalization
    * can change the final txid, especially for nested-SegWit inputs, so callers
-   * must use the txID returned by submitSignedDepositPsbt for verification.
+   * must use the txHash returned by submitSignedDepositPsbt for verification.
    */
   unsignedTxID: string;
   fundingAddress: string;

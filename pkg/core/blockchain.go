@@ -35,7 +35,7 @@ type FraudEvidenceSubmitter interface {
 	SubmitWithdrawalFraudEvidence(ctx context.Context, evidence WithdrawalFraudEvidence) error
 }
 
-// DepositStatus is the tri-state result of VerifyDeposit, distinguishing a
+// DepositStatus is the tri-state result of ChainDepositStatus, distinguishing a
 // deposit that settled, one that is still in flight, and one that never landed
 // (or was dropped/reorged out).
 type DepositStatus int
@@ -74,6 +74,15 @@ type DepositDestination struct {
 	Ref     [32]byte
 }
 
+// SubmitDepositResult carries both identifiers a submitted deposit produces.
+// TxHash is the on-chain transaction/signature hash. DepositID is the ID a
+// MintReceipt is signed for; on EVM it differs from TxHash. On BTC, Solana and
+// XRPL, DepositID currently equals TxHash (TODO: chain-specific deposit ID).
+type SubmitDepositResult struct {
+	TxHash    string
+	DepositID string
+}
+
 // VaultDepositor moves funds into the L1 vault. The implementation owns the
 // depositor's signing identity (a sign.Signer supplied at construction) and
 // executes the deposit on its chain: a contract call (EVM), a funding tx to a
@@ -82,12 +91,14 @@ type DepositDestination struct {
 // destination. An empty assetAddress denotes the native asset at this API
 // boundary; chain implementations normalize it to their protocol native marker.
 type VaultDepositor interface {
-	SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest DepositDestination) (string, error)
-	// VerifyDeposit reports whether the deposit identified by txID (returned by
-	// SubmitDeposit) is present and final on chain — a pure read for replay/audit.
-	// minConf is the confirmation depth required for DepositConfirmed; chains
-	// with no numeric depth (Solana) map it onto a commitment level instead.
-	VerifyDeposit(ctx context.Context, txID string, minConf uint64) (DepositStatus, error)
+	SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest DepositDestination) (SubmitDepositResult, error)
+	// ChainDepositStatus reports whether the deposit identified by txHash and
+	// depositId (as returned by SubmitDeposit) is present and final on chain —
+	// a pure on-chain read for replay/audit. It reports on-chain status only,
+	// not clearing/crediting. minConf is the confirmation depth required for
+	// DepositConfirmed; chains with no numeric depth (Solana) map it onto a
+	// commitment level instead.
+	ChainDepositStatus(ctx context.Context, txHash, depositId string, minConf uint64) (DepositStatus, error)
 }
 
 // VaultWithdrawalFinalizer turns an authorized withdrawal into an on-chain

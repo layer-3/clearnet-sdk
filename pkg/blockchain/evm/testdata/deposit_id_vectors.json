@@ -1,0 +1,75 @@
+{
+  "_comment": "ISS-068 shared golden vectors for the EVM deposit ID: keccak256(abi.encode(chainid, vault, depositor, nonce)). Kept byte-identical across custody (Foundry), SDK Go and SDK TS. Regenerate with cast abi-encode/keccak if the formula ever changes; do not hand-edit the id/nonce fields.",
+  "vectors": [
+    {
+      "name": "ordinary",
+      "chainId": 1,
+      "vault": "0x1111111111111111111111111111111111111111",
+      "depositor": "0x3333333333333333333333333333333333333333",
+      "key": "7",
+      "sequence": "3",
+      "nonce": "0x0000000000000000000000000000000000000000000000070000000000000003",
+      "id": "0xf34075c20b43ba821f9c757aabd08aa8564beb8bde4eb69b37943d6bfda39552"
+    },
+    {
+      "name": "nonce_zero",
+      "chainId": 1,
+      "vault": "0x1111111111111111111111111111111111111111",
+      "depositor": "0x3333333333333333333333333333333333333333",
+      "key": "0",
+      "sequence": "0",
+      "nonce": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "id": "0xbd8f880aefdebaf46b8f8fe75c85932281ead53837f9fdce0942e968f584cdc4"
+    },
+    {
+      "name": "key_only",
+      "chainId": 1,
+      "vault": "0x1111111111111111111111111111111111111111",
+      "depositor": "0x3333333333333333333333333333333333333333",
+      "key": "999999",
+      "sequence": "0",
+      "nonce": "0x0000000000000000000000000000000000000000000f423f0000000000000000",
+      "id": "0xd8ea6848d50cd98b645badb127dcf35852c0bcb7184529cf82a1660605069028"
+    },
+    {
+      "name": "max_nonce",
+      "chainId": 1,
+      "vault": "0x1111111111111111111111111111111111111111",
+      "depositor": "0x3333333333333333333333333333333333333333",
+      "key": "6277101735386680763835789423207666416102355444464034512895",
+      "sequence": "18446744073709551615",
+      "nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "id": "0xe0e38bdf4ef8bf6b85bee55493ea4a8223cfc639fa90387df9030694e3e0216b"
+    },
+    {
+      "name": "chain_b",
+      "chainId": 42161,
+      "vault": "0x1111111111111111111111111111111111111111",
+      "depositor": "0x3333333333333333333333333333333333333333",
+      "key": "7",
+      "sequence": "3",
+      "nonce": "0x0000000000000000000000000000000000000000000000070000000000000003",
+      "id": "0x01e95436ef8c68c5d986052cb5d4605177d4e31722f29e7661d0366108214db6"
+    },
+    {
+      "name": "vault_b",
+      "chainId": 1,
+      "vault": "0x2222222222222222222222222222222222222222",
+      "depositor": "0x3333333333333333333333333333333333333333",
+      "key": "7",
+      "sequence": "3",
+      "nonce": "0x0000000000000000000000000000000000000000000000070000000000000003",
+      "id": "0xdeecba2ec2955364ff03c464708c21f8ecd42b24ee3a1b967c2d72738f056fba"
+    },
+    {
+      "name": "depositor_b",
+      "chainId": 1,
+      "vault": "0x1111111111111111111111111111111111111111",
+      "depositor": "0x4444444444444444444444444444444444444444",
+      "key": "7",
+      "sequence": "3",
+      "nonce": "0x0000000000000000000000000000000000000000000000070000000000000003",
+      "id": "0x8d019fd509c6b935bec80b087246c45b8db24b5e38cfe7c51ada49755eb02173"
+    }
+  ]
+}

@@ -22,6 +22,7 @@ import type {
   Bytes32Hex,
   DepositStatus,
   SubmitDepositOptions,
+  SubmitDepositResult,
   VaultDepositor,
   XrplDepositDestination,
   XrplIssuedDepositInput,
@@ -94,7 +95,10 @@ describe("XrplVaultDepositor", () => {
       amount: string;
       destination: XrplDepositDestination;
     }>().toMatchTypeOf<XrplSubmitDepositInput>();
-    expectTypeOf<string>().toEqualTypeOf<string>();
+    expectTypeOf<SubmitDepositResult>().toEqualTypeOf<{
+      txHash: string;
+      depositId: string;
+    }>();
     expectTypeOf<DepositStatus>().toEqualTypeOf<
       "absent" | "pending" | "confirmed"
     >();
@@ -166,7 +170,7 @@ describe("XrplVaultDepositor", () => {
     expect(client.submit).toHaveBeenCalledExactlyOnceWith(TX_BLOB, {
       autofill: false,
     });
-    expect(ref).toEqual(HASH_REF);
+    expect(ref).toEqual({ txHash: HASH_REF, depositId: HASH_REF });
     expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(ref);
   });
 
@@ -203,7 +207,7 @@ describe("XrplVaultDepositor", () => {
         amount: "1",
         destination: { account: ACCOUNT },
       }),
-    ).resolves.toEqual(HASH_REF);
+    ).resolves.toEqual({ txHash: HASH_REF, depositId: HASH_REF });
 
     expect(client.request).not.toHaveBeenCalled();
   });
@@ -406,7 +410,7 @@ describe("XrplVaultDepositor", () => {
         amount: "1",
         destination: { account: ACCOUNT },
       }),
-    ).rejects.toMatchObject({ code: "TX_REVERTED", txID: HASH_REF });
+    ).rejects.toMatchObject({ code: "TX_REVERTED", txHash: HASH_REF });
 
     signer.sign.mockResolvedValueOnce({ txBlob: TX_BLOB, hash: "not-a-hash" });
     await expect(
@@ -422,27 +426,27 @@ describe("XrplVaultDepositor", () => {
     const depositor = createDepositor(createSigner());
 
     client.request.mockResolvedValueOnce(txResponse(true));
-    await expect(depositor.verifyDeposit(HASH_REF, 100)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(HASH_REF, HASH_REF, 100)).resolves.toBe(
       "confirmed",
     );
 
     client.request.mockResolvedValueOnce(txResponse(true));
-    await expect(depositor.verifyDeposit(HASH_REF, 1n << 80n)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(HASH_REF, HASH_REF, 1n << 80n)).resolves.toBe(
       "confirmed",
     );
 
     client.request.mockResolvedValueOnce(txResponse(false));
-    await expect(depositor.verifyDeposit(HASH_REF, 1n)).resolves.toBe("pending");
+    await expect(depositor.chainDepositStatus(HASH_REF, HASH_REF, 1n)).resolves.toBe("pending");
 
     client.request.mockRejectedValueOnce({
       message: "Transaction not found.",
       data: { error: "txnNotFound" },
     });
-    await expect(depositor.verifyDeposit(HASH_REF, 0)).resolves.toBe("absent");
+    await expect(depositor.chainDepositStatus(HASH_REF, HASH_REF, 0)).resolves.toBe("absent");
 
     const rpcError = new Error("node offline");
     client.request.mockRejectedValueOnce(rpcError);
-    await expect(depositor.verifyDeposit(HASH_REF, 0)).rejects.toMatchObject({
+    await expect(depositor.chainDepositStatus(HASH_REF, HASH_REF, 0)).rejects.toMatchObject({
       code: "RPC_ERROR",
       cause: rpcError,
     });
@@ -452,15 +456,15 @@ describe("XrplVaultDepositor", () => {
     const depositor = createDepositor(createSigner());
 
     await expect(
-      depositor.verifyDeposit("0x1234", 0),
+      depositor.chainDepositStatus("0x1234", "0x1234", 0),
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(
-      depositor.verifyDeposit("not-a-hash", 0),
+      depositor.chainDepositStatus("not-a-hash", "not-a-hash", 0),
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
-    await expect(depositor.verifyDeposit(HASH_REF, -1)).rejects.toMatchObject({
+    await expect(depositor.chainDepositStatus(HASH_REF, HASH_REF, -1)).rejects.toMatchObject({
       code: "INVALID_CONFIRMATIONS",
     });
-    await expect(depositor.verifyDeposit(HASH_REF, 1.5)).rejects.toMatchObject({
+    await expect(depositor.chainDepositStatus(HASH_REF, HASH_REF, 1.5)).rejects.toMatchObject({
       code: "INVALID_CONFIRMATIONS",
       message: "minConfirmations must be a non-negative safe integer",
     });
@@ -500,7 +504,7 @@ describe("XrplVaultDepositor", () => {
     await depositor.disconnect();
 
     client.isConnected.mockReturnValueOnce(false);
-    await expect(depositor.verifyDeposit(HASH_REF, 0)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(HASH_REF, HASH_REF, 0)).resolves.toBe(
       "confirmed",
     );
     expect(client.connect).toHaveBeenCalledOnce();
@@ -511,7 +515,7 @@ describe("XrplVaultDepositor", () => {
     client.connect.mockImplementationOnce(() => connect.promise);
     const depositor = createDepositor(createSigner());
 
-    const verification = depositor.verifyDeposit(HASH_REF, 0);
+    const verification = depositor.chainDepositStatus(HASH_REF, HASH_REF, 0);
     await Promise.resolve();
 
     const disconnect = depositor.disconnect();

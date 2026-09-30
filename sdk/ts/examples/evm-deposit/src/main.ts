@@ -1,4 +1,5 @@
 import { EVM_NATIVE_ASSET, EvmVaultDepositor } from "@yellow-org/clearnet-sdk";
+import type { SubmitDepositResult } from "@yellow-org/clearnet-sdk";
 import {
   createPublicClient,
   createWalletClient,
@@ -27,7 +28,7 @@ const verifyButton = mustElement<HTMLButtonElement>("verify");
 const logOutput = mustElement<HTMLOutputElement>("log");
 
 let walletAccount: Address | undefined;
-let lastRef: string | undefined;
+let lastResult: SubmitDepositResult | undefined;
 
 connectButton.addEventListener("click", () => {
   void connectWallet();
@@ -105,7 +106,7 @@ async function submitDeposit(): Promise<void> {
   setBusy(submitButton, true);
   try {
     await requireConfiguredRpcChain(rpcUrl, chainId);
-    lastRef = await depositor.submitDeposit(
+    lastResult = await depositor.submitDeposit(
       {
         destination: {
           account,
@@ -115,15 +116,15 @@ async function submitDeposit(): Promise<void> {
         amount,
       },
       {
-        onSubmitted(ref) {
-          lastRef = ref;
+        onSubmitted(result) {
+          lastResult = result;
           verifyButton.disabled = false;
-          writeLog(`Submitted ${ref}`);
+          writeLog(`Submitted tx=${result.txHash} deposit_id=${result.depositId}`);
         },
       },
     );
     verifyButton.disabled = false;
-    writeLog(`Mined ${lastRef}\nraw: ${lastRef}`);
+    writeLog(`Mined tx=${lastResult.txHash} deposit_id=${lastResult.depositId}`);
   } catch (error) {
     const txHash = errorTxHash(error);
     writeError(error, txHash === undefined ? undefined : `Submitted ${txHash}`);
@@ -133,7 +134,7 @@ async function submitDeposit(): Promise<void> {
 }
 
 async function verifyLastTx(): Promise<void> {
-  if (lastRef === undefined) {
+  if (lastResult === undefined) {
     return;
   }
   if (walletAccount === undefined) {
@@ -163,8 +164,12 @@ async function verifyLastTx(): Promise<void> {
 
   setBusy(verifyButton, true);
   try {
-    const status = await depositor.verifyDeposit(lastRef, 1);
-    writeLog(`Verify ${lastRef}\nstatus: ${status}`);
+    const status = await depositor.chainDepositStatus(
+      lastResult.txHash,
+      lastResult.depositId,
+      1,
+    );
+    writeLog(`Verify tx=${lastResult.txHash} deposit_id=${lastResult.depositId}\nstatus: ${status}`);
   } catch (error) {
     writeError(error);
   } finally {
@@ -222,9 +227,8 @@ function requireProvider(): Eip1193Provider {
 }
 
 function errorTxHash(error: unknown): Hash | undefined {
-  if (error && typeof error === "object" && "txID" in error) {
-    const txID = (error as { txID?: string }).txID;
-    return txID?.split("/", 1)[0] as Hash | undefined;
+  if (error && typeof error === "object" && "txHash" in error) {
+    return (error as { txHash?: string }).txHash as Hash | undefined;
   }
   return undefined;
 }

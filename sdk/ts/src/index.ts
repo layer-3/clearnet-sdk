@@ -7,12 +7,19 @@ export type {
   EvmSubmitDepositInput,
   SubmitDepositInput,
   SubmitDepositOptions,
+  SubmitDepositResult,
   VaultDepositor,
 } from "./core/types.js";
 export { ClearnetSdkError } from "./core/errors.js";
-export type { ClearnetSdkErrorCode } from "./core/errors.js";
+export type { ClearnetSdkErrorCode, DepositStep } from "./core/errors.js";
 export { EvmVaultDepositor } from "./blockchain/evm/depositor.js";
 export { EVM_NATIVE_ASSET } from "./blockchain/evm/constants.js";
+export {
+  composeNonce,
+  depositId,
+  requireDepositId,
+  splitNonce,
+} from "./blockchain/evm/depositId.js";
 export {
   BITCOIN_NATIVE_ASSET,
   BitcoinCoreRpcClient,

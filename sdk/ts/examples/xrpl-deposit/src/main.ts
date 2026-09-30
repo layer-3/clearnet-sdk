@@ -10,6 +10,7 @@ import {
 } from "@yellow-org/clearnet-sdk";
 import type {
   Bytes32Hex,
+  SubmitDepositResult,
   XrplPreparedPayment,
   XrplSigner,
 } from "@yellow-org/clearnet-sdk";
@@ -28,7 +29,7 @@ const verifyButton = mustElement<HTMLButtonElement>("verify");
 const logOutput = mustElement<HTMLOutputElement>("log");
 
 let signer: XrplSigner | undefined;
-let lastRef: string | undefined;
+let lastRef: SubmitDepositResult | undefined;
 let depositor: XrplVaultDepositor | undefined;
 
 const GEMWALLET_NETWORK_TIMEOUT_MS = 8_000;
@@ -221,10 +222,10 @@ async function submitDeposit(): Promise<void> {
             amount: readInput("amount"),
           },
       {
-        onSubmitted(ref) {
+        onSubmitted(result) {
           if (depositor === activeDepositor) {
-            lastRef = ref;
-            writeLog(`Submitted ${ref}\nhash: ${ref}`);
+            lastRef = result;
+            writeLog(`Submitted ${result.txHash}\ndeposit ID: ${result.depositId}`);
           }
         },
       },
@@ -233,10 +234,10 @@ async function submitDeposit(): Promise<void> {
     if (depositor === activeDepositor) {
       lastRef = submittedRef;
       verifyButton.disabled = false;
-      writeLog(`Accepted ${submittedRef}\nhash: ${submittedRef}`);
+      writeLog(`Accepted ${submittedRef.txHash}\ndeposit ID: ${submittedRef.depositId}`);
     }
   } catch (error) {
-    const txID = errorTxID(error);
+    const txHash = errorTxHash(error);
     if (
       lastRef !== undefined &&
       activeDepositor !== undefined &&
@@ -244,7 +245,7 @@ async function submitDeposit(): Promise<void> {
     ) {
       verifyButton.disabled = false;
     }
-    writeError(error, txID === undefined ? undefined : `string ${txID}`);
+    writeError(error, txHash === undefined ? undefined : `string ${txHash}`);
   } finally {
     setBusy(submitButton, false);
   }
@@ -257,8 +258,12 @@ async function verifyLastTx(): Promise<void> {
 
   setBusy(verifyButton, true);
   try {
-    const status = await depositor.verifyDeposit(lastRef, 0);
-    writeLog(`Verify ${lastRef}\nstatus: ${status}`);
+    const status = await depositor.chainDepositStatus(
+      lastRef.txHash,
+      lastRef.depositId,
+      0,
+    );
+    writeLog(`Verify ${lastRef.txHash}\nstatus: ${status}`);
   } catch (error) {
     writeError(error);
   } finally {
@@ -465,9 +470,9 @@ function writeError(error: unknown, prefix?: string): void {
   writeLog(prefix === undefined ? message : `${prefix}\n${message}`);
 }
 
-function errorTxID(error: unknown): string | undefined {
-  if (error && typeof error === "object" && "txID" in error) {
-    return (error as { txID?: string }).txID;
+function errorTxHash(error: unknown): string | undefined {
+  if (error && typeof error === "object" && "txHash" in error) {
+    return (error as { txHash?: string }).txHash;
   }
   return undefined;
 }

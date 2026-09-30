@@ -144,36 +144,43 @@ func normalizeDepositAssetAddress(assetAddress string) string {
 // dest.Ref selects marker version 0x02 (ADR-015 sub-account reference); a zero
 // Ref uses version 0x01. assetAddress must be "" for native BTC. Builds, signs
 // (P2WPKH), and broadcasts the funding tx.
-func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (string, error) {
+//
+// DepositID == TxHash (the funding txid). TODO: BTC deposit ID matching
+// `txid:vout`.
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.SubmitDepositResult, error) {
 	markerAddr, err := parseClearnetAccount(dest.Account)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	assetAddress = normalizeDepositAssetAddress(assetAddress)
 	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	if amount.Sign() <= 0 {
-		return "", fmt.Errorf("btc: amount %s not positive", amount.String())
+		return core.SubmitDepositResult{}, fmt.Errorf("btc: amount %s not positive", amount.String())
 	}
 	decimals, err := d.assets.AssetDecimals(ctx, assetAddress)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	baseUnits, err := blockchain.DecimalToBaseUnits(amount, decimals)
 	if err != nil {
-		return "", fmt.Errorf("btc: amount: %w", err)
+		return core.SubmitDepositResult{}, fmt.Errorf("btc: amount: %w", err)
 	}
 	if !baseUnits.IsInt64() || baseUnits.Int64() <= 0 {
-		return "", fmt.Errorf("btc: amount %s not a positive int64 satoshi value", amount.String())
+		return core.SubmitDepositResult{}, fmt.Errorf("btc: amount %s not a positive int64 satoshi value", amount.String())
 	}
 	sats := baseUnits.Int64()
 
 	depositAddr, markerScript, err := d.genericDepositTarget(markerAddr, dest.Ref)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
-	return d.sender.Send(ctx, depositAddr.EncodeAddress(), sats, WithExtraOutputScript(markerScript))
+	txID, err := d.sender.Send(ctx, depositAddr.EncodeAddress(), sats, WithExtraOutputScript(markerScript))
+	if err != nil {
+		return core.SubmitDepositResult{}, err
+	}
+	return core.SubmitDepositResult{TxHash: txID, DepositID: txID}, nil
 }
 
 // genericDepositTarget derives the single generic P2WSH deposit address
@@ -212,14 +219,14 @@ func parseClearnetAccount(account string) ([20]byte, error) {
 	return acct, nil
 }
 
-// VerifyDeposit reports the backend's on-chain status for the deposit txID.
-// The legacy RPC backend requires the node to resolve the tx (txindex=1, or the
-// tx unspent / in the mempool). A tx it has never seen — or one reorged out and
-// dropped — reads as DepositAbsent; a mempool tx (0 confs) is DepositPending
-// until it is mined with at least max(1, minConf) confirmations (a deposit is
-// only Confirmed once on chain, consistent with the other chains).
-func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint64) (core.DepositStatus, error) {
-	confirmations, known, err := d.backend.GetTransactionConfirmations(ctx, txID)
+// ChainDepositStatus reports the backend's on-chain status for the deposit
+// identified by txHash; depositId is the same txid and unused. The legacy RPC
+// backend needs the node to resolve the tx (txindex=1, or tx unspent / in the
+// mempool). An unknown or reorged-out tx reads as DepositAbsent; a mempool tx
+// (0 confs) is DepositPending until mined with at least max(1, minConf)
+// confirmations.
+func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, _ string, minConf uint64) (core.DepositStatus, error) {
+	confirmations, known, err := d.backend.GetTransactionConfirmations(ctx, txHash)
 	if err != nil {
 		return core.DepositAbsent, err
 	}
