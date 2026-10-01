@@ -324,6 +324,40 @@ func (b *EsploraP2WPKHBackend) GetTransactionConfirmations(ctx context.Context, 
 	return confirmations, true, nil
 }
 
+func (b *EsploraP2WPKHBackend) GetTransactionOutputs(ctx context.Context, txID string) ([]RawVout, bool, error) {
+	if err := validateHashString(txID); err != nil {
+		return nil, false, fmt.Errorf("btc: invalid Esplora transaction ID %q: %w", txID, err)
+	}
+	statusCode, data, err := b.request(ctx, http.MethodGet, b.endpoint("tx", txID), nil)
+	if err != nil {
+		return nil, false, err
+	}
+	if statusCode == http.StatusNotFound {
+		return nil, false, nil
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return nil, false, esploraHTTPStatusError(statusCode, data)
+	}
+	var tx struct {
+		TxID string `json:"txid"`
+		Vout []struct {
+			ScriptPubKey string `json:"scriptpubkey"`
+			Value        int64  `json:"value"`
+		} `json:"vout"`
+	}
+	if err := decodeEsploraJSON(data, &tx); err != nil {
+		return nil, false, fmt.Errorf("btc: decode Esplora transaction: %w", err)
+	}
+	if tx.TxID != "" && !strings.EqualFold(tx.TxID, txID) {
+		return nil, false, fmt.Errorf("btc: Esplora transaction ID mismatch: requested %s, returned %s", txID, tx.TxID)
+	}
+	outputs := make([]RawVout, len(tx.Vout))
+	for i, out := range tx.Vout {
+		outputs[i] = RawVout{ValueSats: out.Value, ScriptPubKeyHex: out.ScriptPubKey}
+	}
+	return outputs, true, nil
+}
+
 func (b *EsploraP2WPKHBackend) tipHeight(ctx context.Context) (uint64, error) {
 	status, data, err := b.request(ctx, http.MethodGet, b.endpoint("blocks", "tip", "height"), nil)
 	if err != nil {

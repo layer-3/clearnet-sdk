@@ -144,7 +144,9 @@ async function verifyLastTx(): Promise<void> {
       lastRef.depositId,
       0,
     );
-    writeLog(`Verify ${lastRef.txHash}\nstatus: ${status}`);
+    writeLog(
+      `Verify ${lastRef.txHash}\ndeposit ID: ${lastRef.depositId}\nstatus: ${status}`,
+    );
   } catch (error) {
     writeError(error);
   } finally {

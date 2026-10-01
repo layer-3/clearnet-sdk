@@ -39,18 +39,22 @@ CUSTODY_BTC_ENV=/absolute/path/to/custody/testenv/btc.env \
 1. Confirm the page says it loaded the custody `5-of-7` configuration.
 2. Click **Fund Local**.
 3. Enter the clearnet account, optional 32-byte reference, and BTC amount.
-4. Click **Submit Local** and copy the transaction ID.
+4. Click **Submit Local** and copy the deposit ID (`<txid>:0`, the SDK's
+   deposit output is always output 0).
 5. Click **Mine Block twice**. The first block confirms the transaction; the
    second advances custody's watcher beyond its local confirmation boundary.
-6. Click **Verify Last Tx** to check Bitcoin confirmation.
+6. Click **Verify Last Tx** to check Bitcoin confirmation. It passes both the
+   transaction ID and the deposit ID to `chainDepositStatus`, which also checks
+   that the output pays the generic deposit address and that the transaction
+   carries exactly one valid deposit marker.
 
 ### Check the MintReceipt manually
 
 The browser deliberately does not access custody's clearing stand-in. Replace
-`TXID` with the submitted transaction ID:
+`DEPOSIT_ID` with the deposit ID shown after submit:
 
 ```sh
-curl -sS 'http://localhost:50052/events?type=mint&tx_id=TXID:0' | jq
+curl -sS 'http://localhost:50052/events?type=mint&tx_id=DEPOSIT_ID' | jq
 ```
 
 A completed deposit returns a non-empty `events` array containing the credited

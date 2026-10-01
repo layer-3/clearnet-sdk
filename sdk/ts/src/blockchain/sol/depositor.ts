@@ -6,6 +6,7 @@ import {
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
+import type { VersionedTransactionResponse } from "@solana/web3.js";
 
 import { ClearnetSdkError } from "../../core/errors.js";
 import type {
@@ -17,13 +18,19 @@ import type {
 import { decimalToBaseUnits } from "../amounts.js";
 import {
   DEFAULT_RECEIPT_TIMEOUT_MS,
+  DEPOSITED_EVENT_DISCRIMINATOR,
+  DEPOSITED_EVENT_MIN_LEN,
   DEPOSIT_SOL_DISCRIMINATOR,
   DEPOSIT_SPL_DISCRIMINATOR,
+  EVENT_IX_TAG,
+  EXECUTED_EVENT_DISCRIMINATOR,
+  EXECUTED_EVENT_MIN_LEN,
   POLL_INTERVAL_MS,
   SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID,
   SOLANA_CUSTODY_PROGRAM_ID,
   SOLANA_TOKEN_PROGRAM_ID,
 } from "./constants.js";
+import { parseSolanaDepositId, solanaDepositId } from "./depositId.js";
 import { encodeDepositData } from "./encoding.js";
 import type {
   SolanaCommitment,
@@ -91,8 +98,8 @@ export class SolanaVaultDepositor
     });
   }
 
-  // depositId === txHash. TODO: chain-specific deposit ID matching custody's
-  // TxID.
+  // The transaction carries one deposit instruction, so depositId is
+  // solanaDepositId(signature, 0).
   async submitDeposit(
     input: SolanaSubmitDepositInput,
     options: SubmitDepositOptions = {},
@@ -103,7 +110,10 @@ export class SolanaVaultDepositor
 
     const signature = await this.signAndSend(transaction);
     const txID = normalizeSolanaTxID(signature);
-    const result: SubmitDepositResult = { txHash: txID, depositId: txID };
+    const result: SubmitDepositResult = {
+      txHash: txID,
+      depositId: solanaDepositId(signature, 0),
+    };
     waitOptions.onSubmitted?.(result);
     await this.waitForCommitment(signature, txID, waitOptions);
     return result;
@@ -136,17 +146,48 @@ export class SolanaVaultDepositor
     return transaction;
   }
 
-  // Looks the deposit up by txHash only; depositId is the same base58 signature and
-  // unused.
+  // depositId must be solanaDepositId(txHash, index). A failed transaction, or
+  // one whose custody event at index is not a Deposited event, is absent; a
+  // confirmed transaction the RPC does not serve yet is pending. Custody's
+  // crediting rules are not applied, so "confirmed" does not guarantee a credit.
   async chainDepositStatus(
     txHash: string,
-    _depositId: string,
+    depositId: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
     requireTxID(txHash);
+    const index = parseSolanaDepositId(txHash, depositId);
     const minConf = normalizeMinConfirmations(minConfirmations);
     const status = await this.getSignatureStatus(txHash, txHash);
-    return mapStatus(status, minConf);
+    const mapped = mapStatus(status, minConf);
+    if (
+      mapped === "absent" ||
+      (status?.confirmationStatus !== "confirmed" &&
+        status?.confirmationStatus !== "finalized")
+    ) {
+      return mapped;
+    }
+    let response: VersionedTransactionResponse | null;
+    try {
+      response = await this.connection.getTransaction(txHash, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0,
+      });
+    } catch (error) {
+      throw new ClearnetSdkError("RPC_ERROR", "sol: get transaction", {
+        txHash,
+        cause: error,
+      });
+    }
+    if (response === null || response.meta === null) {
+      return "pending";
+    }
+    if (response.meta.err != null) {
+      return "absent";
+    }
+    return depositEventAt(response, this.programId, index, txHash)
+      ? mapped
+      : "absent";
   }
 
   private depositSolInstruction(
@@ -361,6 +402,77 @@ function normalizeSolanaTxID(signature: string): string {
     );
   }
   return signature;
+}
+
+// Reports whether the custody event at index is a Deposited event. Events are
+// the programId inner instructions carrying a decodable Deposited or Executed
+// event, counted in order across all inner instructions. Mirrors Go
+// sol.depositEventAt.
+function depositEventAt(
+  response: VersionedTransactionResponse,
+  programId: PublicKey,
+  index: bigint,
+  txHash: string,
+): boolean {
+  const meta = response.meta;
+  if (meta === null) {
+    return false;
+  }
+  const keys = [
+    ...response.transaction.message.staticAccountKeys,
+    ...(meta.loadedAddresses?.writable ?? []),
+    ...(meta.loadedAddresses?.readonly ?? []),
+  ];
+  let next = 0n;
+  for (const inner of meta.innerInstructions ?? []) {
+    for (const instruction of inner.instructions) {
+      const program = keys[instruction.programIdIndex];
+      if (program === undefined || !program.equals(programId)) {
+        continue;
+      }
+      let data: Uint8Array;
+      try {
+        data = bs58.decode(instruction.data);
+      } catch (error) {
+        throw new ClearnetSdkError(
+          "RPC_ERROR",
+          "sol: inner instruction data is not base58",
+          { txHash, cause: error },
+        );
+      }
+      if (data.length < 16 || !startsWith(data, EVENT_IX_TAG, 0)) {
+        continue;
+      }
+      const bodyLength = data.length - 16;
+      let deposited: boolean;
+      if (startsWith(data, DEPOSITED_EVENT_DISCRIMINATOR, 8)) {
+        if (bodyLength < DEPOSITED_EVENT_MIN_LEN) {
+          continue;
+        }
+        deposited = true;
+      } else if (startsWith(data, EXECUTED_EVENT_DISCRIMINATOR, 8)) {
+        if (bodyLength < EXECUTED_EVENT_MIN_LEN) {
+          continue;
+        }
+        deposited = false;
+      } else {
+        continue;
+      }
+      if (next === index) {
+        return deposited;
+      }
+      next += 1n;
+    }
+  }
+  return false;
+}
+
+function startsWith(
+  data: Uint8Array,
+  prefix: readonly number[],
+  offset: number,
+): boolean {
+  return prefix.every((byte, i) => data[offset + i] === byte);
 }
 
 function mapStatus(

@@ -93,6 +93,7 @@ const result = await depositor.submitDeposit({
 });
 
 console.log(result.txHash); // display txid
+console.log(result.depositId); // "<txid>:0"
 console.log(await depositor.chainDepositStatus(result.txHash, result.depositId, 1));
 ```
 
@@ -320,7 +321,7 @@ const result = await depositor.submitDeposit({
 });
 
 console.log(result.txHash); // Solana base58 signature
-console.log(result.depositId); // currently the same base58 signature
+console.log(result.depositId); // "0x<sha256(signature bytes)>:0"
 console.log(await depositor.chainDepositStatus(result.txHash, result.depositId, 0));
 ```
 
@@ -373,7 +374,7 @@ try {
   });
 
   console.log(result.txHash); // uppercase XRPL transaction hash
-  console.log(result.depositId); // currently the same hash
+  console.log(result.depositId); // the lower-cased hash
   console.log(await depositor.chainDepositStatus(result.txHash, result.depositId, 0));
 } finally {
   await depositor.disconnect();
@@ -448,7 +449,10 @@ const status = await depositor.chainDepositStatus(
 
 `chainDepositStatus` is a pure on-chain read — it does not check
 clearing/crediting on Clearnet, only whether the deposit transaction itself is
-present and final. It returns:
+present and final. It does not apply custody's crediting rules (for example
+the Bitcoin dust floor and self-deposit guard, or XRPL partial payments and
+asset support), so `"confirmed"` does not guarantee the deposit will be
+credited. It returns:
 
 | Status | Meaning |
 |---|---|
@@ -549,10 +553,25 @@ Bitcoin input fields:
 | `amount` | `string` | Positive decimal BTC amount that fits in signed 64-bit satoshis. |
 
 For Bitcoin, `SubmitDepositResult.txHash` is the display txid, and
-`depositId` is currently the same value — a later SDK release will give
-Bitcoin its own deposit ID matching custody's `txid:vout` form. `submitDeposit`
+`depositId` is `"<txid>:<vout>"` with the decimal output index — the ID custody
+signs a MintReceipt for. The SDK-built deposit output is always output 0, so
+`submitDeposit` and `submitSignedDepositPsbt` return
+`bitcoinDepositId(txHash, 0)`; `bitcoinDepositId(txid, vout)` is exported from
+`@yellow-org/clearnet-sdk`. It keeps the txid's case as given; pass the
+lowercase hex txid Bitcoin Core reports. `submitSignedDepositPsbt` throws
+`INVALID_INPUT` without broadcasting unless output 0 of the signed transaction
+pays `depositAddress()` the amount in `expectedOutputs[0]`. `submitDeposit`
 returns after Bitcoin Core accepts the raw transaction; use
 `chainDepositStatus` to observe mempool, shallow, and confirmed states.
+
+Bitcoin `chainDepositStatus` throws `INVALID_DEPOSIT_ID` unless `depositId` is
+exactly `bitcoinDepositId(txHash, vout)`. It reports `"absent"` unless the
+transaction is known, output `vout` pays `depositAddress()` a positive value,
+and the transaction's outputs carry exactly one valid ADR-023 deposit marker.
+`BitcoinRpc.getRawTransaction` must therefore return the transaction's
+`outputs` (value in satoshis and scriptPubKey hex, in output order);
+`BitcoinCoreRpcClient` reads them from verbose `getrawtransaction`. The dust
+floor and self-deposit guard custody applies before crediting are not checked.
 
 For PSBT wallet signing, `prepareDepositPsbt` returns an `unsignedTxID` for the
 unsigned transaction shape. Use the `txHash` returned by
@@ -599,8 +618,19 @@ Solana input fields:
 | `amount` | `string` | Positive decimal amount. Native SOL uses 9 decimals; SPL tokens use mint decimals. |
 
 For Solana, `SubmitDepositResult.txHash` is the base58 signature, and
-`depositId` is currently the same value — a later SDK release will give
-Solana its own deposit ID matching custody's signature-hash-based form.
+`depositId` is `"0x" + lowercase hex of sha256(the 64 signature bytes) + ":" +
+index`, where index is the `Deposited` event's zero-based position among the
+transaction's custody `Deposited` and `Executed` event CPIs. A transaction
+`submitDeposit` builds carries one deposit, so it returns
+`solanaDepositId(signature, 0)`; `solanaDepositId(signature, index)` is
+exported from `@yellow-org/clearnet-sdk`.
+
+Solana `chainDepositStatus` throws `INVALID_DEPOSIT_ID` unless `depositId` is
+exactly `solanaDepositId(txHash, index)`. It keeps the signature-status
+commitment mapping, and for a `confirmed` or `finalized` status also fetches
+the transaction: a failed transaction, or one whose custody event at `index`
+is not a `Deposited` event, is `"absent"`; a transaction the RPC does not
+serve yet is `"pending"`.
 
 ```ts
 const transaction = await depositor.prepareDeposit(input);
@@ -635,8 +665,18 @@ XRPL input fields:
 | `amount` | `string` | Positive decimal amount; native XRP uses 6 decimals, issued currencies use configured decimals. |
 
 For XRPL, `SubmitDepositResult.txHash` is the uppercase 64-hex transaction
-hash, and `depositId` is currently the same value — a later SDK
-release will give XRPL its own deposit ID matching custody's lower-cased form.
+hash, and `depositId` is that hash lower-cased — the ID custody signs a
+MintReceipt for; `xrplDepositId(txHash)` is exported from
+`@yellow-org/clearnet-sdk`.
+
+XRPL `chainDepositStatus` throws `INVALID_DEPOSIT_ID` unless `depositId` is
+`xrplDepositId(txHash)`. It reports `"absent"` unless the transaction is a
+`Payment` from another account to `vaultAddress` whose first well-formed
+`ynet-account` memo names a non-zero 20-byte account followed by a 32-byte
+reference. Such a transaction is `"pending"` until validated, then
+`"confirmed"` if its result is `tesSUCCESS` and `"absent"` otherwise. Partial
+payments and asset support, which custody checks before crediting, are not
+checked.
 
 ```ts
 const payment = await depositor.prepareDeposit(input);
@@ -650,7 +690,8 @@ when replacing the signer or shutting down a long-lived process.
 ### `chainDepositStatus(txHash, depositId, minConfirmations)`
 
 Returns `Promise<"absent" | "pending" | "confirmed">`. A pure on-chain read —
-it does not check clearing/crediting on Clearnet.
+it does not check clearing/crediting on Clearnet, and `"confirmed"` does not
+guarantee the deposit will be credited.
 
 ## Local Development
 
@@ -806,7 +847,7 @@ Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 | `INVALID_CONFIRMATIONS` | `minConfirmations` is negative, fractional, or an unsafe number. |
 | `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value. |
 | `INVALID_TX_ID` | `txHash` is not valid for the chain: EVM transaction hash, Solana 64-byte signature, XRPL 64-hex hash, or Bitcoin 64-hex txid. |
-| `INVALID_DEPOSIT_ID` | `depositId` is not a valid deposit ID: for EVM, exactly `"0x"` + 64 lowercase hex characters (rejects the pre-ISS-068 `txHash/logIndex` shape). |
+| `INVALID_DEPOSIT_ID` | `depositId` is not a valid deposit ID: for EVM, exactly `"0x"` + 64 lowercase hex characters (rejects the pre-ISS-068 `txHash/logIndex` shape); for Bitcoin, Solana and XRPL, not exactly the chain's deposit ID helper output for `txHash`. |
 | `MISSING_WALLET_ACCOUNT` | The EVM wallet account is missing/mismatched, or the Solana/XRPL signer is missing. |
 | `CHAIN_MISMATCH` | The configured chain or network does not match the RPC or wallet network, such as an EVM chain ID mismatch or unsupported Bitcoin network. |
 | `INSUFFICIENT_FUNDS` | Bitcoin only: confirmed depositor UTXOs cannot cover the deposit amount plus fee. |

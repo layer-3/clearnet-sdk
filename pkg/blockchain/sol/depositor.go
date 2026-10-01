@@ -75,8 +75,8 @@ func normalizeDepositAssetAddress(assetAddress string) string {
 // dest.Ref sub-account reference. assetAddress is "" for native or a base58
 // mint.
 //
-// DepositID == TxHash (the base58 signature). TODO: Solana deposit ID matching
-// the signature-hash-based TxID.
+// The transaction carries one deposit instruction, so DepositID is
+// DepositID(signature, 0). TxHash is the base58 signature.
 func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.SubmitDepositResult, error) {
 	acct, err := parseClearnetAccount(dest.Account)
 	if err != nil {
@@ -135,19 +135,26 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 	if err != nil {
 		return core.SubmitDepositResult{}, err
 	}
-	id := txID(sig)
-	return core.SubmitDepositResult{TxHash: id, DepositID: id}, nil
+	return core.SubmitDepositResult{TxHash: txID(sig), DepositID: DepositID(sig, 0)}, nil
 }
 
 // ChainDepositStatus reports the on-chain status of the deposit identified by
-// txHash; depositId is the same base58 signature and unused. minConf maps onto
-// Solana's commitment ladder, which has no numeric depth: minConf 0 accepts
-// "confirmed" (~1-2 slots), minConf >= 1 requires "finalized". A failed tx
-// reads as DepositAbsent (it credited nothing).
-func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, _ string, minConf uint64) (core.DepositStatus, error) {
+// txHash (the base58 signature) and depositId (DepositID(signature, index)).
+// minConf maps onto Solana's commitment ladder, which has no numeric depth:
+// minConf 0 accepts "confirmed" (~1-2 slots), minConf >= 1 requires
+// "finalized". A failed tx, or one whose event at index is not a vault
+// Deposited event, reads as DepositAbsent (it credited nothing). A confirmed
+// transaction the RPC does not serve yet reads as DepositPending. Custody's
+// crediting rules are not applied, so DepositConfirmed does not guarantee a
+// credit.
+func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, depositId string, minConf uint64) (core.DepositStatus, error) {
 	sig, err := solana.SignatureFromBase58(txHash)
 	if err != nil {
 		return core.DepositAbsent, fmt.Errorf("sol: bad signature %q: %w", txHash, err)
+	}
+	index, err := parseDepositID(sig, depositId)
+	if err != nil {
+		return core.DepositAbsent, err
 	}
 	out, err := d.client.GetSignatureStatuses(ctx, true, sig)
 	if err != nil {
@@ -163,17 +170,45 @@ func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, _ string, mi
 	if st.Err != nil {
 		return core.DepositAbsent, nil
 	}
+	var status core.DepositStatus
 	switch st.ConfirmationStatus {
 	case rpc.ConfirmationStatusFinalized:
-		return core.DepositConfirmed, nil
+		status = core.DepositConfirmed
 	case rpc.ConfirmationStatusConfirmed:
+		status = core.DepositPending
 		if minConf == 0 {
-			return core.DepositConfirmed, nil
+			status = core.DepositConfirmed
 		}
-		return core.DepositPending, nil
 	default:
 		return core.DepositPending, nil
 	}
+
+	maxVersion := uint64(0)
+	res, err := d.client.GetTransaction(ctx, sig, &rpc.GetTransactionOpts{
+		Encoding:                       solana.EncodingBase64,
+		Commitment:                     rpc.CommitmentConfirmed,
+		MaxSupportedTransactionVersion: &maxVersion,
+	})
+	if err != nil {
+		if errors.Is(err, rpc.ErrNotFound) {
+			return core.DepositPending, nil
+		}
+		return core.DepositAbsent, fmt.Errorf("sol: get transaction: %w", err)
+	}
+	if res == nil || res.Meta == nil || res.Transaction == nil {
+		return core.DepositPending, nil
+	}
+	if res.Meta.Err != nil {
+		return core.DepositAbsent, nil
+	}
+	tx, err := res.Transaction.GetTransaction()
+	if err != nil {
+		return core.DepositAbsent, fmt.Errorf("sol: decode transaction: %w", err)
+	}
+	if !depositEventAt(tx, res.Meta, d.programID, index) {
+		return core.DepositAbsent, nil
+	}
+	return status, nil
 }
 
 // parseClearnetAccount decodes a 20-byte clearnet account address from a

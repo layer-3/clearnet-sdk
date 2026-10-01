@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Address } from "viem";
 
@@ -10,6 +8,7 @@ import {
   splitNonce,
 } from "../../../src/blockchain/evm/depositId.js";
 import { ClearnetSdkError } from "../../../src/index.js";
+import { loadDepositIdVectors } from "../deposit-id-vectors.js";
 
 interface DepositIdVector {
   name: string;
@@ -25,16 +24,7 @@ interface DepositIdVector {
   id: string;
 }
 
-const vectorsPath = fileURLToPath(
-  // Shared with the Go tests; the repository keeps a single copy.
-  new URL(
-    "../../../../../pkg/blockchain/evm/testdata/deposit_id_vectors.json",
-    import.meta.url,
-  ),
-);
-const vectors: DepositIdVector[] = JSON.parse(
-  readFileSync(vectorsPath, "utf8"),
-).vectors;
+const vectors = loadDepositIdVectors<DepositIdVector>("evm");
 
 // The SDK's depositId reproduces the exact bytes custody's Foundry tests
 // and the Go SDK compute for the same shared vectors.

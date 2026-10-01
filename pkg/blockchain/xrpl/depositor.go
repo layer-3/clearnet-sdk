@@ -61,9 +61,8 @@ func normalizeDepositAssetAddress(assetAddress string) string {
 // SubmitDeposit sends amount of assetAddress to the vault, crediting
 // dest.Account via a `ynet-account` memo carrying the 20-byte account and the
 // 32-byte ADR-015 dest.Ref. assetAddress is "" for native or "CUR.rIssuer" for
-// an issued currency.
-// DepositID == TxHash (the upper-case transaction hash). TODO: XRPL deposit ID
-// matching custody's TxID.
+// an issued currency. TxHash is the upper-case transaction hash and DepositID
+// is DepositID(TxHash).
 func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.SubmitDepositResult, error) {
 	memo, err := accountMemo(dest)
 	if err != nil {
@@ -119,8 +118,8 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 	}
 	switch result.EngineResult {
 	case "tesSUCCESS", "terQUEUED":
-		id := hashHex(hash)
-		return core.SubmitDepositResult{TxHash: id, DepositID: id}, nil
+		txHash := hashHex(hash)
+		return core.SubmitDepositResult{TxHash: txHash, DepositID: DepositID(txHash)}, nil
 	default:
 		return core.SubmitDepositResult{}, fmt.Errorf("xrpl: deposit rejected: %s - %s", result.EngineResult, result.EngineResultMessage)
 	}
@@ -148,10 +147,18 @@ func accountMemo(dest core.DepositDestination) (types.MemoWrapper, error) {
 }
 
 // ChainDepositStatus reports the on-chain status of the deposit identified by
-// txHash; depositId is the same hash and unused. XRPL finality is binary, so
-// minConf is not a depth: a validated tx is DepositConfirmed, a found but
-// unvalidated one DepositPending, an unknown hash DepositAbsent.
-func (d *Depositor) ChainDepositStatus(_ context.Context, txHash, _ string, _ uint64) (core.DepositStatus, error) {
+// txHash and depositId (DepositID(txHash)). XRPL finality is binary, so minConf
+// is not a depth. The deposit is DepositAbsent for an unknown hash, a
+// transaction that is not a Payment from another account to the vault carrying
+// a ynet-account memo with a non-zero account, or a validated transaction whose
+// result is not tesSUCCESS. Otherwise a validated tx is DepositConfirmed and an
+// unvalidated one DepositPending. Custody's crediting rules (partial payments,
+// asset support) are not applied, so DepositConfirmed does not guarantee a
+// credit.
+func (d *Depositor) ChainDepositStatus(_ context.Context, txHash, depositId string, _ uint64) (core.DepositStatus, error) {
+	if depositId != DepositID(txHash) {
+		return core.DepositAbsent, fmt.Errorf("xrpl: deposit ID %q is not the lower-cased transaction hash %s", depositId, txHash)
+	}
 	res, err := d.client.Request(&transactions.TxRequest{Transaction: txHash})
 	if err != nil {
 		if strings.Contains(err.Error(), "txnNotFound") {
@@ -163,8 +170,25 @@ func (d *Depositor) ChainDepositStatus(_ context.Context, txHash, _ string, _ ui
 	if err := res.GetResult(&tx); err != nil {
 		return core.DepositAbsent, fmt.Errorf("xrpl: decode tx: %w", err)
 	}
-	if tx.Validated {
-		return core.DepositConfirmed, nil
+	return depositStatus(&tx, d.vaultAddress), nil
+}
+
+func depositStatus(tx *transactions.TxResponse, vaultAddress string) core.DepositStatus {
+	if !IsVaultDepositPayment(tx.TxJSON, vaultAddress) || !hasDepositMemo(tx.TxJSON["Memos"]) {
+		return core.DepositAbsent
 	}
-	return core.DepositPending, nil
+	if !tx.Validated {
+		return core.DepositPending
+	}
+	if tx.Meta.TransactionResult != "tesSUCCESS" {
+		return core.DepositAbsent
+	}
+	return core.DepositConfirmed
+}
+
+// hasDepositMemo reports whether memosRaw (the decoded Memos field) carries a
+// deposit memo naming a non-zero account.
+func hasDepositMemo(memosRaw any) bool {
+	account, _, ok := ParseDepositMemo(memosRaw)
+	return ok && account != [20]byte{}
 }

@@ -153,6 +153,16 @@ func (b *CoreP2WPKHBackend) GetTransactionConfirmations(ctx context.Context, txI
 	return transactionConfirmationsWithRPC(requestCtx, b.rpc, txID)
 }
 
+func (b *CoreP2WPKHBackend) GetTransactionOutputs(ctx context.Context, txID string) ([]RawVout, bool, error) {
+	requestCtx, cancel := optionalBackendTimeout(ctx, b.requestTimeout)
+	defer cancel()
+	raw, known, err := rawTransactionWithRPC(requestCtx, b.rpc, txID)
+	if err != nil || !known {
+		return nil, known, err
+	}
+	return raw.Vouts, true, nil
+}
+
 func listWalletP2WPKHUnspent(ctx context.Context, rpc interface {
 	ListUnspent(context.Context, int, []string) ([]Unspent, error)
 }, address string, minConfirmations uint64) ([]UnspentOutput, error) {
@@ -199,35 +209,47 @@ func broadcastP2WPKHWithRPC(ctx context.Context, rpc RPC, rawTx []byte) (string,
 	return returnedID, nil
 }
 
-func transactionConfirmationsWithRPC(ctx context.Context, rpc interface {
-	GetRawTransaction(context.Context, string) (*RawTx, error)
-}, txID string) (uint64, bool, error) {
-	if err := validateHashString(txID); err != nil {
-		return 0, false, fmt.Errorf("btc: invalid transaction ID %q: %w", txID, err)
-	}
-	raw, err := rpc.GetRawTransaction(ctx, txID)
-	if err != nil {
-		var rpcErr *RPCError
-		if errors.As(err, &rpcErr) && rpcErr.Code == -5 {
-			return 0, false, nil
-		}
-		return 0, false, fmt.Errorf("btc: getrawtransaction: %w", err)
-	}
-	if raw == nil {
-		return 0, false, nil
-	}
-	if raw.TxID != "" {
-		if err := validateHashString(raw.TxID); err != nil {
-			return 0, false, fmt.Errorf("btc: getrawtransaction returned invalid transaction ID %q: %w", raw.TxID, err)
-		}
-		if !strings.EqualFold(raw.TxID, txID) {
-			return 0, false, fmt.Errorf("btc: getrawtransaction transaction ID mismatch: requested %s, returned %s", txID, raw.TxID)
-		}
+func transactionConfirmationsWithRPC(ctx context.Context, rpc rawTransactionRPC, txID string) (uint64, bool, error) {
+	raw, known, err := rawTransactionWithRPC(ctx, rpc, txID)
+	if err != nil || !known {
+		return 0, known, err
 	}
 	if raw.Confirmations < 0 {
 		return 0, true, nil
 	}
 	return uint64(raw.Confirmations), true, nil
+}
+
+type rawTransactionRPC interface {
+	GetRawTransaction(context.Context, string) (*RawTx, error)
+}
+
+// rawTransactionWithRPC resolves txID, treating RPC error -5 and a null result
+// as unknown.
+func rawTransactionWithRPC(ctx context.Context, rpc rawTransactionRPC, txID string) (*RawTx, bool, error) {
+	if err := validateHashString(txID); err != nil {
+		return nil, false, fmt.Errorf("btc: invalid transaction ID %q: %w", txID, err)
+	}
+	raw, err := rpc.GetRawTransaction(ctx, txID)
+	if err != nil {
+		var rpcErr *RPCError
+		if errors.As(err, &rpcErr) && rpcErr.Code == -5 {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("btc: getrawtransaction: %w", err)
+	}
+	if raw == nil {
+		return nil, false, nil
+	}
+	if raw.TxID != "" {
+		if err := validateHashString(raw.TxID); err != nil {
+			return nil, false, fmt.Errorf("btc: getrawtransaction returned invalid transaction ID %q: %w", raw.TxID, err)
+		}
+		if !strings.EqualFold(raw.TxID, txID) {
+			return nil, false, fmt.Errorf("btc: getrawtransaction transaction ID mismatch: requested %s, returned %s", txID, raw.TxID)
+		}
+	}
+	return raw, true, nil
 }
 
 func optionalBackendTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {

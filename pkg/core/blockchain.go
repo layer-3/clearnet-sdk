@@ -76,8 +76,8 @@ type DepositDestination struct {
 
 // SubmitDepositResult carries both identifiers a submitted deposit produces.
 // TxHash is the on-chain transaction/signature hash. DepositID is the ID a
-// MintReceipt is signed for; on EVM it differs from TxHash. On BTC, Solana and
-// XRPL, DepositID currently equals TxHash (TODO: chain-specific deposit ID).
+// MintReceipt is signed for, as each chain package's DepositID helper builds
+// it; on no chain is it the plain TxHash.
 type SubmitDepositResult struct {
 	TxHash    string
 	DepositID string
@@ -94,8 +94,11 @@ type VaultDepositor interface {
 	SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest DepositDestination) (SubmitDepositResult, error)
 	// ChainDepositStatus reports whether the deposit identified by txHash and
 	// depositId (as returned by SubmitDeposit) is present and final on chain —
-	// a pure on-chain read for replay/audit. It reports on-chain status only,
-	// not clearing/crediting. minConf is the confirmation depth required for
+	// a pure on-chain read for replay/audit. It reports the on-chain status of
+	// the deposit transaction only and does not apply custody's crediting rules
+	// (for example the BTC dust floor and self-deposit guard, or XRPL partial
+	// payments and asset support), so DepositConfirmed does not guarantee the
+	// deposit will be credited. minConf is the confirmation depth required for
 	// DepositConfirmed; chains with no numeric depth (Solana) map it onto a
 	// commitment level instead.
 	ChainDepositStatus(ctx context.Context, txHash, depositId string, minConf uint64) (DepositStatus, error)

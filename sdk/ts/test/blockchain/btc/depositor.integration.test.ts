@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   BITCOIN_NATIVE_ASSET,
+  bitcoinDepositId,
   BitcoinCoreRpcClient,
   BitcoinVaultDepositor,
 } from "../../../src/index.js";
@@ -70,7 +71,7 @@ describe("BitcoinVaultDepositor regtest integration", () => {
     });
 
     expect(txID.txHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(txID.depositId).toEqual(txID.txHash);
+    expect(txID.depositId).toEqual(bitcoinDepositId(txID.txHash, 0));
     await expect(
       depositor.chainDepositStatus(txID.txHash, txID.depositId, 1),
     ).resolves.toBe("pending");

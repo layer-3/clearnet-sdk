@@ -1,5 +1,5 @@
 import { Client } from "xrpl";
-import type { Payment } from "xrpl";
+import type { Payment, TxResponse } from "xrpl";
 
 import { ClearnetSdkError } from "../../core/errors.js";
 import type {
@@ -8,6 +8,8 @@ import type {
   SubmitDepositResult,
   VaultDepositor,
 } from "../../core/types.js";
+import { XRPL_MEMO_TYPE } from "./constants.js";
+import { xrplDepositId } from "./depositId.js";
 import { encodeClearnetMemo } from "./encoding.js";
 import type {
   XrplDepositorConfig,
@@ -28,6 +30,8 @@ import {
   requireTxID,
   resolveAmount,
 } from "./validation.js";
+
+const HEX_PATTERN = /^(?:[a-fA-F0-9]{2})*$/;
 
 export class XrplVaultDepositor
   implements VaultDepositor<XrplSubmitDepositInput>
@@ -52,8 +56,8 @@ export class XrplVaultDepositor
     this.client = new Client(requireRpcUrl(config.rpcUrl));
   }
 
-  // depositId === txHash. TODO: chain-specific deposit ID matching custody's
-  // TxID.
+  // txHash is the upper-case transaction hash; depositId is
+  // xrplDepositId(txHash).
   async submitDeposit(
     input: XrplSubmitDepositInput,
     options: SubmitDepositOptions = {},
@@ -63,7 +67,10 @@ export class XrplVaultDepositor
     const signed = await this.sign(prepared);
     const txID = normalizeTxHash(signed.hash);
     await this.submit(signed.txBlob, txID);
-    const result: SubmitDepositResult = { txHash: txID, depositId: txID };
+    const result: SubmitDepositResult = {
+      txHash: txID,
+      depositId: xrplDepositId(txID),
+    };
     submitOptions.onSubmitted?.(result);
     return result;
   }
@@ -95,22 +102,31 @@ export class XrplVaultDepositor
     return prepared;
   }
 
-  // Looks the deposit up by txHash only; depositId is the same upper-case transaction hash and
-  // unused.
+  // depositId must be xrplDepositId(txHash). The deposit is absent unless the
+  // transaction is a Payment from another account to the vault carrying a
+  // ynet-account memo with a non-zero account, and, once validated, its result
+  // is tesSUCCESS. Custody's crediting rules (partial payments, asset support)
+  // are not applied, so "confirmed" does not guarantee a credit.
   async chainDepositStatus(
     txHash: string,
-    _depositId: string,
+    depositId: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
     const normalized = requireTxID(txHash);
+    if (depositId !== xrplDepositId(normalized)) {
+      throw new ClearnetSdkError(
+        "INVALID_DEPOSIT_ID",
+        "XRPL deposit ID must be the lower-cased transaction hash",
+      );
+    }
     const minConf = normalizeMinConfirmations(minConfirmations);
     await this.ensureConnected();
+    let response: TxResponse;
     try {
-      const response = await this.client.request({
+      response = await this.client.request({
         command: "tx",
         transaction: normalized,
       });
-      return xrplDepositStatus(response.result.validated === true, minConf);
     } catch (error) {
       if (isTxnNotFound(error)) {
         return "absent";
@@ -119,6 +135,7 @@ export class XrplVaultDepositor
         cause: error,
       });
     }
+    return xrplDepositStatus(response.result, this.vaultAddress, minConf);
   }
 
   async disconnect(): Promise<void> {
@@ -254,11 +271,65 @@ function readStringProperty(value: object, key: string): string | undefined {
   return typeof field === "string" ? field : undefined;
 }
 
-function xrplDepositStatus(validated: boolean, minConfirmations: bigint): DepositStatus {
+function xrplDepositStatus(
+  result: TxResponse["result"],
+  vaultAddress: string,
+  minConfirmations: bigint,
+): DepositStatus {
   // XRPL finality is binary: a transaction in a validated ledger is final.
   // The shared minConfirmations argument is validated for API parity only.
   void minConfirmations;
-  return validated ? "confirmed" : "pending";
+  const tx: Record<string, unknown> =
+    result.tx_json && typeof result.tx_json === "object"
+      ? (result.tx_json as unknown as Record<string, unknown>)
+      : {};
+  if (
+    tx.TransactionType !== "Payment" ||
+    tx.Account === vaultAddress ||
+    tx.Destination !== vaultAddress ||
+    !hasDepositMemo(tx.Memos)
+  ) {
+    return "absent";
+  }
+  if (result.validated !== true) {
+    return "pending";
+  }
+  const meta = result.meta;
+  const transactionResult =
+    meta && typeof meta === "object" ? meta.TransactionResult : undefined;
+  return transactionResult === "tesSUCCESS" ? "confirmed" : "absent";
+}
+
+// Reports whether memos carries a ynet-account memo whose MemoData is a
+// non-zero 20-byte account followed by a 32-byte reference. The first
+// ynet-account memo with well-formed MemoData decides.
+function hasDepositMemo(memos: unknown): boolean {
+  if (!Array.isArray(memos)) {
+    return false;
+  }
+  for (const entry of memos) {
+    const memo =
+      entry && typeof entry === "object"
+        ? (entry as Record<string, unknown>).Memo
+        : undefined;
+    if (!memo || typeof memo !== "object") {
+      continue;
+    }
+    const fields = memo as Record<string, unknown>;
+    if (
+      typeof fields.MemoType !== "string" ||
+      !HEX_PATTERN.test(fields.MemoType) ||
+      fields.MemoType.toLowerCase() !== XRPL_MEMO_TYPE
+    ) {
+      continue;
+    }
+    const data = fields.MemoData;
+    if (typeof data !== "string" || !HEX_PATTERN.test(data) || data.length !== 2 * (20 + 32)) {
+      continue;
+    }
+    return !/^0{40}$/.test(data.slice(0, 40));
+  }
+  return false;
 }
 
 function requireSubmitDepositOptions(options: unknown): SubmitDepositOptions {

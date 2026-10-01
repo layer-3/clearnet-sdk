@@ -218,8 +218,8 @@ func TestDepositorSendsToGenericAddressWithVersion1Marker(t *testing.T) {
 	if result.TxHash != tx.TxHash().String() {
 		t.Fatalf("SubmitDeposit txid = %s, local = %s", result.TxHash, tx.TxHash())
 	}
-	if result.DepositID != result.TxHash {
-		t.Fatalf("SubmitDeposit DepositID = %s, want == TxHash %s", result.DepositID, result.TxHash)
+	if want := result.TxHash + ":0"; result.DepositID != want {
+		t.Fatalf("SubmitDeposit DepositID = %s, want %s", result.DepositID, want)
 	}
 
 	wantAddress, wantScript := genericDepositTestAddress(t, 2, vaultKeys, net)
@@ -523,12 +523,14 @@ func TestDepositorSubmitValidationRemainsDepositSpecific(t *testing.T) {
 
 func TestDepositorChainDepositStatusCompatibility(t *testing.T) {
 	txID := strings.Repeat("a", 64)
+	depositID := DepositID(txID, 0)
 	rpc := &depositorTestRPC{}
 	signer, vaultKeys := depositorTestVaultKeys(t)
 	depositor, err := NewDepositor(&chaincfg.RegressionNetParams, rpc, signer, vaultKeys, 2, Config{}, NewAssetResolver())
 	if err != nil {
 		t.Fatal(err)
 	}
+	outputs := depositStatusTestOutputs(t, vaultKeys)
 	tests := []struct {
 		name    string
 		raw     *RawTx
@@ -539,17 +541,17 @@ func TestDepositorChainDepositStatusCompatibility(t *testing.T) {
 	}{
 		{"unknown typed RPC error", nil, &RPCError{Code: -5, Message: "not found"}, 1, core.DepositAbsent, false},
 		{"nil raw", nil, nil, 1, core.DepositAbsent, false},
-		{"mempool", &RawTx{Confirmations: 0}, nil, 1, core.DepositPending, false},
-		{"zero depth still requires a block", &RawTx{Confirmations: 0}, nil, 0, core.DepositPending, false},
-		{"zero depth confirmed on chain", &RawTx{Confirmations: 1}, nil, 0, core.DepositConfirmed, false},
-		{"below depth", &RawTx{Confirmations: 1}, nil, 2, core.DepositPending, false},
-		{"confirmed", &RawTx{Confirmations: 2}, nil, 2, core.DepositConfirmed, false},
+		{"mempool", &RawTx{Confirmations: 0, Vouts: outputs}, nil, 1, core.DepositPending, false},
+		{"zero depth still requires a block", &RawTx{Confirmations: 0, Vouts: outputs}, nil, 0, core.DepositPending, false},
+		{"zero depth confirmed on chain", &RawTx{Confirmations: 1, Vouts: outputs}, nil, 0, core.DepositConfirmed, false},
+		{"below depth", &RawTx{Confirmations: 1, Vouts: outputs}, nil, 2, core.DepositPending, false},
+		{"confirmed", &RawTx{Confirmations: 2, Vouts: outputs}, nil, 2, core.DepositConfirmed, false},
 		{"transport error", nil, errP2WPKHTestBackend, 1, core.DepositAbsent, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rpc.rawTx, rpc.rawErr = tc.raw, tc.err
-			got, err := depositor.ChainDepositStatus(context.Background(), txID, txID, tc.minConf)
+			got, err := depositor.ChainDepositStatus(context.Background(), txID, depositID, tc.minConf)
 			if (err != nil) != tc.wantErr || got != tc.want {
 				t.Fatalf("ChainDepositStatus = (%v,%v), want (%v,error=%v)", got, err, tc.want, tc.wantErr)
 			}
@@ -557,6 +559,97 @@ func TestDepositorChainDepositStatusCompatibility(t *testing.T) {
 				t.Fatalf("error %v does not wrap %v", err, tc.err)
 			}
 		})
+	}
+}
+
+// depositStatusTestOutputs is an SDK-shaped deposit: output 0 pays the generic
+// deposit address, output 1 is a version 1 marker, output 2 is change.
+func depositStatusTestOutputs(t *testing.T, vaultKeys [][]byte) []RawVout {
+	t.Helper()
+	_, depositScript := genericDepositTestAddress(t, 2, vaultKeys, &chaincfg.RegressionNetParams)
+	accountAddr, _ := depositorTestAccount(0xaa)
+	markerScript, err := marker.EncodeScript(marker.Marker{Version: marker.Version1, Address: accountAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []RawVout{
+		{ValueSats: 10_000, ScriptPubKeyHex: hex.EncodeToString(depositScript)},
+		{ValueSats: 0, ScriptPubKeyHex: hex.EncodeToString(markerScript)},
+		{ValueSats: 5_000, ScriptPubKeyHex: "0014" + strings.Repeat("11", 20)},
+	}
+}
+
+// A confirmed transaction that is not a deposit at the named output reads as
+// absent, whatever its depth.
+func TestDepositorChainDepositStatusRequiresDepositOutput(t *testing.T) {
+	txID := strings.Repeat("b", 64)
+	rpc := &depositorTestRPC{}
+	signer, vaultKeys := depositorTestVaultKeys(t)
+	depositor, err := NewDepositor(&chaincfg.RegressionNetParams, rpc, signer, vaultKeys, 2, Config{}, NewAssetResolver())
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := depositStatusTestOutputs(t, vaultKeys)
+	modified := func(edit func([]RawVout) []RawVout) []RawVout {
+		return edit(append([]RawVout(nil), good...))
+	}
+	tests := []struct {
+		name    string
+		vout    uint32
+		outputs []RawVout
+		want    core.DepositStatus
+	}{
+		{"deposit output", 0, good, core.DepositConfirmed},
+		{"marker output", 1, good, core.DepositAbsent},
+		{"change output", 2, good, core.DepositAbsent},
+		{"output out of range", 3, good, core.DepositAbsent},
+		{"zero value", 0, modified(func(o []RawVout) []RawVout { o[0].ValueSats = 0; return o }), core.DepositAbsent},
+		{"other script", 0, modified(func(o []RawVout) []RawVout { o[0].ScriptPubKeyHex = o[2].ScriptPubKeyHex; return o }), core.DepositAbsent},
+		{"no marker", 0, modified(func(o []RawVout) []RawVout { return append(o[:1], o[2]) }), core.DepositAbsent},
+		{"two markers", 0, modified(func(o []RawVout) []RawVout { return append(o, o[1]) }), core.DepositAbsent},
+		{"undecodable script", 0, modified(func(o []RawVout) []RawVout { o[2].ScriptPubKeyHex = "zz"; return o }), core.DepositAbsent},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rpc.rawTx = &RawTx{Confirmations: 6, Vouts: tc.outputs}
+			got, err := depositor.ChainDepositStatus(context.Background(), txID, DepositID(txID, tc.vout), 1)
+			if err != nil || got != tc.want {
+				t.Fatalf("ChainDepositStatus = (%v,%v), want (%v,nil)", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// A deposit ID that is not <txHash>:<vout> is a caller error, reported before
+// any chain lookup.
+func TestDepositorChainDepositStatusRejectsMismatchedDepositID(t *testing.T) {
+	txID := strings.Repeat("c", 64)
+	rpc := &depositorTestRPC{}
+	signer, vaultKeys := depositorTestVaultKeys(t)
+	depositor, err := NewDepositor(&chaincfg.RegressionNetParams, rpc, signer, vaultKeys, 2, Config{}, NewAssetResolver())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{
+		txID,
+		txID + ":",
+		txID + ":-1",
+		txID + ":01",
+		txID + ":+1",
+		txID + ":4294967296",
+		strings.Repeat("d", 64) + ":0",
+		strings.ToUpper(txID) + ":0",
+	} {
+		if got, err := depositor.ChainDepositStatus(context.Background(), txID, id, 1); err == nil || got != core.DepositAbsent {
+			t.Fatalf("ChainDepositStatus(%q) = (%v,%v), want (absent, error)", id, got, err)
+		}
+	}
+	// The txid's case is not folded.
+	if got, err := depositor.ChainDepositStatus(context.Background(), strings.ToUpper(txID), DepositID(txID, 0), 1); err == nil || got != core.DepositAbsent {
+		t.Fatalf("ChainDepositStatus(upper-case txid, lower-case ID) = (%v,%v), want (absent, error)", got, err)
+	}
+	if rpc.rawTxID != "" {
+		t.Fatalf("mismatched deposit ID reached the chain lookup for %q", rpc.rawTxID)
 	}
 }
 

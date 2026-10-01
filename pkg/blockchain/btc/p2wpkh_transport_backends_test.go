@@ -89,6 +89,9 @@ func TestCoreP2WPKHBackendScanTransport(t *testing.T) {
 	if confirmations, known, err := backend.GetTransactionConfirmations(context.Background(), broadcastTxID); err != nil || !known || confirmations != 3 {
 		t.Fatalf("GetTransactionConfirmations = %d, %v, %v", confirmations, known, err)
 	}
+	if outputs, known, err := backend.GetTransactionOutputs(context.Background(), broadcastTxID); err != nil || !known || len(outputs) != 0 {
+		t.Fatalf("GetTransactionOutputs = %+v, %v, %v", outputs, known, err)
+	}
 }
 
 func TestCoreP2WPKHBackendWalletModeAndFeeChoices(t *testing.T) {
@@ -251,6 +254,13 @@ func TestEsploraP2WPKHBackendTransport(t *testing.T) {
 	}
 	if confirmations, known, err := backend.GetTransactionConfirmations(context.Background(), txID); err != nil || !known || confirmations != 3 {
 		t.Fatalf("GetTransactionConfirmations = %d, %v, %v", confirmations, known, err)
+	}
+	outputs, known, err := backend.GetTransactionOutputs(context.Background(), txID)
+	if err != nil || !known || len(outputs) != 1 || outputs[0].ValueSats != 5_000 || outputs[0].ScriptPubKeyHex != script {
+		t.Fatalf("GetTransactionOutputs = %+v, %v, %v", outputs, known, err)
+	}
+	if outputs, known, err := backend.GetTransactionOutputs(context.Background(), strings.Repeat("9", 64)); err != nil || known || outputs != nil {
+		t.Fatalf("GetTransactionOutputs(unknown) = %+v, %v, %v; want nil, false, nil", outputs, known, err)
 	}
 }
 

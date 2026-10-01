@@ -1,5 +1,6 @@
 import {
   BITCOIN_NATIVE_ASSET,
+  bitcoinDepositId,
   BitcoinCoreRpcClient,
   BitcoinVaultDepositor,
 } from "@yellow-org/clearnet-sdk";
@@ -192,7 +193,7 @@ async function submitLocalDeposit(): Promise<void> {
   } catch (error) {
     const txHash = errorTxHash(error);
     if (txHash !== undefined) {
-      lastRef = { txHash, depositId: txHash };
+      lastRef = { txHash, depositId: bitcoinDepositId(txHash, 0) };
       verifyButton.disabled = false;
     }
     writeError(error, txHash === undefined ? undefined : `Submitted ${txHash}`);
@@ -327,7 +328,7 @@ async function submitXverseDeposit(): Promise<void> {
   } catch (error) {
     const txHash = errorTxHash(error);
     if (txHash !== undefined) {
-      lastRef = { txHash, depositId: txHash };
+      lastRef = { txHash, depositId: bitcoinDepositId(txHash, 0) };
       verifyButton.disabled = false;
     }
     writeError(error, txHash === undefined ? undefined : `Submitted ${txHash}`);
@@ -361,7 +362,9 @@ async function verifyLastTx(): Promise<void> {
       lastRef.depositId,
       readBigInt("min-confirmations"),
     );
-    writeLog(`Verify ${lastRef.txHash}\nstatus: ${status}`);
+    writeLog(
+      `Verify ${lastRef.txHash}\ndeposit ID: ${lastRef.depositId}\nstatus: ${status}`,
+    );
   } catch (error) {
     writeError(error);
   } finally {

@@ -4,6 +4,7 @@ import { ClearnetSdkError } from "../../core/errors.js";
 import type {
   BitcoinCoreRpcClientConfig,
   BitcoinRawTransaction,
+  BitcoinRawTransactionOutput,
   BitcoinRpc,
   BitcoinUnspent,
 } from "./types.js";
@@ -112,6 +113,7 @@ export class BitcoinCoreRpcClient implements BitcoinRpc {
         fields.confirmations === undefined
           ? 0
           : requireNumber(fields.confirmations, "confirmations"),
+      outputs: requireRawOutputs(fields.vout),
     };
   }
 
@@ -188,6 +190,29 @@ function btcToSats(value: unknown): bigint {
     return BigInt(whole) * SATS_PER_BTC + BigInt(frac.padEnd(8, "0"));
   }
   throw new ClearnetSdkError("RPC_ERROR", "Bitcoin Core amount is invalid");
+}
+
+function requireRawOutputs(value: unknown): BitcoinRawTransactionOutput[] {
+  if (!Array.isArray(value)) {
+    throw new ClearnetSdkError("RPC_ERROR", "vout must be an array");
+  }
+  return value.map((entry) => {
+    if (!entry || typeof entry !== "object") {
+      throw new ClearnetSdkError("RPC_ERROR", "btc rpc getrawtransaction vout entry is invalid");
+    }
+    const fields = entry as Record<string, unknown>;
+    const script = fields.scriptPubKey;
+    if (!script || typeof script !== "object") {
+      throw new ClearnetSdkError("RPC_ERROR", "vout scriptPubKey must be an object");
+    }
+    return {
+      valueSats: btcToSats(fields.value),
+      scriptPubKey: requireString(
+        (script as Record<string, unknown>).hex,
+        "vout scriptPubKey.hex",
+      ),
+    };
+  });
 }
 
 function requireString(value: unknown, field: string): string {

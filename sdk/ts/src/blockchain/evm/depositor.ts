@@ -138,8 +138,8 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
   }
 
   // Fetches the receipt at txHash and finds the vault's Deposited log whose
-  // depositor and nonce reproduce depositId. Pure on-chain read; does not check
-  // crediting.
+  // depositor and nonce reproduce depositId. Pure on-chain read: custody's
+  // crediting rules are not applied, so "confirmed" does not guarantee a credit.
   async chainDepositStatus(
     txHash: string,
     depositId: string,

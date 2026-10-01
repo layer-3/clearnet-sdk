@@ -94,6 +94,12 @@ func TestIntegrationXRPL_DepositAndWithdraw(t *testing.T) {
 	}
 	h.ledgerAccept(ctx, t)
 	t.Logf("deposit tx %s (from %s)", depRef, dep.DepositorAddress())
+	if want := DepositID(depRef.TxHash); depRef.DepositID != want {
+		t.Fatalf("deposit ID = %s, want %s", depRef.DepositID, want)
+	}
+	if st, err := dep.ChainDepositStatus(ctx, depRef.TxHash, depRef.DepositID, 1); err != nil || st != core.DepositConfirmed {
+		t.Fatalf("ChainDepositStatus = (%v, %v), want confirmed", st, err)
+	}
 
 	// ── Withdrawal flow (quorum in-process) ───────────────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, len(signers))

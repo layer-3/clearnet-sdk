@@ -37,8 +37,8 @@ export interface EvmSubmitDepositInput extends SubmitDepositInput<string> {
 
 // SubmitDepositResult carries both identifiers a submitted deposit produces.
 // txHash is the on-chain transaction/signature hash. depositId is the ID a
-// MintReceipt is signed for; on EVM it differs from txHash. On BTC, Solana and
-// XRPL, depositId currently equals txHash (TODO: chain-specific deposit ID).
+// MintReceipt is signed for, as each chain's deposit ID helper builds it; on no
+// chain is it the plain txHash.
 export interface SubmitDepositResult {
   txHash: string;
   depositId: string;
@@ -59,7 +59,10 @@ export interface VaultDepositor<
   ): Promise<SubmitDepositResult>;
   // chainDepositStatus reports whether the deposit identified by txHash and
   // depositId (as returned by submitDeposit) is present and final on chain.
-  // Pure on-chain read; does not check crediting.
+  // It reports the deposit transaction's on-chain status only and does not
+  // apply custody's crediting rules (for example the BTC dust floor and
+  // self-deposit guard, or XRPL partial payments and asset support), so
+  // "confirmed" does not guarantee the deposit will be credited.
   chainDepositStatus(
     txHash: string,
     depositId: string,

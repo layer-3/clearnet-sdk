@@ -46,6 +46,15 @@ export interface BitcoinUnspent {
 export interface BitcoinRawTransaction {
   txid: string;
   confirmations: number;
+  /** The transaction's outputs, in output index order. */
+  outputs: readonly BitcoinRawTransactionOutput[];
+}
+
+export interface BitcoinRawTransactionOutput {
+  /** Output value in satoshis. */
+  valueSats: bigint;
+  /** Output scriptPubKey, as hex. */
+  scriptPubKey: string;
 }
 
 export interface BitcoinDepositorConfig {

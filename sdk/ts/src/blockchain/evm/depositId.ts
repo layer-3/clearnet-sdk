@@ -15,8 +15,8 @@ const DEPOSIT_ID_PATTERN = /^0x[0-9a-f]{64}$/;
  * Computes the EVM deposit ID (ISS-068; ADR-018 §Transaction IDs): "0x" +
  * lowercase hex of keccak256(abi.encode(chainid, vault, depositor, nonce)).
  * MintReceipts are signed over it, so it must stay byte-identical to the Go
- * implementation; shared vectors in
- * pkg/blockchain/evm/testdata/deposit_id_vectors.json at the repository root.
+ * implementation; shared vectors in testdata/deposit_id_vectors.json at the
+ * repository root.
  */
 export function depositId(
   chainId: bigint,

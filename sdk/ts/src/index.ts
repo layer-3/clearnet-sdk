@@ -22,6 +22,7 @@ export {
 } from "./blockchain/evm/depositId.js";
 export {
   BITCOIN_NATIVE_ASSET,
+  bitcoinDepositId,
   BitcoinCoreRpcClient,
   BitcoinRpcError,
   BitcoinVaultDepositor,
@@ -36,6 +37,7 @@ export type {
   BitcoinPreparedDepositPsbt,
   BitcoinPsbtSignerInfo,
   BitcoinRawTransaction,
+  BitcoinRawTransactionOutput,
   BitcoinRpc,
   BitcoinSigner,
   BitcoinSubmitDepositInput,
@@ -45,6 +47,7 @@ export {
   eventAuthorityPda,
   SOLANA_CUSTODY_PROGRAM_ID,
   SOLANA_NATIVE_ASSET,
+  solanaDepositId,
   SolanaVaultDepositor,
   vaultPda,
 } from "./blockchain/sol/index.js";
@@ -58,6 +61,7 @@ export type {
 } from "./blockchain/sol/index.js";
 export {
   XRPL_NATIVE_ASSET,
+  xrplDepositId,
   XrplVaultDepositor,
 } from "./blockchain/xrpl/index.js";
 export type {

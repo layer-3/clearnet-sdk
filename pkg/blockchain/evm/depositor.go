@@ -272,8 +272,8 @@ func parseClearnetAccount(account string) (common.Address, error) {
 // ChainDepositStatus reports the on-chain status of a deposit identified by
 // txHash and depositId (both returned by SubmitDeposit), by fetching the
 // receipt at txHash and finding the vault's Deposited log whose depositor and
-// nonce reproduce depositId. It is a pure on-chain read: it does not check
-// clearing/crediting.
+// nonce reproduce depositId. It is a pure on-chain read: it does not apply
+// custody's crediting rules, so DepositConfirmed does not guarantee a credit.
 func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, depositId string, minConf uint64) (core.DepositStatus, error) {
 	if _, err := ParseDepositID(depositId); err != nil {
 		return core.DepositAbsent, err

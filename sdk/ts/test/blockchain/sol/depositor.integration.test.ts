@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   SOLANA_NATIVE_ASSET,
+  solanaDepositId,
   SolanaVaultDepositor,
   vaultPda,
 } from "../../../src/index.js";
@@ -59,6 +60,7 @@ describe("SolanaVaultDepositor validator integration", () => {
 
     const afterBalance = await waitForLamports(vault, beforeBalance + amount);
     expect(afterBalance - beforeBalance).toBe(amount);
+    expect(ref.depositId).toBe(solanaDepositId(ref.txHash, 0));
     await expect(
       depositor.chainDepositStatus(ref.txHash, ref.depositId, 0),
     ).resolves.toBe("confirmed");
@@ -108,6 +110,7 @@ describe("SolanaVaultDepositor validator integration", () => {
 
     const afterBalance = await waitForTokenBalance(vaultAta, beforeBalance + amount);
     expect(afterBalance - beforeBalance).toBe(amount);
+    expect(ref.depositId).toBe(solanaDepositId(ref.txHash, 0));
     await expect(
       depositor.chainDepositStatus(ref.txHash, ref.depositId, 0),
     ).resolves.toBe("confirmed");

@@ -28,13 +28,16 @@ import {
   isZeroBytes,
   MARKER_VERSION_1,
   MARKER_VERSION_2,
+  scanMarkerOutputs,
 } from "./marker.js";
+import { bitcoinDepositId, parseBitcoinDepositId } from "./depositId.js";
 import { BitcoinRpcError } from "./types.js";
 import type {
   BitcoinDepositorConfig,
   BitcoinExpectedDepositOutput,
   BitcoinPreparedDepositPsbt,
   BitcoinPsbtSignerInfo,
+  BitcoinRawTransactionOutput,
   BitcoinSigner,
   BitcoinSubmitDepositInput,
   BitcoinUnspent,
@@ -65,8 +68,8 @@ export class BitcoinVaultDepositor
     this.config = normalizeConfig(config);
   }
 
-  // depositId === txHash. TODO: chain-specific deposit ID matching custody's
-  // TxID.
+  // The deposit output is always output 0, so depositId is
+  // bitcoinDepositId(txHash, 0).
   async submitDeposit(
     input: BitcoinSubmitDepositInput,
     options: SubmitDepositOptions = {},
@@ -126,17 +129,22 @@ export class BitcoinVaultDepositor
     const submitOptions = requireSubmitDepositOptions(options);
     const normalizedExpectedOutputs = requireExpectedDepositOutputs(expectedOutputs);
     const tx = finalizableTransactionFromPsbt(psbtHex, normalizedExpectedOutputs);
+    this.requireDepositOutputZero(tx, normalizedExpectedOutputs);
     return this.broadcastTransaction(tx, submitOptions);
   }
 
-  // Looks the deposit up by txHash only; depositId is the same BTC txid and
-  // unused.
+  // depositId must be bitcoinDepositId(txHash, vout). The deposit is absent
+  // unless output vout pays depositAddress() a positive value and the
+  // transaction carries exactly one valid deposit marker; undecodable script
+  // hex reads as absent. Custody's crediting rules (dust floor, self-deposit
+  // guard) are not applied, so "confirmed" does not guarantee a credit.
   async chainDepositStatus(
     txHash: string,
-    _depositId: string,
+    depositId: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
     const normalized = requireBitcoinTxID(txHash);
+    const vout = parseBitcoinDepositId(txHash, depositId);
     const minConf = normalizeMinConfirmations(minConfirmations);
     let raw;
     try {
@@ -149,7 +157,7 @@ export class BitcoinVaultDepositor
         cause: error,
       });
     }
-    if (raw === null) {
+    if (raw === null || !this.isDepositOutput(raw.outputs, vout)) {
       return "absent";
     }
     return minConf === 0 || (raw.confirmations > 0 && raw.confirmations >= minConf)
@@ -177,6 +185,63 @@ export class BitcoinVaultDepositor
 
   txIDFromTxid(txid: string): string {
     return txIDFromTxid(txid);
+  }
+
+  // The returned depositId names output 0, so it must pay depositAddress()
+  // the positive amount prepareDepositPsbt put there.
+  private requireDepositOutputZero(
+    tx: Transaction,
+    expectedOutputs: readonly BitcoinExpectedDepositOutput[],
+  ): void {
+    const output = tx.getOutput(0);
+    const expected = expectedOutputs[0];
+    const depositScript = depositPayment(
+      this.config.network,
+      GENERIC_DEPOSIT_TAG_PREIMAGE,
+      this.config.threshold,
+      this.config.vaultPubkeys,
+    ).script;
+    if (
+      output.script === undefined ||
+      bytesToHex(output.script) !== bytesToHex(depositScript) ||
+      output.amount === undefined ||
+      output.amount <= 0n ||
+      output.amount !== expected?.amount
+    ) {
+      throw new ClearnetSdkError(
+        "INVALID_INPUT",
+        `btc: signed PSBT output 0 must pay the deposit address ${this.depositAddress()} the expected amount`,
+      );
+    }
+  }
+
+  private isDepositOutput(
+    outputs: readonly BitcoinRawTransactionOutput[],
+    vout: number,
+  ): boolean {
+    const output = outputs[vout];
+    if (output === undefined || output.valueSats <= 0n) {
+      return false;
+    }
+    const scripts: Uint8Array[] = [];
+    for (const entry of outputs) {
+      if (!/^(?:[a-fA-F0-9]{2})*$/.test(entry.scriptPubKey)) {
+        return false;
+      }
+      scripts.push(hexToBytes(entry.scriptPubKey, "scriptPubKey"));
+    }
+    const depositScript = bytesToHex(
+      depositPayment(
+        this.config.network,
+        GENERIC_DEPOSIT_TAG_PREIMAGE,
+        this.config.threshold,
+        this.config.vaultPubkeys,
+      ).script,
+    );
+    if (output.scriptPubKey.toLowerCase() !== depositScript) {
+      return false;
+    }
+    return scanMarkerOutputs(scripts).ok;
   }
 
   private requireDepositFields(input: BitcoinSubmitDepositInput): {
@@ -356,7 +421,10 @@ export class BitcoinVaultDepositor
     submitOptions: SubmitDepositOptions,
   ): Promise<SubmitDepositResult> {
     const txID = txIDFromTxid(tx.id);
-    const result: SubmitDepositResult = { txHash: txID, depositId: txID };
+    const result: SubmitDepositResult = {
+      txHash: txID,
+      depositId: bitcoinDepositId(txID, 0),
+    };
     try {
       await this.config.rpc.sendRawTransaction(tx.hex);
       submitOptions.onSubmitted?.(result);

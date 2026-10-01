@@ -1,19 +1,19 @@
 package evm
 
 import (
-	"encoding/json"
 	"math/big"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/layer-3/clearnet-sdk/pkg/blockchain/internal/depositidtest"
 )
 
-// depositIDVector mirrors one entry of the ISS-068 shared golden vectors
-// (testdata/deposit_id_vectors.json), also consumed by custody's Foundry
-// tests and the TS SDK. Field names match the JSON exactly.
+// depositIDVector mirrors one "evm" entry of the ISS-068 shared golden vectors
+// (testdata/deposit_id_vectors.json at the repository root), also consumed by
+// custody's Foundry tests and the TS SDK. Field names match the JSON exactly.
 type depositIDVector struct {
 	Name      string `json:"name"`
 	ChainID   int64  `json:"chainId"`
@@ -30,21 +30,7 @@ type depositIDVector struct {
 }
 
 func readDepositIDVectors(t *testing.T) []depositIDVector {
-	t.Helper()
-	raw, err := os.ReadFile("testdata/deposit_id_vectors.json")
-	if err != nil {
-		t.Fatalf("read golden vectors: %v", err)
-	}
-	var doc struct {
-		Vectors []depositIDVector `json:"vectors"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("parse golden vectors: %v", err)
-	}
-	if len(doc.Vectors) == 0 {
-		t.Fatalf("golden vectors file has no vectors")
-	}
-	return doc.Vectors
+	return depositidtest.Vectors[depositIDVector](t, "evm")
 }
 
 // The SDK's DepositID reproduces the exact bytes custody's Foundry tests

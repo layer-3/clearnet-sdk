@@ -44,7 +44,7 @@ func mustDepositIDArguments() abi.Arguments {
 // "0x" + lowercase hex of keccak256(abi.encode(chainid, vault, depositor,
 // nonce)). MintReceipts are signed over it, so it must stay byte-identical to
 // the Solidity and TypeScript implementations; shared vectors in
-// testdata/deposit_id_vectors.json.
+// testdata/deposit_id_vectors.json at the repository root.
 func DepositID(chainID *big.Int, vault, depositor common.Address, nonce *big.Int) string {
 	encoded, err := depositIDArguments.Pack(chainID, vault, depositor, nonce)
 	if err != nil {

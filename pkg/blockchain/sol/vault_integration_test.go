@@ -130,6 +130,14 @@ func TestIntegrationSOL_DepositAndWithdraw(t *testing.T) {
 	// The depositor fire-and-forwards; wait until the vault PDA actually holds
 	// the funds before withdrawing.
 	waitBalance(ctx, t, client, VaultPDA(programID), 100_000_000)
+	depSig, err := solana.SignatureFromBase58(depRef.TxHash)
+	if err != nil {
+		t.Fatalf("deposit signature: %v", err)
+	}
+	if want := DepositID(depSig, 0); depRef.DepositID != want {
+		t.Fatalf("deposit ID = %s, want %s", depRef.DepositID, want)
+	}
+	waitDepositConfirmed(ctx, t, dep, depRef)
 
 	// ── Withdrawal flow (quorum in-process) ───────────────────────────────────
 	finalizers := make([]*WithdrawalFinalizer, solSignerCount)
@@ -532,6 +540,24 @@ func airdrop(ctx context.Context, t *testing.T, client *rpc.Client, pub solana.P
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("airdrop to %s not credited in time", pub)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func waitDepositConfirmed(ctx context.Context, t *testing.T, dep *Depositor, res core.SubmitDepositResult) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		st, err := dep.ChainDepositStatus(ctx, res.TxHash, res.DepositID, 0)
+		if err != nil {
+			t.Fatalf("ChainDepositStatus: %v", err)
+		}
+		if st == core.DepositConfirmed {
+			return
+		}
+		if st == core.DepositAbsent || time.Now().After(deadline) {
+			t.Fatalf("ChainDepositStatus = %v, want confirmed", st)
 		}
 		time.Sleep(time.Second)
 	}

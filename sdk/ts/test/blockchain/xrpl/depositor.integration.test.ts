@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   XRPL_NATIVE_ASSET,
+  xrplDepositId,
   XrplVaultDepositor,
 } from "../../../src/index.js";
 import type {
@@ -67,6 +68,7 @@ describe("XrplVaultDepositor integration", () => {
       });
       await admin.ledgerAccept();
 
+      expect(ref.depositId).toBe(xrplDepositId(ref.txHash));
       await expect(
         sdk.chainDepositStatus(ref.txHash, ref.depositId, 0),
       ).resolves.toBe("confirmed");
@@ -109,6 +111,7 @@ describe("XrplVaultDepositor integration", () => {
       });
       await admin.ledgerAccept();
 
+      expect(ref.depositId).toBe(xrplDepositId(ref.txHash));
       await expect(
         sdk.chainDepositStatus(ref.txHash, ref.depositId, 0),
       ).resolves.toBe("confirmed");
@@ -133,7 +136,7 @@ describe("XrplVaultDepositor integration", () => {
 
     try {
       await expect(
-        sdk.chainDepositStatus(UNKNOWN_TX_REF, UNKNOWN_TX_REF, 0),
+        sdk.chainDepositStatus(UNKNOWN_TX_REF, xrplDepositId(UNKNOWN_TX_REF), 0),
       ).resolves.toBe("absent");
     } finally {
       await sdk.disconnect();

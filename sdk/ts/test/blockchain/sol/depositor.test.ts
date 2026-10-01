@@ -14,12 +14,16 @@ import {
   eventAuthorityPda as sdkEventAuthorityPda,
   SOLANA_CUSTODY_PROGRAM_ID,
   SOLANA_NATIVE_ASSET,
+  solanaDepositId,
   SolanaVaultDepositor,
   vaultPda as sdkVaultPda,
 } from "../../../src/index.js";
 import {
+  DEPOSITED_EVENT_DISCRIMINATOR,
   DEPOSIT_SOL_DISCRIMINATOR,
   DEPOSIT_SPL_DISCRIMINATOR,
+  EVENT_IX_TAG,
+  EXECUTED_EVENT_DISCRIMINATOR,
   SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID,
   SOLANA_TOKEN_PROGRAM_ID,
 } from "../../../src/blockchain/sol/constants.js";
@@ -49,6 +53,7 @@ const ACCOUNT_URI = `yellow://local/user/${ACCOUNT.slice(2)}`;
 const REFERENCE =
   "0x2222222222222222222222222222222222222222222222222222222222222222" as Bytes32Hex;
 const SIGNATURE = bs58.encode(Uint8Array.from({ length: 64 }, (_, i) => i + 1));
+const DEPOSIT_ID = solanaDepositId(SIGNATURE, 0);
 
 const SYSTEM_PROGRAM_ID = SystemProgram.programId.toBase58();
 const TOKEN_PROGRAM_ID = SOLANA_TOKEN_PROGRAM_ID;
@@ -125,7 +130,7 @@ describe("SolanaVaultDepositor", () => {
     );
 
     expect(ref.txHash).toEqual(txIDForSignature(SIGNATURE));
-    expect(ref.depositId).toEqual(txIDForSignature(SIGNATURE));
+    expect(ref.depositId).toEqual(DEPOSIT_ID);
     expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(ref);
 
     const tx = signedTransaction(signer);
@@ -164,7 +169,7 @@ describe("SolanaVaultDepositor", () => {
     });
 
     expect(ref.txHash).toEqual(txIDForSignature(SIGNATURE));
-    expect(ref.depositId).toEqual(txIDForSignature(SIGNATURE));
+    expect(ref.depositId).toEqual(DEPOSIT_ID);
 
     const instruction = signedTransaction(signer).instructions[0]!;
     expect(instruction.programId.toBase58()).toBe(EXPECTED_PROGRAM_ID);
@@ -546,39 +551,169 @@ describe("SolanaVaultDepositor", () => {
     const depositor = createDepositor(createSigner());
 
     stubSignatureStatus({ confirmationStatus: "confirmed" });
-    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 0)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), DEPOSIT_ID, 0)).resolves.toBe(
       "confirmed",
     );
 
     stubSignatureStatus({ confirmationStatus: "confirmed" });
-    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 1)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), DEPOSIT_ID, 1)).resolves.toBe(
       "pending",
     );
 
     stubSignatureStatus({ confirmationStatus: "finalized" });
-    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 1n)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), DEPOSIT_ID, 1n)).resolves.toBe(
       "confirmed",
     );
 
     stubSignatureStatus({ confirmationStatus: "finalized" });
     await expect(
-      depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 1n << 80n),
+      depositor.chainDepositStatus(txIDForSignature(SIGNATURE), DEPOSIT_ID, 1n << 80n),
     ).resolves.toBe("confirmed");
 
     stubSignatureStatus({ confirmationStatus: "processed" });
-    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 0)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), DEPOSIT_ID, 0)).resolves.toBe(
       "pending",
     );
 
     stubSignatureStatus(null);
-    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 0)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), DEPOSIT_ID, 0)).resolves.toBe(
       "absent",
     );
 
     stubSignatureStatus({ confirmationStatus: "finalized", err: { InstructionError: [0, "Custom"] } });
-    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 0)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(txIDForSignature(SIGNATURE), DEPOSIT_ID, 0)).resolves.toBe(
       "absent",
     );
+  });
+
+  it("fetches the transaction only for a confirmed or finalized status", async () => {
+    const depositor = createDepositor(createSigner());
+    const methods = (fetch: ReturnType<typeof vi.fn>) =>
+      fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).method);
+
+    let fetch = stubSignatureStatus({ confirmationStatus: "processed" });
+    await expect(depositor.chainDepositStatus(SIGNATURE, DEPOSIT_ID, 0)).resolves.toBe("pending");
+    expect(methods(fetch)).toEqual(["getSignatureStatuses"]);
+
+    fetch = stubSignatureStatus({ confirmationStatus: "confirmed" }, { inner: [] });
+    await expect(depositor.chainDepositStatus(SIGNATURE, DEPOSIT_ID, 1)).resolves.toBe("absent");
+    expect(methods(fetch)).toEqual(["getSignatureStatuses", "getTransaction"]);
+    const params = JSON.parse(String(fetch.mock.calls[1]?.[1]?.body)).params;
+    expect(params[1]).toMatchObject({
+      commitment: "confirmed",
+      maxSupportedTransactionVersion: 0,
+    });
+  });
+
+  it("requires a Deposited custody event at the deposit ID's index", async () => {
+    const depositor = createDepositor(createSigner());
+    const id = (index: number) => solanaDepositId(SIGNATURE, index);
+    const cases: [string, TransactionSpec | null, string, DepositStatus][] = [
+      ["deposit at index 0", DEPOSIT_TRANSACTION, id(0), "confirmed"],
+      ["no event at index 1", DEPOSIT_TRANSACTION, id(1), "absent"],
+      ["no inner instructions", { inner: [] }, id(0), "absent"],
+      ["executed at index 0", { inner: [[{ event: "executed" }]] }, id(0), "absent"],
+      [
+        "deposit after an executed event, across groups",
+        { inner: [[{ event: "executed" }], [{ event: "deposited" }]] },
+        id(1),
+        "confirmed",
+      ],
+      [
+        "other program's CPI is not counted",
+        { inner: [[{ event: "executed", programIdIndex: 1 }, { event: "deposited" }]] },
+        id(0),
+        "confirmed",
+      ],
+      [
+        "short Deposited body is not counted",
+        {
+          inner: [[
+            { event: "deposited", bodyLength: DEPOSITED_BODY_LENGTH - 1 },
+            { event: "deposited" },
+          ]],
+        },
+        id(0),
+        "confirmed",
+      ],
+      [
+        "short Executed body is not counted",
+        {
+          inner: [[
+            { event: "executed", bodyLength: EXECUTED_BODY_LENGTH - 1 },
+            { event: "deposited" },
+          ]],
+        },
+        id(0),
+        "confirmed",
+      ],
+      [
+        "missing event tag is not counted",
+        { inner: [[{ event: "deposited", tag: new Array(8).fill(0) }]] },
+        id(0),
+        "absent",
+      ],
+      [
+        "program resolved through loaded addresses",
+        {
+          accountKeys: [DEPOSITOR.toBase58(), VAULT_PDA],
+          loadedAddresses: {
+            writable: [SYSTEM_PROGRAM_ID],
+            readonly: [EXPECTED_PROGRAM_ID],
+          },
+          inner: [[{ event: "deposited", programIdIndex: 3 }]],
+        },
+        id(0),
+        "confirmed",
+      ],
+      [
+        "loaded writable address is not the program",
+        {
+          accountKeys: [DEPOSITOR.toBase58(), VAULT_PDA],
+          loadedAddresses: {
+            writable: [SYSTEM_PROGRAM_ID],
+            readonly: [EXPECTED_PROGRAM_ID],
+          },
+          inner: [[{ event: "deposited", programIdIndex: 2 }]],
+        },
+        id(0),
+        "absent",
+      ],
+      ["failed transaction", { ...DEPOSIT_TRANSACTION, err: { InstructionError: [0, "Custom"] } }, id(0), "absent"],
+      ["transaction not served yet", null, id(0), "pending"],
+    ];
+    for (const [name, transaction, depositId, want] of cases) {
+      stubSignatureStatus({ confirmationStatus: "finalized" }, transaction);
+      await expect(depositor.chainDepositStatus(SIGNATURE, depositId, 1), name).resolves.toBe(want);
+    }
+
+    stubSignatureStatus({ confirmationStatus: "confirmed" }, DEPOSIT_TRANSACTION);
+    await expect(depositor.chainDepositStatus(SIGNATURE, DEPOSIT_ID, 1)).resolves.toBe("pending");
+  });
+
+  it("wraps a getTransaction failure with the txHash", async () => {
+    const rpcError = new Error("node offline");
+    stubSignatureStatus({ confirmationStatus: "finalized" }, rpcError);
+    const depositor = createDepositor(createSigner());
+
+    await expect(depositor.chainDepositStatus(SIGNATURE, DEPOSIT_ID, 0)).rejects.toMatchObject({
+      code: "RPC_ERROR",
+      txHash: SIGNATURE,
+    });
+  });
+
+  it("rejects a deposit ID that does not match the signature before RPC", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const depositor = createDepositor(createSigner());
+    const other = bs58.encode(new Uint8Array(64).fill(7));
+
+    for (const depositId of [SIGNATURE, solanaDepositId(other, 0), `${DEPOSIT_ID.slice(0, -1)}01`, ""]) {
+      await expect(
+        depositor.chainDepositStatus(SIGNATURE, depositId, 0),
+      ).rejects.toMatchObject({ code: "INVALID_DEPOSIT_ID" });
+    }
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("validates tx refs and confirmation depths before RPC", async () => {
@@ -600,10 +735,10 @@ describe("SolanaVaultDepositor", () => {
       ),
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(
-      depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), -1),
+      depositor.chainDepositStatus(txIDForSignature(SIGNATURE), DEPOSIT_ID, -1),
     ).rejects.toMatchObject({ code: "INVALID_CONFIRMATIONS" });
     await expect(
-      depositor.chainDepositStatus(txIDForSignature(SIGNATURE), txIDForSignature(SIGNATURE), 1.5),
+      depositor.chainDepositStatus(txIDForSignature(SIGNATURE), DEPOSIT_ID, 1.5),
     ).rejects.toMatchObject({ code: "INVALID_CONFIRMATIONS" });
 
     expect(fetch).not.toHaveBeenCalled();
@@ -615,7 +750,7 @@ describe("SolanaVaultDepositor", () => {
     const depositor = createDepositor(createSigner());
     const ref = txIDForSignature(SIGNATURE);
 
-    await expect(depositor.chainDepositStatus(ref, ref, 0)).rejects.toMatchObject({
+    await expect(depositor.chainDepositStatus(ref, DEPOSIT_ID, 0)).rejects.toMatchObject({
       code: "RPC_ERROR",
       txHash: ref,
       cause: rpcError,
@@ -701,38 +836,126 @@ function txIDForSignature(signature: string): string {
   return signature;
 }
 
+type EventKind = "deposited" | "executed";
+
+interface InnerInstructionSpec {
+  event?: EventKind;
+  programIdIndex?: number;
+  bodyLength?: number;
+  tag?: readonly number[];
+}
+
+interface TransactionSpec {
+  inner?: InnerInstructionSpec[][];
+  err?: unknown;
+  accountKeys?: string[];
+  loadedAddresses?: { writable: string[]; readonly: string[] };
+}
+
+const DEPOSITED_BODY_LENGTH = 32 + 20 + 32 + 32 + 8;
+const EXECUTED_BODY_LENGTH = 32 + 32 + 32 + 8;
+const DEPOSIT_TRANSACTION: TransactionSpec = { inner: [[{ event: "deposited" }]] };
+
+// Stubs fetch for the Solana JSON-RPC calls chainDepositStatus and
+// submitDeposit make. transaction answers getTransaction: a spec builds a
+// transaction response, null is "not served yet", and an Error rejects.
 function stubSignatureStatus(
   value: null | { confirmationStatus: string; err?: unknown },
-): void {
-  const response = {
-    jsonrpc: "2.0",
-    id: "1",
-    result: {
-      context: { slot: 1 },
-      value: [
-        value === null
-          ? null
-          : {
-              slot: 1,
-              confirmations:
-                value.confirmationStatus === "finalized" ? null : 1,
-              err: value.err ?? null,
-              confirmationStatus: value.confirmationStatus,
-            },
-      ],
+  transaction: TransactionSpec | null | Error = DEPOSIT_TRANSACTION,
+): ReturnType<typeof vi.fn> {
+  const statusResult = {
+    context: { slot: 1 },
+    value: [
+      value === null
+        ? null
+        : {
+            slot: 1,
+            confirmations:
+              value.confirmationStatus === "finalized" ? null : 1,
+            err: value.err ?? null,
+            confirmationStatus: value.confirmationStatus,
+          },
+    ],
+  };
+  const fetch = vi.fn().mockImplementation((_input: unknown, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body ?? "{}")) as {
+      id: string;
+      method: string;
+    };
+    let result: unknown = statusResult;
+    if (request.method === "getTransaction") {
+      if (transaction instanceof Error) {
+        return Promise.reject(transaction);
+      }
+      result = transaction === null ? null : transactionResult(transaction);
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  });
+  vi.stubGlobal("fetch", fetch);
+  return fetch;
+}
+
+function transactionResult(spec: TransactionSpec): unknown {
+  const accountKeys = spec.accountKeys ?? [
+    DEPOSITOR.toBase58(),
+    VAULT_PDA,
+    SYSTEM_PROGRAM_ID,
+    EVENT_AUTHORITY_PDA,
+    EXPECTED_PROGRAM_ID,
+  ];
+  const programIndex = accountKeys.indexOf(EXPECTED_PROGRAM_ID);
+  const version = spec.loadedAddresses === undefined ? "legacy" : 0;
+  return {
+    slot: 1,
+    blockTime: null,
+    version,
+    meta: {
+      err: spec.err ?? null,
+      fee: 5000,
+      innerInstructions: (spec.inner ?? []).map((group, index) => ({
+        index,
+        instructions: group.map((ix) => ({
+          programIdIndex: ix.programIdIndex ?? programIndex,
+          accounts: [],
+          data: bs58.encode(eventData(ix)),
+        })),
+      })),
+      preBalances: [],
+      postBalances: [],
+      loadedAddresses: spec.loadedAddresses ?? { writable: [], readonly: [] },
+    },
+    transaction: {
+      signatures: [SIGNATURE],
+      message: {
+        accountKeys,
+        header: {
+          numRequiredSignatures: 1,
+          numReadonlySignedAccounts: 0,
+          numReadonlyUnsignedAccounts: 0,
+        },
+        instructions: [],
+        recentBlockhash: publicKey(99).toBase58(),
+        ...(version === 0 ? { addressTableLookups: [] } : {}),
+      },
     },
   };
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockImplementation(() =>
-      Promise.resolve(
-        new Response(JSON.stringify(response), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-      ),
-    ),
-  );
+}
+
+function eventData(ix: InnerInstructionSpec): Uint8Array {
+  const discriminator =
+    ix.event === "executed" ? EXECUTED_EVENT_DISCRIMINATOR : DEPOSITED_EVENT_DISCRIMINATOR;
+  const bodyLength =
+    ix.bodyLength ??
+    (ix.event === "executed" ? EXECUTED_BODY_LENGTH : DEPOSITED_BODY_LENGTH);
+  const data = new Uint8Array(16 + bodyLength);
+  data.set(ix.tag ?? EVENT_IX_TAG, 0);
+  data.set(discriminator, 8);
+  return data;
 }
 
 function stubRpcFailure(error: Error): void {

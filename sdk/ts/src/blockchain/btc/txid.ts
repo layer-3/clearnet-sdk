@@ -11,8 +11,13 @@ export function requireBitcoinTxID(txID: unknown): string {
 }
 
 export function normalizeTxid(txid: unknown): string {
+  return requireTxidHex(txid).toLowerCase();
+}
+
+// Validates txid without changing its case.
+export function requireTxidHex(txid: unknown): string {
   if (typeof txid !== "string" || !TXID_PATTERN.test(txid)) {
     throw new ClearnetSdkError("INVALID_TX_ID", "Bitcoin txid must be 64 hex characters");
   }
-  return txid.toLowerCase();
+  return txid;
 }
