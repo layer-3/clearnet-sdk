@@ -464,10 +464,10 @@ credited. It returns:
 `bigint`. EVM treats it as an inclusive receipt confirmation count. Solana maps
 it onto the commitment ladder: `0` accepts `confirmed`; `>= 1` requires
 `finalized`. XRPL validates the shape for cross-chain parity but treats XRPL
-finality as binary: a validated transaction is `confirmed`. Bitcoin returns
-`confirmed` for any known transaction when `minConfirmations` is `0`; otherwise
-it returns `pending` for mempool or shallow transactions and `confirmed` when
-the transaction has at least `minConfirmations` confirmations.
+finality as binary: a validated transaction is `confirmed`. Bitcoin treats `0`
+as `1`, so a mempool transaction is never `confirmed`; it returns `pending` for
+mempool or shallow transactions and `confirmed` when the transaction has at
+least `minConfirmations` (at least one) confirmations.
 
 ## API Reference
 
@@ -499,7 +499,7 @@ Input fields:
 | `destination.ref` | `Hash \| undefined` | Optional 32-byte opaque reference. Omitted values are sent as `bytes32(0)`. |
 | `asset` | `Address \| ""` | Use `EVM_NATIVE_ASSET` for native ETH, or an ERC-20 token address. |
 | `amount` | `string` | Positive decimal amount. Native uses `nativeDecimals`; ERC-20 tokens use on-chain `decimals()`. |
-| `nonceKey` | `bigint \| undefined` | Optional upper 192 bits of the 2D deposit nonce; defaults to `0n`. See [EVM nonces](#evm-nonces). |
+| `nonceKey` | `bigint \| undefined` | Optional upper 192 bits of the 2D deposit nonce, in `[0, 2^192)` (otherwise `INVALID_INPUT`); defaults to `0n`. See [EVM nonces](#evm-nonces). |
 
 Options:
 
@@ -847,7 +847,7 @@ Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 | `INVALID_CONFIRMATIONS` | `minConfirmations` is negative, fractional, or an unsafe number. |
 | `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value. |
 | `INVALID_TX_ID` | `txHash` is not valid for the chain: EVM transaction hash, Solana 64-byte signature, XRPL 64-hex hash, or Bitcoin 64-hex txid. |
-| `INVALID_DEPOSIT_ID` | `depositId` is not a valid deposit ID: for EVM, exactly `"0x"` + 64 lowercase hex characters (rejects the pre-ISS-068 `txHash/logIndex` shape); for Bitcoin, Solana and XRPL, not exactly the chain's deposit ID helper output for `txHash`. |
+| `INVALID_DEPOSIT_ID` | `depositId` is not a valid deposit ID: for EVM, exactly `"0x"` + 64 lowercase hex characters (rejects a `txHash/logIndex` shape); for Bitcoin, Solana and XRPL, not exactly the chain's deposit ID helper output for `txHash`. |
 | `MISSING_WALLET_ACCOUNT` | The EVM wallet account is missing/mismatched, or the Solana/XRPL signer is missing. |
 | `CHAIN_MISMATCH` | The configured chain or network does not match the RPC or wallet network, such as an EVM chain ID mismatch or unsupported Bitcoin network. |
 | `INSUFFICIENT_FUNDS` | Bitcoin only: confirmed depositor UTXOs cannot cover the deposit amount plus fee. |

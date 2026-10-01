@@ -100,7 +100,8 @@ type VaultDepositor interface {
 	// payments and asset support), so DepositConfirmed does not guarantee the
 	// deposit will be credited. minConf is the confirmation depth required for
 	// DepositConfirmed; chains with no numeric depth (Solana) map it onto a
-	// commitment level instead.
+	// commitment level instead. Bitcoin treats 0 as 1, so a mempool
+	// transaction is never DepositConfirmed.
 	ChainDepositStatus(ctx context.Context, txHash, depositId string, minConf uint64) (DepositStatus, error)
 }
 

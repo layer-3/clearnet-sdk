@@ -333,6 +333,30 @@ func TestSubmitDepositWithKey_UsesRequestedKey(t *testing.T) {
 
 // For an ERC-20 the nonce is read before the allowance and the approve, and
 // the approve is skipped when the allowance already covers the amount.
+// A key outside [0, 2^192) is refused before any RPC. Without the check,
+// 2^256 would be packed modulo 2^256 and deposit under key 0.
+func TestSubmitDepositWithKey_RejectsOutOfRangeKey(t *testing.T) {
+	for name, key := range map[string]*big.Int{
+		"negative": big.NewInt(-1),
+		"2^192":    new(big.Int).Lsh(big.NewInt(1), 192),
+		"2^256":    new(big.Int).Lsh(big.NewInt(1), 256),
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, chain, _ := newFlowDepositor(t)
+			if _, err := flowSubmit(t, d, "", key); err == nil {
+				t.Fatal("SubmitDepositWithKey accepted an out-of-range key")
+			}
+			if len(chain.calls) != 0 || len(chain.txs) != 0 {
+				t.Fatalf("calls = %v, txs = %d, want none", chain.calls, len(chain.txs))
+			}
+		})
+	}
+	d, _, _ := newFlowDepositor(t)
+	if _, err := flowSubmit(t, d, "", new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 192), big.NewInt(1))); err != nil {
+		t.Fatalf("SubmitDepositWithKey(2^192-1) = %v, want success", err)
+	}
+}
+
 func TestSubmitDeposit_ERC20ReadsNonceBeforeApprove(t *testing.T) {
 	d, chain, _ := newFlowDepositor(t)
 

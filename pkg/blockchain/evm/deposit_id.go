@@ -17,6 +17,10 @@ import (
 // sequence (ERC-4337 EntryPoint layout).
 const nonceSequenceBits = 64
 
+// maxNonceKeyBits is the width of the key field (Custody.getNonce takes a
+// uint192 key).
+const maxNonceKeyBits = 192
+
 // depositIDArguments is the abi.Arguments for (chainid uint256, vault
 // address, depositor address, nonce uint256) — the exact tuple hashed into
 // an EVM deposit ID (ADR-018, ISS-068). Built once at package init;
@@ -43,13 +47,14 @@ func mustDepositIDArguments() abi.Arguments {
 // DepositID computes the EVM deposit ID (ISS-068, ADR-018 §Transaction IDs):
 // "0x" + lowercase hex of keccak256(abi.encode(chainid, vault, depositor,
 // nonce)). MintReceipts are signed over it, so it must stay byte-identical to
-// the Solidity and TypeScript implementations; shared vectors in
-// testdata/deposit_id_vectors.json at the repository root.
+// the TypeScript implementation and the formula custody's IDeposit.sol
+// documents; shared vectors in testdata/deposit_id_vectors.json at the
+// repository root.
 func DepositID(chainID *big.Int, vault, depositor common.Address, nonce *big.Int) string {
 	encoded, err := depositIDArguments.Pack(chainID, vault, depositor, nonce)
 	if err != nil {
-		// Only reachable for a nil/negative/oversized big.Int; every caller
-		// supplies a real chain ID and a nonce composed by ComposeNonce.
+		// Only reachable for a negative big.Int (nil panics inside Pack).
+		// Values of 2^256 or more do not fail: they are packed modulo 2^256.
 		panic(fmt.Sprintf("evm: pack deposit ID inputs: %v", err))
 	}
 	return "0x" + hex.EncodeToString(crypto.Keccak256(encoded))
@@ -82,7 +87,8 @@ func ParseDepositID(id string) ([32]byte, error) {
 }
 
 // ComposeNonce packs key and sequence into the single uint256 nonce
-// Custody.deposit expects: key << 64 | sequence.
+// Custody.deposit expects: key << 64 | sequence. key must be in [0, 2^192);
+// it is not checked.
 func ComposeNonce(key *big.Int, sequence uint64) *big.Int {
 	nonce := new(big.Int).Lsh(key, nonceSequenceBits)
 	return nonce.Or(nonce, new(big.Int).SetUint64(sequence))

@@ -14,7 +14,11 @@ import type {
 import { decimalToBaseUnits } from "../amounts.js";
 import { custodyAbi, erc20Abi } from "./abi.js";
 import { DEFAULT_RECEIPT_TIMEOUT_MS } from "./constants.js";
-import { depositId as computeDepositId, requireDepositId } from "./depositId.js";
+import {
+  depositId as computeDepositId,
+  requireDepositId,
+  requireNonceKey,
+} from "./depositId.js";
 import {
   isTransactionNotFound,
   requireDepositDestination,
@@ -107,7 +111,7 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
   ): Promise<SubmitDepositResult> {
     const destination = requireDepositDestination(input.destination);
     const asset = requireAsset(input.asset);
-    const key = input.nonceKey ?? 0n;
+    const key = requireNonceKey(input.nonceKey);
     await this.ensureWriteChain();
 
     const amount =

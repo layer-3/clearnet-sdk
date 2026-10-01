@@ -53,6 +53,20 @@ export function requireDepositId(value: unknown): Hex {
 }
 
 /**
+ * Returns key, or 0n when it is undefined. Throws INVALID_INPUT unless key is a
+ * bigint in [0, 2^192).
+ */
+export function requireNonceKey(key: unknown): bigint {
+  if (key === undefined) {
+    return 0n;
+  }
+  if (typeof key !== "bigint" || key < 0n || key > MAX_NONCE_KEY) {
+    throw new ClearnetSdkError("INVALID_INPUT", "nonce key must be a bigint in [0, 2^192)");
+  }
+  return key;
+}
+
+/**
  * Packs key and sequence into the single uint256 nonce Custody.deposit
  * expects: key << 64 | sequence. Throws INVALID_INPUT unless
  * 0 <= key < 2^192 and 0 <= sequence < 2^64, so neither field can spill into

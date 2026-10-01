@@ -654,7 +654,12 @@ describe("BitcoinVaultDepositor", () => {
       rpc: createRpc({ rawTransaction: depositRawTransaction(0) }),
     });
     await expect(pending.chainDepositStatus(txID, depositId, 1)).resolves.toBe("pending");
-    await expect(pending.chainDepositStatus(txID, depositId, 0)).resolves.toBe("confirmed");
+    await expect(pending.chainDepositStatus(txID, depositId, 0)).resolves.toBe("pending");
+
+    const oneConf = createDepositor({
+      rpc: createRpc({ rawTransaction: depositRawTransaction(1) }),
+    });
+    await expect(oneConf.chainDepositStatus(txID, depositId, 0)).resolves.toBe("confirmed");
 
     const confirmed = createDepositor({
       rpc: createRpc({ rawTransaction: depositRawTransaction(2) }),

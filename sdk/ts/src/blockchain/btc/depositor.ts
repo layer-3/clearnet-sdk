@@ -160,9 +160,9 @@ export class BitcoinVaultDepositor
     if (raw === null || !this.isDepositOutput(raw.outputs, vout)) {
       return "absent";
     }
-    return minConf === 0 || (raw.confirmations > 0 && raw.confirmations >= minConf)
-      ? "confirmed"
-      : "pending";
+    // A mempool transaction is never confirmed: 0 requires one confirmation.
+    const required = minConf === 0 ? 1 : minConf;
+    return raw.confirmations >= required ? "confirmed" : "pending";
   }
 
   async depositorAddress(): Promise<string> {

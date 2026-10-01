@@ -104,8 +104,8 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 	return d.SubmitDepositWithKey(ctx, assetAddress, amount, dest, big.NewInt(0))
 }
 
-// SubmitDepositWithKey selects the upper 192 bits of the 2D nonce. Each key has
-// its own consecutive sequence, so one depositor address can keep several
+// SubmitDepositWithKey selects the upper 192 bits of the 2D nonce: key must be
+// in [0, 2^192), nil means 0. Each key has its own consecutive sequence, so one depositor address can keep several
 // independent deposit streams (IDeposit.sol recommends key =
 // uint192(uint160(user)) when depositing for many users).
 //
@@ -146,6 +146,9 @@ func (d *Depositor) SubmitDepositWithKey(ctx context.Context, assetAddress strin
 	}
 	if key == nil {
 		key = big.NewInt(0)
+	}
+	if key.Sign() < 0 || key.BitLen() > maxNonceKeyBits {
+		return core.SubmitDepositResult{}, fmt.Errorf("evm: nonce key %s not in [0, 2^192)", key)
 	}
 
 	depositorAddr, err := sign.EthAddress(d.signer)
@@ -298,7 +301,7 @@ func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, depositId st
 	}
 	chainID, err := d.client.ChainID(ctx)
 	if err != nil {
-		return core.DepositPending, fmt.Errorf("evm: chain id: %w", err)
+		return core.DepositAbsent, fmt.Errorf("evm: chain id: %w", err)
 	}
 	if !d.hasDepositLog(receipt, chainID, depositId) {
 		return core.DepositAbsent, nil

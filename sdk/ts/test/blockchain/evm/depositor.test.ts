@@ -132,6 +132,28 @@ describe("EvmVaultDepositor", () => {
     );
   });
 
+  it.each([
+    ["negative", -1n],
+    ["2^192", 1n << 192n],
+    ["a number", 7],
+  ])("rejects a %s nonceKey before reading the nonce", async (_name, nonceKey) => {
+    const clients = createClients();
+    const depositor = createDepositor(clients);
+
+    await expect(
+      depositor.submitDeposit({
+        destination: { account: ACCOUNT },
+        asset: EVM_NATIVE_ASSET,
+        amount: "1",
+        nonceKey: nonceKey as bigint,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(clients.publicMock.readContract).not.toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: "getNonce" }),
+    );
+    expect(clients.walletMock.writeContract).not.toHaveBeenCalled();
+  });
+
   it("approves an exact ERC-20 amount before depositing and returns both identifiers", async () => {
     const clients = createClients();
     clients.publicMock.waitForTransactionReceipt
