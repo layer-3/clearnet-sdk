@@ -86,8 +86,10 @@ func (e *DepositSubmitError) Unwrap() error { return e.Err }
 
 // ErrStaleNonce indicates the nonce read at the start of SubmitDeposit was
 // already consumed by submission time (for example a load-balanced RPC node
-// lagging behind another). Liveness only: a fresh call reads the current nonce.
-// See DepositSubmitError on retrying safely.
+// lagging behind another). It is returned only when this call's own deposit
+// was rejected before broadcast or mined as a revert, so this call created no
+// deposit; a fresh call reads the current nonce. See DepositSubmitError for
+// the TxHash rule.
 var ErrStaleNonce = errors.New("evm: nonce already consumed by another deposit (stale read)")
 
 // ErrDepositEventNotFound indicates the deposit transaction mined successfully
@@ -118,7 +120,8 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 // the approve is skipped when the allowance already covers amount. Native
 // marker: sends ETH with msg.value == amount. Blocks until the deposit mines,
 // then requires the vault's Deposited log for the returned DepositID
-// (ErrDepositEventNotFound otherwise).
+// (ErrDepositEventNotFound otherwise). A wait that ends without a receipt (for
+// example ctx done) returns that error with TxHash set.
 //
 // Do not call concurrently for the same (depositor, key): both race one
 // on-chain counter and one reverts. After an error return, see
@@ -147,8 +150,8 @@ func (d *Depositor) SubmitDepositWithKey(ctx context.Context, assetAddress strin
 	if key == nil {
 		key = big.NewInt(0)
 	}
-	if key.Sign() < 0 || key.BitLen() > maxNonceKeyBits {
-		return core.SubmitDepositResult{}, fmt.Errorf("evm: nonce key %s not in [0, 2^192)", key)
+	if err := validateNonceKey(key); err != nil {
+		return core.SubmitDepositResult{}, err
 	}
 
 	depositorAddr, err := sign.EthAddress(d.signer)
@@ -223,7 +226,7 @@ func (d *Depositor) SubmitDepositWithKey(ctx context.Context, assetAddress strin
 	if err != nil {
 		return core.SubmitDepositResult{}, &DepositSubmitError{
 			Step: "deposit", Key: key, Nonce: nonce, DepositID: depositID, TxHash: txHash,
-			Err: d.classifyDepositRevert(ctx, err, depositorAddr, key, nonce),
+			Err: d.classifyWaitFailure(ctx, err, depositorAddr, key, nonce),
 		}
 	}
 	if !d.hasDepositLog(receipt, chainID, depositID) {
@@ -233,6 +236,16 @@ func (d *Depositor) SubmitDepositWithKey(ctx context.Context, assetAddress strin
 		}
 	}
 	return core.SubmitDepositResult{TxHash: txHash, DepositID: depositID}, nil
+}
+
+// classifyWaitFailure applies classifyDepositRevert only to a mined revert. Any
+// other wait failure leaves this call's transaction possibly mined, so it is
+// returned unchanged.
+func (d *Depositor) classifyWaitFailure(ctx context.Context, err error, depositor common.Address, key, nonce *big.Int) error {
+	if !errors.Is(err, errTxReverted) {
+		return err
+	}
+	return d.classifyDepositRevert(ctx, err, depositor, key, nonce)
 }
 
 // classifyDepositRevert re-labels err as ErrStaleNonce when it can tell the
@@ -275,8 +288,11 @@ func parseClearnetAccount(account string) (common.Address, error) {
 // ChainDepositStatus reports the on-chain status of a deposit identified by
 // txHash and depositId (both returned by SubmitDeposit), by fetching the
 // receipt at txHash and finding the vault's Deposited log whose depositor and
-// nonce reproduce depositId. It is a pure on-chain read: it does not apply
-// custody's crediting rules, so DepositConfirmed does not guarantee a credit.
+// nonce reproduce depositId. Without a receipt it is DepositPending if the node
+// knows the transaction and DepositAbsent only if it does not; any other lookup
+// failure is returned as an error. It is a pure on-chain read: it does not
+// apply custody's crediting rules, so DepositConfirmed does not guarantee a
+// credit.
 func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, depositId string, minConf uint64) (core.DepositStatus, error) {
 	if _, err := ParseDepositID(depositId); err != nil {
 		return core.DepositAbsent, err
@@ -288,11 +304,15 @@ func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, depositId st
 	receipt, err := d.client.TransactionReceipt(ctx, hash)
 	if err != nil {
 		if errors.Is(err, ethereum.NotFound) {
-			// No receipt — maybe still pending in the mempool.
-			if _, isPending, perr := d.client.TransactionByHash(ctx, hash); perr == nil && isPending {
-				return core.DepositPending, nil
+			// A known transaction without a receipt is in the mempool or mined
+			// ahead of the node's receipt index.
+			if _, _, perr := d.client.TransactionByHash(ctx, hash); perr != nil {
+				if errors.Is(perr, ethereum.NotFound) {
+					return core.DepositAbsent, nil
+				}
+				return core.DepositAbsent, fmt.Errorf("evm: tx lookup: %w", perr)
 			}
-			return core.DepositAbsent, nil
+			return core.DepositPending, nil
 		}
 		return core.DepositAbsent, fmt.Errorf("evm: tx receipt: %w", err)
 	}

@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -30,6 +33,7 @@ type depositorTestRPC struct {
 	rawErr       error
 	rawFunc      func(string) (*RawTx, error)
 	rawTxID      string
+	rawCalls     int
 	listMin      int
 	listAddrs    []string
 	feeTarget    int
@@ -75,6 +79,7 @@ func (r *depositorTestRPC) GetBlockTxids(context.Context, string) ([]string, err
 }
 func (r *depositorTestRPC) GetRawTransaction(_ context.Context, txID string) (*RawTx, error) {
 	r.rawTxID = txID
+	r.rawCalls++
 	if r.rawFunc != nil {
 		return r.rawFunc(txID)
 	}
@@ -557,6 +562,78 @@ func TestDepositorChainDepositStatusCompatibility(t *testing.T) {
 			}
 			if tc.err != nil && tc.wantErr && !errors.Is(err, tc.err) {
 				t.Fatalf("error %v does not wrap %v", err, tc.err)
+			}
+		})
+	}
+}
+
+// A status check resolves the transaction once: one getrawtransaction on Core,
+// one transaction fetch plus a tip read only when confirmed on Esplora.
+func TestDepositorChainDepositStatusReadsTransactionOnce(t *testing.T) {
+	signer, vaultKeys := depositorTestVaultKeys(t)
+	outputs := depositStatusTestOutputs(t, vaultKeys)
+
+	t.Run("core", func(t *testing.T) {
+		txID := strings.Repeat("e", 64)
+		rpc := &depositorTestRPC{rawTx: &RawTx{Confirmations: 2, Vouts: outputs}}
+		depositor, err := NewDepositor(&chaincfg.RegressionNetParams, rpc, signer, vaultKeys, 2, Config{}, NewAssetResolver())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := depositor.ChainDepositStatus(context.Background(), txID, DepositID(txID, 0), 2)
+		if err != nil || got != core.DepositConfirmed {
+			t.Fatalf("ChainDepositStatus = (%v,%v), want (confirmed,nil)", got, err)
+		}
+		if rpc.rawCalls != 1 {
+			t.Fatalf("getrawtransaction calls = %d, want 1", rpc.rawCalls)
+		}
+	})
+
+	for _, tc := range []struct {
+		name     string
+		status   string
+		want     core.DepositStatus
+		wantTips int
+	}{
+		{"esplora mempool", `{"confirmed":false}`, core.DepositPending, 0},
+		{"esplora confirmed", `{"confirmed":true,"block_height":199}`, core.DepositConfirmed, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			txID := strings.Repeat("f", 64)
+			vouts := make([]string, len(outputs))
+			for i, out := range outputs {
+				vouts[i] = fmt.Sprintf(`{"scriptpubkey":%q,"value":%d}`, out.ScriptPubKeyHex, out.ValueSats)
+			}
+			requests := map[string]int{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests[r.URL.Path]++
+				switch r.URL.Path {
+				case "/tx/" + txID:
+					fmt.Fprintf(w, `{"txid":%q,"vout":[%s],"status":%s}`, txID, strings.Join(vouts, ","), tc.status)
+				case "/blocks/tip/height":
+					fmt.Fprint(w, "200")
+				default:
+					t.Errorf("unexpected request %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			backend, err := NewEsploraP2WPKHBackend(EsploraP2WPKHBackendConfig{
+				BaseURL: server.URL, Network: &chaincfg.RegressionNetParams, HTTPClient: server.Client(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			depositor, err := NewDepositorWithBackend(&chaincfg.RegressionNetParams, backend, signer, vaultKeys, 2, p2wpkhTestConfig(), NewAssetResolver())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := depositor.ChainDepositStatus(context.Background(), txID, DepositID(txID, 0), 2)
+			if err != nil || got != tc.want {
+				t.Fatalf("ChainDepositStatus = (%v,%v), want (%v,nil)", got, err, tc.want)
+			}
+			if requests["/tx/"+txID] != 1 || requests["/blocks/tip/height"] != tc.wantTips || len(requests) != 1+tc.wantTips {
+				t.Fatalf("requests = %v, want one transaction fetch and %d tip reads", requests, tc.wantTips)
 			}
 		})
 	}

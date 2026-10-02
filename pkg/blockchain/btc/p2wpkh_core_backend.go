@@ -153,14 +153,14 @@ func (b *CoreP2WPKHBackend) GetTransactionConfirmations(ctx context.Context, txI
 	return transactionConfirmationsWithRPC(requestCtx, b.rpc, txID)
 }
 
-func (b *CoreP2WPKHBackend) GetTransactionOutputs(ctx context.Context, txID string) ([]RawVout, bool, error) {
+func (b *CoreP2WPKHBackend) GetTransaction(ctx context.Context, txID string) ([]RawVout, uint64, bool, error) {
 	requestCtx, cancel := optionalBackendTimeout(ctx, b.requestTimeout)
 	defer cancel()
 	raw, known, err := rawTransactionWithRPC(requestCtx, b.rpc, txID)
 	if err != nil || !known {
-		return nil, known, err
+		return nil, 0, known, err
 	}
-	return raw.Vouts, true, nil
+	return raw.Vouts, rawConfirmations(raw), true, nil
 }
 
 func listWalletP2WPKHUnspent(ctx context.Context, rpc interface {
@@ -214,10 +214,15 @@ func transactionConfirmationsWithRPC(ctx context.Context, rpc rawTransactionRPC,
 	if err != nil || !known {
 		return 0, known, err
 	}
+	return rawConfirmations(raw), true, nil
+}
+
+// rawConfirmations clamps a negative (conflicted) confirmation count to zero.
+func rawConfirmations(raw *RawTx) uint64 {
 	if raw.Confirmations < 0 {
-		return 0, true, nil
+		return 0
 	}
-	return uint64(raw.Confirmations), true, nil
+	return uint64(raw.Confirmations)
 }
 
 type rawTransactionRPC interface {

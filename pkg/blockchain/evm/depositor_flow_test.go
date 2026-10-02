@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -48,11 +50,14 @@ type fakeDepositChain struct {
 	sendErr     error                                                       // returned by eth_sendRawTransaction
 	revertMined bool                                                        // the deposit mines with status 0
 	bumpOnMine  bool                                                        // with revertMined: another deposit consumed the nonce first
+	withholdRcp bool                                                        // the deposit mines but the node serves no receipt for it
+	txLookupErr error                                                       // returned by eth_getTransactionByHash
 	depositLogs func(depositor common.Address, nonce *big.Int) []*types.Log // overrides the vault log
 
 	calls    []string // "getNonce", "allowance", "send:approve", "send:deposit", ...
 	receipts map[common.Hash]*types.Receipt
 	pending  map[common.Hash]*types.Transaction
+	mined    map[common.Hash]*types.Transaction // mined, receipt not served
 	txs      []*types.Transaction
 }
 
@@ -74,6 +79,7 @@ func newFakeDepositChain(t *testing.T) *fakeDepositChain {
 		head:      100,
 		receipts:  map[common.Hash]*types.Receipt{},
 		pending:   map[common.Hash]*types.Transaction{},
+		mined:     map[common.Hash]*types.Transaction{},
 	}
 }
 
@@ -153,7 +159,11 @@ func (api *fakeEthAPI) Call(args fakeCallArgs, _ *json.RawMessage) (hexutil.Byte
 		}
 		key := in[1].(*big.Int)
 		c.record("getNonce")
-		return c.custody.Methods["getNonce"].Outputs.Pack(ComposeNonce(key, c.sequences[key.String()]))
+		nonce, err := ComposeNonce(key, c.sequences[key.String()])
+		if err != nil {
+			return nil, err
+		}
+		return c.custody.Methods["getNonce"].Outputs.Pack(nonce)
 	case args.To != nil && *args.To == flowToken && string(data[:4]) == string(c.erc20.Methods["allowance"].ID):
 		c.record("allowance")
 		return c.erc20.Methods["allowance"].Outputs.Pack(c.allowance)
@@ -231,6 +241,10 @@ func (api *fakeEthAPI) SendRawTransaction(raw hexutil.Bytes) (common.Hash, error
 		l.BlockNumber = c.head
 		l.Index = uint(i)
 	}
+	if step == "deposit" && c.withholdRcp {
+		c.mined[tx.Hash()] = tx
+		return tx.Hash(), nil
+	}
 	c.receipts[tx.Hash()] = receipt
 	return tx.Hash(), nil
 }
@@ -241,10 +255,33 @@ func (api *fakeEthAPI) GetTransactionReceipt(h common.Hash) *types.Receipt {
 	return api.c.receipts[h]
 }
 
-func (api *fakeEthAPI) GetTransactionByHash(h common.Hash) *types.Transaction {
-	api.c.mu.Lock()
-	defer api.c.mu.Unlock()
-	return api.c.pending[h]
+// GetTransactionByHash serves a pending transaction without a blockNumber and a
+// mined one with it, which is how ethclient tells them apart.
+func (api *fakeEthAPI) GetTransactionByHash(h common.Hash) (json.RawMessage, error) {
+	c := api.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.txLookupErr != nil {
+		return nil, c.txLookupErr
+	}
+	if tx := c.pending[h]; tx != nil {
+		return json.Marshal(tx)
+	}
+	tx := c.mined[h]
+	if tx == nil {
+		return json.RawMessage("null"), nil
+	}
+	raw, err := json.Marshal(tx)
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	fields["blockNumber"] = hexutil.Uint64(c.head)
+	fields["blockHash"] = common.Hash{1}
+	return json.Marshal(fields)
 }
 
 type flowAssets struct{}
@@ -304,7 +341,7 @@ func TestSubmitDeposit_SequentialDepositsUseConsecutiveNonces(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := DepositID(flowChainID, flowVault, depositor, ComposeNonce(big.NewInt(0), seq))
+		want := DepositID(flowChainID, flowVault, depositor, mustComposeNonce(t, big.NewInt(0), seq))
 		if res.DepositID != want {
 			t.Fatalf("sequence %d: DepositID = %s, want %s", seq, res.DepositID, want)
 		}
@@ -462,6 +499,47 @@ func TestSubmitDeposit_MinedRevertClassification(t *testing.T) {
 	}
 }
 
+// A deposit that mined but whose wait ended without a receipt is not
+// ErrStaleNonce, even though getNonce has moved past its nonce: it surfaces the
+// context error with the identity fields and hash, and ChainDepositStatus
+// reports it pending.
+func TestSubmitDeposit_WaitTimeoutIsNotStaleNonce(t *testing.T) {
+	d, chain, depositor := newFlowDepositor(t)
+	chain.withholdRcp = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := d.SubmitDeposit(ctx, "", decimal.NewFromInt(1), core.DepositDestination{Account: flowAccount})
+	if errors.Is(err, ErrStaleNonce) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded and not ErrStaleNonce", err)
+	}
+	se := asSubmitError(t, err)
+	if se.Step != "deposit" || se.TxHash != chain.txs[0].Hash().Hex() || se.Key == nil || se.Nonce.Sign() != 0 ||
+		se.DepositID != DepositID(flowChainID, flowVault, depositor, big.NewInt(0)) {
+		t.Fatalf("error fields = %+v", se)
+	}
+	if st, err := d.ChainDepositStatus(context.Background(), se.TxHash, se.DepositID, 1); err != nil || st != core.DepositPending {
+		t.Fatalf("ChainDepositStatus = (%v, %v), want pending", st, err)
+	}
+}
+
+// Only a mined revert is re-labelled ErrStaleNonce; any other wait failure is
+// returned unchanged even when a live getNonce read shows the nonce consumed.
+func TestClassifyWaitFailure_OnlyMinedRevert(t *testing.T) {
+	d, chain, depositor := newFlowDepositor(t)
+	chain.sequences["0"] = 1
+	key, nonce := big.NewInt(0), big.NewInt(0)
+
+	waitErr := errors.New("wait mined: receipt unavailable")
+	if err := d.classifyWaitFailure(context.Background(), waitErr, depositor, key, nonce); err != waitErr {
+		t.Fatalf("non-revert wait failure = %v, want it unchanged", err)
+	}
+	reverted := fmt.Errorf("%w (tx=0x01)", errTxReverted)
+	if err := d.classifyWaitFailure(context.Background(), reverted, depositor, key, nonce); !errors.Is(err, ErrStaleNonce) {
+		t.Fatalf("mined revert with consumed nonce = %v, want ErrStaleNonce", err)
+	}
+}
+
 // A broadcast failure keeps the already-known transaction hash.
 func TestSubmitDeposit_SendFailureCarriesHash(t *testing.T) {
 	d, chain, _ := newFlowDepositor(t)
@@ -523,5 +601,16 @@ func TestChainDepositStatus(t *testing.T) {
 	delete(chain.pending, hash)
 	if st, err := d.ChainDepositStatus(ctx, res.TxHash, res.DepositID, 1); err != nil || st != core.DepositAbsent {
 		t.Fatalf("unknown: (%v, %v), want absent", st, err)
+	}
+
+	// Mined, but the node has not indexed the receipt yet: pending.
+	chain.mined[hash] = chain.txs[0]
+	if st, err := d.ChainDepositStatus(ctx, res.TxHash, res.DepositID, 1); err != nil || st != core.DepositPending {
+		t.Fatalf("mined without receipt: (%v, %v), want pending", st, err)
+	}
+	// A failed lookup is an error, never absent.
+	chain.txLookupErr = errors.New("upstream unavailable")
+	if st, err := d.ChainDepositStatus(ctx, res.TxHash, res.DepositID, 1); err == nil || st != core.DepositAbsent {
+		t.Fatalf("lookup error: (%v, %v), want an error", st, err)
 	}
 }

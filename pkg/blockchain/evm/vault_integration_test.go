@@ -317,7 +317,7 @@ func TestIntegrationEVM_DepositNonceFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keyed deposit: %v", err)
 	}
-	if want := DepositID(chainID, custodyAddr, depositorAddr, ComposeNonce(big.NewInt(7), 0)); keyed.DepositID != want {
+	if want := DepositID(chainID, custodyAddr, depositorAddr, mustComposeNonce(t, big.NewInt(7), 0)); keyed.DepositID != want {
 		t.Fatalf("keyed DepositID = %s, want %s", keyed.DepositID, want)
 	}
 

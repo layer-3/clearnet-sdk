@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"math"
 	"math/big"
 	"strconv"
 	"strings"
@@ -57,9 +58,9 @@ func TestDepositID_GoldenVectors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("bad sequence %q: %v", v.Sequence, err)
 			}
-			composed := ComposeNonce(key, sequence)
-			if composed.Cmp(nonce) != 0 {
-				t.Fatalf("ComposeNonce(%s, %d) = %s, want %s", key, sequence, composed, nonce)
+			composed, err := ComposeNonce(key, sequence)
+			if err != nil || composed.Cmp(nonce) != 0 {
+				t.Fatalf("ComposeNonce(%s, %d) = (%s, %v), want %s", key, sequence, composed, err, nonce)
 			}
 			gotKey, gotSeq := SplitNonce(nonce)
 			if gotKey.Cmp(key) != 0 || gotSeq != sequence {
@@ -69,18 +70,44 @@ func TestDepositID_GoldenVectors(t *testing.T) {
 	}
 }
 
+func mustComposeNonce(t *testing.T, key *big.Int, sequence uint64) *big.Int {
+	t.Helper()
+	nonce, err := ComposeNonce(key, sequence)
+	if err != nil {
+		t.Fatalf("ComposeNonce(%s, %d): %v", key, sequence, err)
+	}
+	return nonce
+}
+
+func TestComposeNonce_RejectsOutOfRangeKey(t *testing.T) {
+	limit := new(big.Int).Lsh(big.NewInt(1), maxNonceKeyBits)
+	for name, key := range map[string]*big.Int{"nil": nil, "negative": big.NewInt(-1), "2^192": limit} {
+		if nonce, err := ComposeNonce(key, 0); err == nil {
+			t.Fatalf("ComposeNonce(%s key) = %s, want error", name, nonce)
+		}
+	}
+	maxKey := new(big.Int).Sub(limit, big.NewInt(1))
+	nonce := mustComposeNonce(t, maxKey, math.MaxUint64)
+	if want := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1)); nonce.Cmp(want) != 0 {
+		t.Fatalf("ComposeNonce(2^192-1, MaxUint64) = %s, want %s", nonce, want)
+	}
+	if key, sequence := SplitNonce(nonce); key.Cmp(maxKey) != 0 || sequence != math.MaxUint64 {
+		t.Fatalf("SplitNonce = (%s, %d), want (%s, %d)", key, sequence, maxKey, uint64(math.MaxUint64))
+	}
+}
+
 // Flipping any single hash input changes the ID.
 func TestDepositID_EachInputChangesID(t *testing.T) {
 	vault := common.HexToAddress("0x1111111111111111111111111111111111111111")
 	depositor := common.HexToAddress("0x2222222222222222222222222222222222222222")
-	nonce := ComposeNonce(big.NewInt(7), 3)
+	nonce := mustComposeNonce(t, big.NewInt(7), 3)
 	base := DepositID(big.NewInt(1), vault, depositor, nonce)
 
 	cases := map[string]string{
 		"chainid":   DepositID(big.NewInt(2), vault, depositor, nonce),
 		"vault":     DepositID(big.NewInt(1), common.HexToAddress("0x3333333333333333333333333333333333333333"), depositor, nonce),
 		"depositor": DepositID(big.NewInt(1), vault, common.HexToAddress("0x4444444444444444444444444444444444444444"), nonce),
-		"nonce":     DepositID(big.NewInt(1), vault, depositor, ComposeNonce(big.NewInt(7), 4)),
+		"nonce":     DepositID(big.NewInt(1), vault, depositor, mustComposeNonce(t, big.NewInt(7), 4)),
 	}
 	for name, id := range cases {
 		if id == base {
@@ -90,7 +117,7 @@ func TestDepositID_EachInputChangesID(t *testing.T) {
 }
 
 func TestParseDepositID(t *testing.T) {
-	good := DepositID(big.NewInt(1), common.HexToAddress("0x11"), common.HexToAddress("0x22"), ComposeNonce(big.NewInt(0), 0))
+	good := DepositID(big.NewInt(1), common.HexToAddress("0x11"), common.HexToAddress("0x22"), mustComposeNonce(t, big.NewInt(0), 0))
 	if _, err := ParseDepositID(good); err != nil {
 		t.Fatalf("ParseDepositID(%q) = %v, want nil", good, err)
 	}

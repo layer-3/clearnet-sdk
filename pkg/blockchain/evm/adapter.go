@@ -11,6 +11,7 @@ package evm
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"math/big"
 	"sync"
@@ -139,6 +140,10 @@ func txOpts(auth *bind.TransactOpts, ctx context.Context) *bind.TransactOpts {
 	return &o
 }
 
+// errTxReverted marks a transaction that was mined with a failed receipt, as
+// opposed to a wait that ended without a receipt.
+var errTxReverted = errors.New("transaction reverted")
+
 // waitMinedReceipt blocks until tx is mined and reverts on a failed receipt.
 func waitMinedReceipt(ctx context.Context, client *ethclient.Client, tx *gethtypes.Transaction) (*gethtypes.Receipt, error) {
 	receipt, err := bind.WaitMined(ctx, client, tx)
@@ -146,7 +151,7 @@ func waitMinedReceipt(ctx context.Context, client *ethclient.Client, tx *gethtyp
 		return nil, fmt.Errorf("wait mined: %w", err)
 	}
 	if receipt.Status == 0 {
-		return nil, fmt.Errorf("transaction reverted (tx=%s)", tx.Hash().Hex())
+		return nil, fmt.Errorf("%w (tx=%s)", errTxReverted, tx.Hash().Hex())
 	}
 	return receipt, nil
 }

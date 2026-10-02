@@ -49,13 +49,13 @@ var _ core.VaultDepositor = (*Depositor)(nil)
 // deposits without prescribing Bitcoin Core, Esplora, wallet ownership, or a
 // transport. GetTransactionConfirmations reports whether txID is known in the
 // mempool or active chain and, when known, its current confirmation count.
-// GetTransactionOutputs reports whether txID is known and, when known, its
-// outputs in index order. The Depositor owns the core.VaultDepositor status and
-// minimum-depth semantics.
+// GetTransaction reports the same from one read of the transaction, together
+// with its outputs in index order. The Depositor owns the core.VaultDepositor
+// status and minimum-depth semantics.
 type DepositorBackend interface {
 	P2WPKHBackend
 	GetTransactionConfirmations(ctx context.Context, txID string) (confirmations uint64, known bool, err error)
-	GetTransactionOutputs(ctx context.Context, txID string) (outputs []RawVout, known bool, err error)
+	GetTransaction(ctx context.Context, txID string) (outputs []RawVout, confirmations uint64, known bool, err error)
 }
 
 // NewDepositor builds the BTC depositor. signer is the depositor's secp256k1
@@ -236,14 +236,7 @@ func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, depositId st
 	if err != nil {
 		return core.DepositAbsent, err
 	}
-	confirmations, known, err := d.backend.GetTransactionConfirmations(ctx, txHash)
-	if err != nil {
-		return core.DepositAbsent, err
-	}
-	if !known {
-		return core.DepositAbsent, nil
-	}
-	outputs, known, err := d.backend.GetTransactionOutputs(ctx, txHash)
+	outputs, confirmations, known, err := d.backend.GetTransaction(ctx, txHash)
 	if err != nil {
 		return core.DepositAbsent, err
 	}

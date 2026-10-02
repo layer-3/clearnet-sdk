@@ -87,11 +87,24 @@ func ParseDepositID(id string) ([32]byte, error) {
 }
 
 // ComposeNonce packs key and sequence into the single uint256 nonce
-// Custody.deposit expects: key << 64 | sequence. key must be in [0, 2^192);
-// it is not checked.
-func ComposeNonce(key *big.Int, sequence uint64) *big.Int {
+// Custody.deposit expects: key << 64 | sequence. It returns an error unless key
+// is non-nil and in [0, 2^192).
+func ComposeNonce(key *big.Int, sequence uint64) (*big.Int, error) {
+	if err := validateNonceKey(key); err != nil {
+		return nil, err
+	}
 	nonce := new(big.Int).Lsh(key, nonceSequenceBits)
-	return nonce.Or(nonce, new(big.Int).SetUint64(sequence))
+	return nonce.Or(nonce, new(big.Int).SetUint64(sequence)), nil
+}
+
+func validateNonceKey(key *big.Int) error {
+	if key == nil {
+		return errors.New("evm: nonce key is nil")
+	}
+	if key.Sign() < 0 || key.BitLen() > maxNonceKeyBits {
+		return fmt.Errorf("evm: nonce key %s not in [0, 2^192)", key)
+	}
+	return nil
 }
 
 // SplitNonce reverses ComposeNonce: key is the upper 192 bits of nonce,
