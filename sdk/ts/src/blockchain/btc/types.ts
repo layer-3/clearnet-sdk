@@ -46,6 +46,15 @@ export interface BitcoinUnspent {
 export interface BitcoinRawTransaction {
   txid: string;
   confirmations: number;
+  /** The transaction's outputs, in output index order. */
+  outputs: readonly BitcoinRawTransactionOutput[];
+}
+
+export interface BitcoinRawTransactionOutput {
+  /** Output value in satoshis. */
+  valueSats: bigint;
+  /** Output scriptPubKey, as hex. */
+  scriptPubKey: string;
 }
 
 export interface BitcoinDepositorConfig {
@@ -108,7 +117,7 @@ export interface BitcoinPreparedDepositPsbt {
   /**
    * Transaction ID for the unsigned PSBT transaction shape. Wallet finalization
    * can change the final txid, especially for nested-SegWit inputs, so callers
-   * must use the txID returned by submitSignedDepositPsbt for verification.
+   * must use the txHash returned by submitSignedDepositPsbt for verification.
    */
   unsignedTxID: string;
   fundingAddress: string;

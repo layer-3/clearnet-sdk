@@ -146,36 +146,14 @@ export function requireReference(reference: unknown): Hash {
   return reference as Hash;
 }
 
-export interface EvmTxID {
-  hash: Hash;
-  logIndex?: number;
-}
-
-export function requireTxID(txID: unknown): EvmTxID {
-  if (typeof txID !== "string") {
-    throw new ClearnetSdkError(
-      "INVALID_TX_ID",
-      "txID must be an EVM transaction hash or txHash/logIndex",
-    );
+// requireTxHash validates that value is a transaction hash. A "txHash/logIndex"
+// combined form is rejected; use requireDepositId (depositId.ts) for the
+// deposit ID.
+export function requireTxHash(value: unknown): Hash {
+  if (typeof value !== "string" || !HASH_PATTERN.test(value)) {
+    throw new ClearnetSdkError("INVALID_TX_ID", "txHash must be an EVM transaction hash");
   }
-  const [hash, logIndex, extra] = txID.split("/");
-  if (hash === undefined || extra !== undefined || !HASH_PATTERN.test(hash)) {
-    throw new ClearnetSdkError(
-      "INVALID_TX_ID",
-      "txID must be an EVM transaction hash or txHash/logIndex",
-    );
-  }
-  if (logIndex === undefined) {
-    return { hash: hash as Hash };
-  }
-  if (!/^(0|[1-9]\d*)$/.test(logIndex)) {
-    throw new ClearnetSdkError("INVALID_TX_ID", "txID log index must be a non-negative integer");
-  }
-  const parsed = Number(logIndex);
-  if (!Number.isSafeInteger(parsed)) {
-    throw new ClearnetSdkError("INVALID_TX_ID", "txID log index is too large");
-  }
-  return { hash: hash as Hash, logIndex: parsed };
+  return value as Hash;
 }
 
 export { normalizeMinConfirmations };

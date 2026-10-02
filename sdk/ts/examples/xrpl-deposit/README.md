@@ -41,8 +41,11 @@ It does not require a browser wallet.
 1. Leave `WebSocket URL` as `ws://127.0.0.1:6006`.
 2. Click `Use Local Signer`.
 3. Click `Fund Wallet`.
-4. Click `Submit Deposit`.
-5. Click `Verify Last Tx`.
+4. Click `Submit Deposit`. The log shows the transaction hash and the deposit
+   ID (the lower-cased hash).
+5. Click `Verify Last Tx`. It passes both to `chainDepositStatus`, which also
+   checks that the transaction is a successful Payment to the vault carrying a
+   `ynet-account` memo.
 
 Expected result:
 

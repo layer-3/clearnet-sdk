@@ -59,11 +59,14 @@ Open the Vite URL, usually `http://127.0.0.1:5173/`.
 4. Click **Connect Wallet** and approve the wallet prompt.
 5. Keep `Asset` blank for a native deposit, or paste an SPL mint address.
 6. Click **Submit Deposit** and approve the signing request.
-7. Click **Verify Last Tx**.
+7. Click **Verify Last Tx**. It passes both the signature and the deposit ID
+   to `chainDepositStatus`, which also checks that the transaction emitted a
+   custody `Deposited` event at the deposit ID's event index.
 
 The demo builds a single custody instruction, asks the wallet to sign the
 transaction, sends the signed bytes through the configured RPC, and returns the
-Go-compatible `txID` string.
+base58 signature as `txHash` and the deposit ID
+`0x<hex sha256(signature bytes)>:0` as `depositId`.
 
 ## Troubleshooting
 

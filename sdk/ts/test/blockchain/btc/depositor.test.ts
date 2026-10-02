@@ -3,6 +3,7 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import {
   BITCOIN_NATIVE_ASSET,
+  bitcoinDepositId,
   BitcoinCoreRpcClient,
   BitcoinRpcError,
   BitcoinVaultDepositor,
@@ -14,9 +15,17 @@ import type {
   BitcoinSigner,
   BitcoinSubmitDepositInput,
   BitcoinPsbtSignerInfo,
+  BitcoinRawTransaction,
   Bytes32Hex,
+  SubmitDepositResult,
   VaultDepositor,
 } from "../../../src/index.js";
+import { depositPayment } from "../../../src/blockchain/btc/address.js";
+import {
+  encodeMarkerScript,
+  GENERIC_DEPOSIT_TAG_PREIMAGE,
+  MARKER_VERSION_1,
+} from "../../../src/blockchain/btc/marker.js";
 import { estimateDepositFeeSats } from "../../../src/blockchain/btc/utxo.js";
 import { requireClearnetAccount } from "../../../src/blockchain/btc/validation.js";
 import {
@@ -42,6 +51,20 @@ const DISPLAY_TXID =
 const FUNDING_SCRIPT = "0014751e76e8199196d454941c45d1b3a323f1433bd6";
 const NESTED_SEGWIT_ADDRESS = "2NAUYAHhujozruyzpsFRP63mbrdaU5wnEpN";
 const NESTED_SEGWIT_SCRIPT = "a914bcfeb728b584253d5f3f70bcb780e9ef218a68f487";
+const DEPOSIT_SCRIPT = bytesToHex(
+  depositPayment(
+    "regtest",
+    GENERIC_DEPOSIT_TAG_PREIMAGE,
+    2,
+    [hexToBytes(PUBKEY_A, "PUBKEY_A"), hexToBytes(PUBKEY_B, "PUBKEY_B")],
+  ).script,
+);
+const MARKER_SCRIPT = bytesToHex(
+  encodeMarkerScript({
+    version: MARKER_VERSION_1,
+    address: hexToBytes(ACCOUNT, "ACCOUNT"),
+  }),
+);
 
 describe("BitcoinVaultDepositor", () => {
   it("matches the public depositor and input contracts", () => {
@@ -49,7 +72,10 @@ describe("BitcoinVaultDepositor", () => {
       VaultDepositor<BitcoinSubmitDepositInput>
     >();
     expectTypeOf<BitcoinSubmitDepositInput["amount"]>().toEqualTypeOf<string>();
-    expectTypeOf<string>().toEqualTypeOf<string>();
+    expectTypeOf<SubmitDepositResult>().toEqualTypeOf<{
+      txHash: string;
+      depositId: string;
+    }>();
     expect(BITCOIN_NATIVE_ASSET).toBe("");
   });
 
@@ -191,7 +217,10 @@ describe("BitcoinVaultDepositor", () => {
       { onSubmitted },
     );
 
-    expect(txID).toMatch(/^[a-f0-9]{64}$/);
+    expect(txID.txHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(txID.depositId).toEqual(bitcoinDepositId(txID.txHash, 0));
+    expect(txID.depositId).toEqual(`${txID.txHash}:0`);
+    expect(broadcastOutputScript(rpc, 0)).toBe(DEPOSIT_SCRIPT);
     expect(rpc.listUnspent).toHaveBeenCalledExactlyOnceWith(1, [
       "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
     ]);
@@ -215,7 +244,7 @@ describe("BitcoinVaultDepositor", () => {
         amount: "0.0005",
         destination: { account: ACCOUNT, ref: NON_ZERO_REF },
       }),
-    ).resolves.toMatch(/^[a-f0-9]{64}$/);
+    ).resolves.toMatchObject({ txHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(rpc.sendRawTransaction).toHaveBeenCalledOnce();
   });
 
@@ -285,7 +314,9 @@ describe("BitcoinVaultDepositor", () => {
       { onSubmitted },
     );
 
-    expect(txID).toEqual(prepared.unsignedTxID);
+    expect(txID.txHash).toEqual(prepared.unsignedTxID);
+    expect(txID.depositId).toEqual(bitcoinDepositId(prepared.unsignedTxID, 0));
+    expect(broadcastOutputScript(rpc, 0)).toBe(DEPOSIT_SCRIPT);
     expect(rpc.sendRawTransaction).toHaveBeenCalledOnce();
     expect(rpc.sendRawTransaction).toHaveBeenCalledWith(expect.stringMatching(/^[a-f0-9]+$/));
     expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(txID);
@@ -329,8 +360,9 @@ describe("BitcoinVaultDepositor", () => {
     );
 
     expect(prepared.fundingAddress).toBe(NESTED_SEGWIT_ADDRESS);
-    expect(txID).toMatch(/^[a-f0-9]{64}$/);
-    expect(txID).not.toEqual(prepared.unsignedTxID);
+    expect(txID.txHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(txID.txHash).not.toEqual(prepared.unsignedTxID);
+    expect(txID.depositId).toEqual(bitcoinDepositId(txID.txHash, 0));
     expect(rpc.listUnspent).toHaveBeenCalledExactlyOnceWith(1, [
       NESTED_SEGWIT_ADDRESS,
     ]);
@@ -503,6 +535,44 @@ describe("BitcoinVaultDepositor", () => {
     expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["pays another script", { script: FUNDING_SCRIPT }],
+    ["carries no value", { amount: 0n }],
+  ])(
+    "rejects a signed PSBT whose output 0 %s, even when expectedOutputs agree",
+    async (_name, change) => {
+      const rpc = createRpc({
+        listUnspent: [utxo("10".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
+      });
+      const depositor = createDepositor({ rpc, signer: undefined });
+      const prepared = await depositor.prepareDepositPsbt(
+        {
+          asset: BITCOIN_NATIVE_ASSET,
+          amount: "0.0005",
+          destination: { account: ACCOUNT },
+        },
+        { publicKey: SIGNER_PUBKEY },
+      );
+      const alteredOutputs = prepared.expectedOutputs.map((output, index) =>
+        index === 0 ? { ...output, ...change } : output,
+      );
+      const signedPsbtHex = signInputs(
+        prepared,
+        rebuildTransaction(prepared.psbtHex, alteredOutputs),
+      ).toPSBT();
+
+      await expect(
+        depositor.submitSignedDepositPsbt(bytesToHex(signedPsbtHex), alteredOutputs),
+      ).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+        message: expect.stringContaining(
+          `output 0 must pay the deposit address ${depositor.depositAddress()}`,
+        ),
+      });
+      expect(rpc.sendRawTransaction).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects PSBT preparation when wallet address and public key do not match", async () => {
     const depositor = createDepositor({ signer: undefined });
 
@@ -534,12 +604,15 @@ describe("BitcoinVaultDepositor", () => {
       amount: "0.0005",
       destination: { account: ACCOUNT },
     });
-    expect(alreadyKnownTxID).toMatch(/^[a-f0-9]{64}$/);
+    expect(alreadyKnownTxID.txHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(alreadyKnownTxID.depositId).toEqual(
+      bitcoinDepositId(alreadyKnownTxID.txHash, 0),
+    );
 
     const missingRpc = createRpc({
       listUnspent: [utxo("04".repeat(32), 0, 100_000n, FUNDING_SCRIPT)],
       sendRawTransactionError: new BitcoinRpcError(-25, "bad-txns-inputs-missingorspent"),
-      rawTransaction: { txid: "not-the-computed-txid", confirmations: 0 },
+      rawTransaction: { txid: "not-the-computed-txid", confirmations: 0, outputs: [] },
     });
     await expect(
       createDepositor({ rpc: missingRpc }).submitDeposit({
@@ -547,7 +620,7 @@ describe("BitcoinVaultDepositor", () => {
         amount: "0.0005",
         destination: { account: ACCOUNT },
       }),
-    ).rejects.toMatchObject({ code: "RPC_ERROR", txID: expect.any(String) });
+    ).rejects.toMatchObject({ code: "RPC_ERROR", txHash: expect.any(String) });
 
     const sendError = new BitcoinRpcError(-25, "bad-txns-inputs-missingorspent");
     const lookupError = new Error("lookup failed");
@@ -564,35 +637,42 @@ describe("BitcoinVaultDepositor", () => {
       }),
     ).rejects.toMatchObject({
       code: "RPC_ERROR",
-      txID: expect.any(String),
+      txHash: expect.any(String),
       cause: sendError,
     });
   });
 
   it("verifies absent, pending, confirmed, and malformed txIDs", async () => {
     const txID = DISPLAY_TXID;
+    const depositId = bitcoinDepositId(txID, 0);
     const depositor = createDepositor({
       rpc: createRpc({ rawTransaction: null }),
     });
-    await expect(depositor.verifyDeposit(txID, 1)).resolves.toBe("absent");
+    await expect(depositor.chainDepositStatus(txID, depositId, 1)).resolves.toBe("absent");
 
     const pending = createDepositor({
-      rpc: createRpc({ rawTransaction: { txid: DISPLAY_TXID, confirmations: 0 } }),
+      rpc: createRpc({ rawTransaction: depositRawTransaction(0) }),
     });
-    await expect(pending.verifyDeposit(txID, 1)).resolves.toBe("pending");
-    await expect(pending.verifyDeposit(txID, 0)).resolves.toBe("confirmed");
+    await expect(pending.chainDepositStatus(txID, depositId, 1)).resolves.toBe("pending");
+    await expect(pending.chainDepositStatus(txID, depositId, 0)).resolves.toBe("pending");
+
+    const oneConf = createDepositor({
+      rpc: createRpc({ rawTransaction: depositRawTransaction(1) }),
+    });
+    await expect(oneConf.chainDepositStatus(txID, depositId, 0)).resolves.toBe("confirmed");
 
     const confirmed = createDepositor({
-      rpc: createRpc({ rawTransaction: { txid: DISPLAY_TXID, confirmations: 2 } }),
+      rpc: createRpc({ rawTransaction: depositRawTransaction(2) }),
     });
-    await expect(confirmed.verifyDeposit(txID, 2)).resolves.toBe("confirmed");
-    await expect(confirmed.verifyDeposit(txID, 2n)).resolves.toBe("confirmed");
+    await expect(confirmed.chainDepositStatus(txID, depositId, 2)).resolves.toBe("confirmed");
+    await expect(confirmed.chainDepositStatus(txID, depositId, 2n)).resolves.toBe("confirmed");
+    await expect(confirmed.chainDepositStatus(txID, depositId, 3)).resolves.toBe("pending");
     await expect(
-      confirmed.verifyDeposit("not-a-txid", 1),
+      confirmed.chainDepositStatus("not-a-txid", "not-a-txid", 1),
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
 
     const invalidMinConfRpc = createRpc({
-      rawTransaction: { txid: DISPLAY_TXID, confirmations: 2 },
+      rawTransaction: depositRawTransaction(2),
     });
     const invalidMinConf = createDepositor({ rpc: invalidMinConfRpc });
     for (const minConfirmations of [
@@ -601,13 +681,105 @@ describe("BitcoinVaultDepositor", () => {
       1n << 80n,
     ]) {
       await expect(
-        invalidMinConf.verifyDeposit(txID, minConfirmations),
+        invalidMinConf.chainDepositStatus(txID, depositId, minConfirmations),
       ).rejects.toMatchObject({
         code: "INVALID_CONFIRMATIONS",
         message: "minConfirmations must be a non-negative safe integer",
       });
     }
     expect(invalidMinConfRpc.getRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("requires output vout to pay the generic deposit address and exactly one valid marker", async () => {
+    const txID = DISPLAY_TXID;
+    const change = { valueSats: 1_000n, scriptPubKey: FUNDING_SCRIPT };
+    const deposit = { valueSats: 50_000n, scriptPubKey: DEPOSIT_SCRIPT };
+    const marker = { valueSats: 0n, scriptPubKey: MARKER_SCRIPT };
+    const cases: [string, BitcoinRawTransaction["outputs"], number, string][] = [
+      ["deposit at output 0", [deposit, marker, change], 0, "confirmed"],
+      ["deposit at output 2", [change, marker, deposit], 2, "confirmed"],
+      ["upper-case script hex", [{ ...deposit, scriptPubKey: DEPOSIT_SCRIPT.toUpperCase() }, marker], 0, "confirmed"],
+      ["vout is the change output", [deposit, marker, change], 2, "absent"],
+      ["vout is the marker", [deposit, marker, change], 1, "absent"],
+      ["vout out of range", [deposit, marker], 5, "absent"],
+      ["zero-value deposit output", [{ ...deposit, valueSats: 0n }, marker], 0, "absent"],
+      ["no marker", [deposit, change], 0, "absent"],
+      ["two markers", [deposit, marker, marker], 0, "absent"],
+      ["invalid marker candidate", [deposit, { valueSats: 0n, scriptPubKey: `6a1a${MARKER_SCRIPT.slice(4)}00` }], 0, "absent"],
+      ["non-canonical marker push", [deposit, { valueSats: 0n, scriptPubKey: `6a4c19${MARKER_SCRIPT.slice(4)}` }], 0, "absent"],
+      ["undecodable script hex", [deposit, marker, { valueSats: 1n, scriptPubKey: "zz" }], 0, "absent"],
+      ["odd-length script hex", [deposit, marker, { valueSats: 1n, scriptPubKey: "001" }], 0, "absent"],
+    ];
+    for (const [name, outputs, vout, want] of cases) {
+      const depositor = createDepositor({
+        rpc: createRpc({ rawTransaction: { txid: txID, confirmations: 1, outputs } }),
+      });
+      await expect(
+        depositor.chainDepositStatus(txID, bitcoinDepositId(txID, vout), 1),
+        name,
+      ).resolves.toBe(want);
+    }
+  });
+
+  it("rejects a deposit ID that is not <txHash>:<vout> before RPC", async () => {
+    const rpc = createRpc({ rawTransaction: depositRawTransaction(1) });
+    const depositor = createDepositor({ rpc });
+    for (const depositId of [
+      DISPLAY_TXID,
+      `${DISPLAY_TXID}:01`,
+      `${DISPLAY_TXID}:-1`,
+      `${DISPLAY_TXID}:4294967296`,
+      `${"ff".repeat(32)}:0`,
+      `${DISPLAY_TXID.toUpperCase()}:0`,
+    ]) {
+      await expect(
+        depositor.chainDepositStatus(DISPLAY_TXID, depositId, 1),
+      ).rejects.toMatchObject({ code: "INVALID_DEPOSIT_ID" });
+    }
+    await expect(
+      depositor.chainDepositStatus(DISPLAY_TXID.toUpperCase(), bitcoinDepositId(DISPLAY_TXID, 0), 1),
+    ).rejects.toMatchObject({ code: "INVALID_DEPOSIT_ID" });
+    expect(rpc.getRawTransaction).not.toHaveBeenCalled();
+    // The deposit ID keeps the txid's case; the RPC lookup does not depend on it.
+    const upper = DISPLAY_TXID.toUpperCase();
+    await expect(
+      depositor.chainDepositStatus(upper, bitcoinDepositId(upper, 0), 1),
+    ).resolves.toBe("confirmed");
+  });
+
+  it("parses getrawtransaction outputs with exact satoshi values", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonRpcResponse({
+        txid: DISPLAY_TXID,
+        confirmations: 3,
+        vout: [
+          { value: 20999999.9769, n: 0, scriptPubKey: { hex: DEPOSIT_SCRIPT, type: "witness_v0_scripthash" } },
+          { value: 0, n: 1, scriptPubKey: { hex: MARKER_SCRIPT, type: "nulldata" } },
+          { value: 0.00000001, n: 2, scriptPubKey: { hex: FUNDING_SCRIPT } },
+        ],
+      }),
+    );
+    const client = new BitcoinCoreRpcClient({
+      url: "/btc-rpc",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(client.getRawTransaction(DISPLAY_TXID)).resolves.toEqual({
+      txid: DISPLAY_TXID,
+      confirmations: 3,
+      outputs: [
+        { valueSats: 2099999997690000n, scriptPubKey: DEPOSIT_SCRIPT },
+        { valueSats: 0n, scriptPubKey: MARKER_SCRIPT },
+        { valueSats: 1n, scriptPubKey: FUNDING_SCRIPT },
+      ],
+    });
+
+    fetchMock.mockImplementationOnce(async () =>
+      jsonRpcResponse({ txid: DISPLAY_TXID, confirmations: 3 }),
+    );
+    await expect(client.getRawTransaction(DISPLAY_TXID)).rejects.toMatchObject({
+      code: "RPC_ERROR",
+    });
   });
 
   it("allows zero funding confirmations but keeps fee knobs positive", () => {
@@ -1029,6 +1201,28 @@ function utxo(
     confirmations: 1,
     scriptPubKey,
   };
+}
+
+function depositRawTransaction(confirmations: number): BitcoinRawTransaction {
+  return {
+    txid: DISPLAY_TXID,
+    confirmations,
+    outputs: [
+      { valueSats: 50_000n, scriptPubKey: DEPOSIT_SCRIPT },
+      { valueSats: 0n, scriptPubKey: MARKER_SCRIPT },
+    ],
+  };
+}
+
+function broadcastOutputScript(rpc: BitcoinRpc, index: number): string {
+  const call = vi.mocked(rpc.sendRawTransaction).mock.calls[0];
+  if (call === undefined) {
+    throw new Error("sendRawTransaction was not called");
+  }
+  const tx = Transaction.fromRaw(hexToBytes(call[0], "hexTx"), {
+    allowUnknownOutputs: true,
+  });
+  return bytesToHex(tx.getOutput(index).script ?? new Uint8Array());
 }
 
 function txidFromRawTx(hexTx: string): string {

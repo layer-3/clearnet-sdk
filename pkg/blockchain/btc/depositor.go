@@ -2,6 +2,7 @@ package btc
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -47,11 +48,14 @@ var _ core.VaultDepositor = (*Depositor)(nil)
 // DepositorBackend supplies the chain access needed to submit and observe BTC
 // deposits without prescribing Bitcoin Core, Esplora, wallet ownership, or a
 // transport. GetTransactionConfirmations reports whether txID is known in the
-// mempool or active chain and, when known, its current confirmation count. The
-// Depositor owns the core.VaultDepositor status and minimum-depth semantics.
+// mempool or active chain and, when known, its current confirmation count.
+// GetTransaction reports the same from one read of the transaction, together
+// with its outputs in index order. The Depositor owns the core.VaultDepositor
+// status and minimum-depth semantics.
 type DepositorBackend interface {
 	P2WPKHBackend
 	GetTransactionConfirmations(ctx context.Context, txID string) (confirmations uint64, known bool, err error)
+	GetTransaction(ctx context.Context, txID string) (outputs []RawVout, confirmations uint64, known bool, err error)
 }
 
 // NewDepositor builds the BTC depositor. signer is the depositor's secp256k1
@@ -144,36 +148,42 @@ func normalizeDepositAssetAddress(assetAddress string) string {
 // dest.Ref selects marker version 0x02 (ADR-015 sub-account reference); a zero
 // Ref uses version 0x01. assetAddress must be "" for native BTC. Builds, signs
 // (P2WPKH), and broadcasts the funding tx.
-func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (string, error) {
+//
+// The deposit output is always output 0, so DepositID is DepositID(txid, 0).
+func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amount decimal.Decimal, dest core.DepositDestination) (core.SubmitDepositResult, error) {
 	markerAddr, err := parseClearnetAccount(dest.Account)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	assetAddress = normalizeDepositAssetAddress(assetAddress)
 	if err := d.assets.ValidateAssetAddress(ctx, assetAddress); err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	if amount.Sign() <= 0 {
-		return "", fmt.Errorf("btc: amount %s not positive", amount.String())
+		return core.SubmitDepositResult{}, fmt.Errorf("btc: amount %s not positive", amount.String())
 	}
 	decimals, err := d.assets.AssetDecimals(ctx, assetAddress)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
 	baseUnits, err := blockchain.DecimalToBaseUnits(amount, decimals)
 	if err != nil {
-		return "", fmt.Errorf("btc: amount: %w", err)
+		return core.SubmitDepositResult{}, fmt.Errorf("btc: amount: %w", err)
 	}
 	if !baseUnits.IsInt64() || baseUnits.Int64() <= 0 {
-		return "", fmt.Errorf("btc: amount %s not a positive int64 satoshi value", amount.String())
+		return core.SubmitDepositResult{}, fmt.Errorf("btc: amount %s not a positive int64 satoshi value", amount.String())
 	}
 	sats := baseUnits.Int64()
 
 	depositAddr, markerScript, err := d.genericDepositTarget(markerAddr, dest.Ref)
 	if err != nil {
-		return "", err
+		return core.SubmitDepositResult{}, err
 	}
-	return d.sender.Send(ctx, depositAddr.EncodeAddress(), sats, WithExtraOutputScript(markerScript))
+	txID, err := d.sender.Send(ctx, depositAddr.EncodeAddress(), sats, WithExtraOutputScript(markerScript))
+	if err != nil {
+		return core.SubmitDepositResult{}, err
+	}
+	return core.SubmitDepositResult{TxHash: txID, DepositID: DepositID(txID, 0)}, nil
 }
 
 // genericDepositTarget derives the single generic P2WSH deposit address
@@ -212,18 +222,32 @@ func parseClearnetAccount(account string) ([20]byte, error) {
 	return acct, nil
 }
 
-// VerifyDeposit reports the backend's on-chain status for the deposit txID.
-// The legacy RPC backend requires the node to resolve the tx (txindex=1, or the
-// tx unspent / in the mempool). A tx it has never seen — or one reorged out and
-// dropped — reads as DepositAbsent; a mempool tx (0 confs) is DepositPending
-// until it is mined with at least max(1, minConf) confirmations (a deposit is
-// only Confirmed once on chain, consistent with the other chains).
-func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint64) (core.DepositStatus, error) {
-	confirmations, known, err := d.backend.GetTransactionConfirmations(ctx, txID)
+// ChainDepositStatus reports the on-chain status of the deposit identified by
+// txHash and depositId (DepositID(txHash, vout)). The deposit is DepositAbsent
+// unless the transaction is known, output vout pays this depositor's generic
+// deposit address with a positive value, and the transaction carries exactly
+// one valid deposit marker. A known deposit is DepositPending until mined with
+// at least max(1, minConf) confirmations. The legacy RPC backend needs the node
+// to resolve the tx (txindex=1, or tx unspent / in the mempool). Custody's
+// crediting rules (dust floor, self-deposit guard) are not applied, so
+// DepositConfirmed does not guarantee a credit.
+func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, depositId string, minConf uint64) (core.DepositStatus, error) {
+	vout, err := parseDepositID(txHash, depositId)
+	if err != nil {
+		return core.DepositAbsent, err
+	}
+	outputs, confirmations, known, err := d.backend.GetTransaction(ctx, txHash)
 	if err != nil {
 		return core.DepositAbsent, err
 	}
 	if !known {
+		return core.DepositAbsent, nil
+	}
+	ok, err := d.isDepositOutput(outputs, vout)
+	if err != nil {
+		return core.DepositAbsent, err
+	}
+	if !ok {
 		return core.DepositAbsent, nil
 	}
 	required := minConf
@@ -234,4 +258,46 @@ func (d *Depositor) VerifyDeposit(ctx context.Context, txID string, minConf uint
 		return core.DepositConfirmed, nil
 	}
 	return core.DepositPending, nil
+}
+
+// isDepositOutput reports whether outputs[vout] pays the generic deposit
+// address with a positive value and outputs carry exactly one valid marker.
+// Undecodable script hex reads as not a deposit.
+func (d *Depositor) isDepositOutput(outputs []RawVout, vout uint32) (bool, error) {
+	if uint64(vout) >= uint64(len(outputs)) {
+		return false, nil
+	}
+	depositScript, err := d.genericDepositScript()
+	if err != nil {
+		return false, err
+	}
+	scripts := make([][]byte, len(outputs))
+	for i, out := range outputs {
+		script, err := hex.DecodeString(out.ScriptPubKeyHex)
+		if err != nil {
+			return false, nil
+		}
+		scripts[i] = script
+	}
+	if !PaysDepositScript(outputs[vout].ValueSats, scripts[vout], depositScript) {
+		return false, nil
+	}
+	if _, err := marker.ScanOutputs(scripts); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+// genericDepositScript is the scriptPubKey of the generic deposit address.
+func (d *Depositor) genericDepositScript() ([]byte, error) {
+	tag := marker.GenericDepositTag()
+	redeem, err := TaggedRedeemScript(tag[:], d.threshold, d.vaultPubkeys)
+	if err != nil {
+		return nil, fmt.Errorf("btc: derive generic deposit redeem script: %w", err)
+	}
+	addr, err := VaultAddress(redeem, d.net)
+	if err != nil {
+		return nil, fmt.Errorf("btc: derive generic deposit address: %w", err)
+	}
+	return PkScript(addr)
 }

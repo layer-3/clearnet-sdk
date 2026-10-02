@@ -7,14 +7,22 @@ export type {
   EvmSubmitDepositInput,
   SubmitDepositInput,
   SubmitDepositOptions,
+  SubmitDepositResult,
   VaultDepositor,
 } from "./core/types.js";
 export { ClearnetSdkError } from "./core/errors.js";
-export type { ClearnetSdkErrorCode } from "./core/errors.js";
+export type { ClearnetSdkErrorCode, DepositStep } from "./core/errors.js";
 export { EvmVaultDepositor } from "./blockchain/evm/depositor.js";
 export { EVM_NATIVE_ASSET } from "./blockchain/evm/constants.js";
 export {
+  composeNonce,
+  depositId,
+  requireDepositId,
+  splitNonce,
+} from "./blockchain/evm/depositId.js";
+export {
   BITCOIN_NATIVE_ASSET,
+  bitcoinDepositId,
   BitcoinCoreRpcClient,
   BitcoinRpcError,
   BitcoinVaultDepositor,
@@ -29,6 +37,7 @@ export type {
   BitcoinPreparedDepositPsbt,
   BitcoinPsbtSignerInfo,
   BitcoinRawTransaction,
+  BitcoinRawTransactionOutput,
   BitcoinRpc,
   BitcoinSigner,
   BitcoinSubmitDepositInput,
@@ -38,6 +47,7 @@ export {
   eventAuthorityPda,
   SOLANA_CUSTODY_PROGRAM_ID,
   SOLANA_NATIVE_ASSET,
+  solanaDepositId,
   SolanaVaultDepositor,
   vaultPda,
 } from "./blockchain/sol/index.js";
@@ -51,6 +61,7 @@ export type {
 } from "./blockchain/sol/index.js";
 export {
   XRPL_NATIVE_ASSET,
+  xrplDepositId,
   XrplVaultDepositor,
 } from "./blockchain/xrpl/index.js";
 export type {

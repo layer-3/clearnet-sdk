@@ -6,23 +6,31 @@ import {
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
+import type { VersionedTransactionResponse } from "@solana/web3.js";
 
 import { ClearnetSdkError } from "../../core/errors.js";
 import type {
   DepositStatus,
   SubmitDepositOptions,
+  SubmitDepositResult,
   VaultDepositor,
 } from "../../core/types.js";
 import { decimalToBaseUnits } from "../amounts.js";
 import {
   DEFAULT_RECEIPT_TIMEOUT_MS,
+  DEPOSITED_EVENT_DISCRIMINATOR,
+  DEPOSITED_EVENT_MIN_LEN,
   DEPOSIT_SOL_DISCRIMINATOR,
   DEPOSIT_SPL_DISCRIMINATOR,
+  EVENT_IX_TAG,
+  EXECUTED_EVENT_DISCRIMINATOR,
+  EXECUTED_EVENT_MIN_LEN,
   POLL_INTERVAL_MS,
   SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID,
   SOLANA_CUSTODY_PROGRAM_ID,
   SOLANA_TOKEN_PROGRAM_ID,
 } from "./constants.js";
+import { parseSolanaDepositId, solanaDepositId } from "./depositId.js";
 import { encodeDepositData } from "./encoding.js";
 import type {
   SolanaCommitment,
@@ -90,19 +98,25 @@ export class SolanaVaultDepositor
     });
   }
 
+  // The transaction carries one deposit instruction, so depositId is
+  // solanaDepositId(signature, 0).
   async submitDeposit(
     input: SolanaSubmitDepositInput,
     options: SubmitDepositOptions = {},
-  ): Promise<string> {
+  ): Promise<SubmitDepositResult> {
     const waitOptions = requireSubmitDepositOptions(options);
     validateWaitOptions(waitOptions);
     const transaction = await this.prepareDeposit(input);
 
     const signature = await this.signAndSend(transaction);
     const txID = normalizeSolanaTxID(signature);
-    waitOptions.onSubmitted?.(txID);
+    const result: SubmitDepositResult = {
+      txHash: txID,
+      depositId: solanaDepositId(signature, 0),
+    };
+    waitOptions.onSubmitted?.(result);
     await this.waitForCommitment(signature, txID, waitOptions);
-    return txID;
+    return result;
   }
 
   /** Builds the exact unsigned custody transaction without a recent blockhash. */
@@ -132,14 +146,48 @@ export class SolanaVaultDepositor
     return transaction;
   }
 
-  async verifyDeposit(
-    txID: string,
+  // depositId must be solanaDepositId(txHash, index). A failed transaction, or
+  // one whose custody event at index is not a Deposited event, is absent; a
+  // confirmed transaction the RPC does not serve yet is pending. Custody's
+  // crediting rules are not applied, so "confirmed" does not guarantee a credit.
+  async chainDepositStatus(
+    txHash: string,
+    depositId: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
-    requireTxID(txID);
+    requireTxID(txHash);
+    const index = parseSolanaDepositId(txHash, depositId);
     const minConf = normalizeMinConfirmations(minConfirmations);
-    const status = await this.getSignatureStatus(txID, txID);
-    return mapStatus(status, minConf);
+    const status = await this.getSignatureStatus(txHash, txHash);
+    const mapped = mapStatus(status, minConf);
+    if (
+      mapped === "absent" ||
+      (status?.confirmationStatus !== "confirmed" &&
+        status?.confirmationStatus !== "finalized")
+    ) {
+      return mapped;
+    }
+    let response: VersionedTransactionResponse | null;
+    try {
+      response = await this.connection.getTransaction(txHash, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0,
+      });
+    } catch (error) {
+      throw new ClearnetSdkError("RPC_ERROR", "sol: get transaction", {
+        txHash,
+        cause: error,
+      });
+    }
+    if (response === null || response.meta === null) {
+      return "pending";
+    }
+    if (response.meta.err != null) {
+      return "absent";
+    }
+    return depositEventAt(response, this.programId, index, txHash)
+      ? mapped
+      : "absent";
   }
 
   private depositSolInstruction(
@@ -272,7 +320,7 @@ export class SolanaVaultDepositor
     for (;;) {
       if (options.signal?.aborted === true) {
         throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-          txID,
+          txHash: txID,
         });
       }
       const status = await waitWithControls(
@@ -283,7 +331,7 @@ export class SolanaVaultDepositor
       );
       if (status?.err != null) {
         throw new ClearnetSdkError("TX_REVERTED", "sol: transaction failed", {
-          txID,
+          txHash: txID,
         });
       }
       if (statusSatisfiesCommitment(status, this.commitment)) {
@@ -291,7 +339,7 @@ export class SolanaVaultDepositor
       }
       if (Date.now() >= deadline) {
         throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt timeout", {
-          txID,
+          txHash: txID,
         });
       }
       await sleep(Math.min(POLL_INTERVAL_MS, remainingMs(deadline, txID)), options.signal, txID);
@@ -311,7 +359,7 @@ export class SolanaVaultDepositor
       throw new ClearnetSdkError(
         "RPC_ERROR",
         "sol: signature status",
-        txID === undefined ? { cause: error } : { txID, cause: error },
+        txID === undefined ? { cause: error } : { txHash: txID, cause: error },
       );
     }
   }
@@ -354,6 +402,77 @@ function normalizeSolanaTxID(signature: string): string {
     );
   }
   return signature;
+}
+
+// Reports whether the custody event at index is a Deposited event. Events are
+// the programId inner instructions carrying a decodable Deposited or Executed
+// event, counted in order across all inner instructions. Mirrors Go
+// sol.depositEventAt.
+function depositEventAt(
+  response: VersionedTransactionResponse,
+  programId: PublicKey,
+  index: bigint,
+  txHash: string,
+): boolean {
+  const meta = response.meta;
+  if (meta === null) {
+    return false;
+  }
+  const keys = [
+    ...response.transaction.message.staticAccountKeys,
+    ...(meta.loadedAddresses?.writable ?? []),
+    ...(meta.loadedAddresses?.readonly ?? []),
+  ];
+  let next = 0n;
+  for (const inner of meta.innerInstructions ?? []) {
+    for (const instruction of inner.instructions) {
+      const program = keys[instruction.programIdIndex];
+      if (program === undefined || !program.equals(programId)) {
+        continue;
+      }
+      let data: Uint8Array;
+      try {
+        data = bs58.decode(instruction.data);
+      } catch (error) {
+        throw new ClearnetSdkError(
+          "RPC_ERROR",
+          "sol: inner instruction data is not base58",
+          { txHash, cause: error },
+        );
+      }
+      if (data.length < 16 || !startsWith(data, EVENT_IX_TAG, 0)) {
+        continue;
+      }
+      const bodyLength = data.length - 16;
+      let deposited: boolean;
+      if (startsWith(data, DEPOSITED_EVENT_DISCRIMINATOR, 8)) {
+        if (bodyLength < DEPOSITED_EVENT_MIN_LEN) {
+          continue;
+        }
+        deposited = true;
+      } else if (startsWith(data, EXECUTED_EVENT_DISCRIMINATOR, 8)) {
+        if (bodyLength < EXECUTED_EVENT_MIN_LEN) {
+          continue;
+        }
+        deposited = false;
+      } else {
+        continue;
+      }
+      if (next === index) {
+        return deposited;
+      }
+      next += 1n;
+    }
+  }
+  return false;
+}
+
+function startsWith(
+  data: Uint8Array,
+  prefix: readonly number[],
+  offset: number,
+): boolean {
+  return prefix.every((byte, i) => data[offset + i] === byte);
 }
 
 function mapStatus(
@@ -415,7 +534,7 @@ function remainingMs(deadline: number, txID: string): number {
   const remaining = deadline - Date.now();
   if (remaining <= 0) {
     throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt timeout", {
-      txID,
+      txHash: txID,
     });
   }
   return remaining;
@@ -429,7 +548,7 @@ async function waitWithControls<T>(
 ): Promise<T> {
   if (signal?.aborted === true) {
     throw new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-      txID,
+      txHash: txID,
     });
   }
 
@@ -440,7 +559,7 @@ async function waitWithControls<T>(
     timeoutId = setTimeout(() => {
       reject(
         new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt timeout", {
-          txID,
+          txHash: txID,
         }),
       );
     }, timeoutMs);
@@ -453,7 +572,7 @@ async function waitWithControls<T>(
           abortHandler = () => {
             reject(
               new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-                txID,
+                txHash: txID,
               }),
             );
           };
@@ -485,7 +604,7 @@ async function sleep(
     if (signal?.aborted === true) {
       reject(
         new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-          txID,
+          txHash: txID,
         }),
       );
       return;
@@ -509,7 +628,7 @@ async function sleep(
         cleanup();
         reject(
           new ClearnetSdkError("RECEIPT_TIMEOUT", "sol: receipt aborted", {
-            txID,
+            txHash: txID,
           }),
         );
       };

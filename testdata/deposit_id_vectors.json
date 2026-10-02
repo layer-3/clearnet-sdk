@@ -1,0 +1,173 @@
+{
+  "_comment": "ISS-068 golden vectors for the deposit IDs of every chain, one section per chain. Kept byte-identical between custody (testdata/deposit_id_vectors.json, read by the Foundry and Go tests) and the SDK (testdata/deposit_id_vectors.json, read by the Go and TS tests); do not hand-edit the id or nonce fields.",
+  "evm": {
+    "_comment": "EVM deposit ID: keccak256(abi.encode(chainid, vault, depositor, nonce)). Regenerate with cast abi-encode/keccak if the formula ever changes.",
+    "vectors": [
+      {
+        "name": "ordinary",
+        "chainId": 1,
+        "vault": "0x1111111111111111111111111111111111111111",
+        "depositor": "0x3333333333333333333333333333333333333333",
+        "key": "7",
+        "sequence": "3",
+        "nonce": "0x0000000000000000000000000000000000000000000000070000000000000003",
+        "id": "0xf34075c20b43ba821f9c757aabd08aa8564beb8bde4eb69b37943d6bfda39552"
+      },
+      {
+        "name": "nonce_zero",
+        "chainId": 1,
+        "vault": "0x1111111111111111111111111111111111111111",
+        "depositor": "0x3333333333333333333333333333333333333333",
+        "key": "0",
+        "sequence": "0",
+        "nonce": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "id": "0xbd8f880aefdebaf46b8f8fe75c85932281ead53837f9fdce0942e968f584cdc4"
+      },
+      {
+        "name": "key_only",
+        "chainId": 1,
+        "vault": "0x1111111111111111111111111111111111111111",
+        "depositor": "0x3333333333333333333333333333333333333333",
+        "key": "999999",
+        "sequence": "0",
+        "nonce": "0x0000000000000000000000000000000000000000000f423f0000000000000000",
+        "id": "0xd8ea6848d50cd98b645badb127dcf35852c0bcb7184529cf82a1660605069028"
+      },
+      {
+        "name": "max_nonce",
+        "chainId": 1,
+        "vault": "0x1111111111111111111111111111111111111111",
+        "depositor": "0x3333333333333333333333333333333333333333",
+        "key": "6277101735386680763835789423207666416102355444464034512895",
+        "sequence": "18446744073709551615",
+        "nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "id": "0xe0e38bdf4ef8bf6b85bee55493ea4a8223cfc639fa90387df9030694e3e0216b"
+      },
+      {
+        "name": "chain_b",
+        "chainId": 42161,
+        "vault": "0x1111111111111111111111111111111111111111",
+        "depositor": "0x3333333333333333333333333333333333333333",
+        "key": "7",
+        "sequence": "3",
+        "nonce": "0x0000000000000000000000000000000000000000000000070000000000000003",
+        "id": "0x01e95436ef8c68c5d986052cb5d4605177d4e31722f29e7661d0366108214db6"
+      },
+      {
+        "name": "vault_b",
+        "chainId": 1,
+        "vault": "0x2222222222222222222222222222222222222222",
+        "depositor": "0x3333333333333333333333333333333333333333",
+        "key": "7",
+        "sequence": "3",
+        "nonce": "0x0000000000000000000000000000000000000000000000070000000000000003",
+        "id": "0xdeecba2ec2955364ff03c464708c21f8ecd42b24ee3a1b967c2d72738f056fba"
+      },
+      {
+        "name": "depositor_b",
+        "chainId": 1,
+        "vault": "0x1111111111111111111111111111111111111111",
+        "depositor": "0x4444444444444444444444444444444444444444",
+        "key": "7",
+        "sequence": "3",
+        "nonce": "0x0000000000000000000000000000000000000000000000070000000000000003",
+        "id": "0x8d019fd509c6b935bec80b087246c45b8db24b5e38cfe7c51ada49755eb02173"
+      }
+    ]
+  },
+  "btc": {
+    "_comment": "Bitcoin deposit ID: <txid>:<vout>, the txid with its case kept as given and the decimal output index. Bitcoin Core reports txids as lowercase hex; txid_case_kept pins that an upper-case txid is not re-cased. Generated from custody's chains/btc deposit watcher.",
+    "vectors": [
+      {
+        "name": "vout_zero",
+        "txid": "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
+        "vout": 0,
+        "id": "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b:0"
+      },
+      {
+        "name": "vout_one",
+        "txid": "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098",
+        "vout": 1,
+        "id": "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098:1"
+      },
+      {
+        "name": "vout_multi_digit",
+        "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+        "vout": 1000,
+        "id": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16:1000"
+      },
+      {
+        "name": "vout_max",
+        "txid": "0000000000000000000000000000000000000000000000000000000000000001",
+        "vout": 4294967295,
+        "id": "0000000000000000000000000000000000000000000000000000000000000001:4294967295"
+      },
+      {
+        "name": "txid_case_kept",
+        "txid": "4A5E1E4BAAB89F3A32518A88C31BC87F618F76673E2CC77AB2127B7AFDEDA33B",
+        "vout": 2,
+        "id": "4A5E1E4BAAB89F3A32518A88C31BC87F618F76673E2CC77AB2127B7AFDEDA33B:2"
+      }
+    ]
+  },
+  "sol": {
+    "_comment": "Solana deposit ID: 0x<lowercase hex of sha256(64-byte signature)>:<index>, where index is the event's zero-based position among the transaction's custody event CPIs. Generated from custody's chains/sol deposit watcher. index is a decimal string because uint64 values do not survive a float64 JSON decoder.",
+    "vectors": [
+      {
+        "name": "index_zero",
+        "signature": "1GMkH3brNXiNNs1tiFZHu4yZSRrzJwxi5wB9bHFtMinfCXNnR1adh8Vo8NTheK4evneedH4qmvjeqcBBNAefgS",
+        "index": "0",
+        "id": "0xfdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108:0"
+      },
+      {
+        "name": "index_one",
+        "signature": "1GMkH3brNXiNNs1tiFZHu4yZSRrzJwxi5wB9bHFtMinfCXNnR1adh8Vo8NTheK4evneedH4qmvjeqcBBNAefgS",
+        "index": "1",
+        "id": "0xfdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108:1"
+      },
+      {
+        "name": "all_ff_index_zero",
+        "signature": "67rpwLCuS5DGA8KGZXKsVQ7dnPb9goRLoKfgGbLfQg9WoLUgNY77E2jT11fem3coV9nAkguBACzrU1iyZM4B8roQ",
+        "index": "0",
+        "id": "0x8667e718294e9e0df1d30600ba3eeb201f764aad2dad72748643e4a285e1d1f7:0"
+      },
+      {
+        "name": "index_multi_digit",
+        "signature": "2omt37n9Gg1v7dhZnbaxMFyvvYramkgJDwMUWPMb2XsmdppJJqWT5bjH11EeD8kLpTytD1SEpbwY785acJKBQFAZ",
+        "index": "42",
+        "id": "0xcc7321cce5e4409bd8077d58422e1214969059bbd40b4eeb0de0a642f40f7282:42"
+      },
+      {
+        "name": "index_max",
+        "signature": "2omt37n9Gg1v7dhZnbaxMFyvvYramkgJDwMUWPMb2XsmdppJJqWT5bjH11EeD8kLpTytD1SEpbwY785acJKBQFAZ",
+        "index": "18446744073709551615",
+        "id": "0xcc7321cce5e4409bd8077d58422e1214969059bbd40b4eeb0de0a642f40f7282:18446744073709551615"
+      }
+    ]
+  },
+  "xrpl": {
+    "_comment": "XRPL deposit ID: the transaction hash lower-cased. hash is the value rippled reports (usually upper-case). Generated from custody's chains/xrpl deposit watcher.",
+    "vectors": [
+      {
+        "name": "upper_case",
+        "hash": "E08D6E9754025BA2534A78707605E0601F03ACE063687A0CA1BDDACFCD1698C7",
+        "id": "e08d6e9754025ba2534a78707605e0601f03ace063687a0ca1bddacfcd1698c7"
+      },
+      {
+        "name": "upper_case_tx_json_field",
+        "hash": "4D5D90890F8D49519E4151938601EF3D0B30B16CD6A519D9C99102C9FA77F7E0",
+        "id": "4d5d90890f8d49519e4151938601ef3d0b30b16cd6a519d9c99102c9fa77f7e0"
+      },
+      {
+        "name": "lower_case",
+        "hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      },
+      {
+        "name": "mixed_case",
+        "hash": "AbCdEf0123456789aBcDeF0123456789AbCdEf0123456789aBcDeF0123456789",
+        "id": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+      }
+    ]
+  }
+}

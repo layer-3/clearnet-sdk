@@ -7,6 +7,7 @@ expected=$(cat "$sdk_root/pkg/blockchain/evm/artifacts/custody-source-revision")
 [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { echo 'invalid custody source revision'; exit 1; }
 actual=$(git -C "$custody_root" rev-parse HEAD)
 [ "$actual" = "$expected" ] || { echo "custody source revision mismatch: expected $expected, got $actual"; exit 1; }
-validated=$(cat "$sdk_root/pkg/blockchain/evm/artifacts/validated-sdk-revision")
-[ "$validated" = "$(cat "$custody_root/.github/eip712-sdk-revision")" ] || { echo 'validated SDK revision disagrees with custody CI'; exit 1; }
-"$custody_root/scripts/check-evm-eip712-local.sh" "$sdk_root"
+# Bytecode/ABI parity is custody's canonical check: it recompiles both
+# owners' Solidity under custody's Foundry profile and diffs the result
+# against the SDK's vendored artifacts.
+"$custody_root/scripts/check-sdk-artifact-parity.sh" "$sdk_root"

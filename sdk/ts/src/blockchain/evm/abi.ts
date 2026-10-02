@@ -15,9 +15,20 @@ export const custodyAbi = [
       { name: "asset", type: "address", internalType: "address" },
       { name: "amount", type: "uint256", internalType: "uint256" },
       { name: "depositReference", type: "bytes32", internalType: "bytes32" },
+      { name: "nonce", type: "uint256", internalType: "uint256" },
     ],
     outputs: [],
     stateMutability: "payable",
+  },
+  {
+    type: "function",
+    name: "getNonce",
+    inputs: [
+      { name: "depositor", type: "address", internalType: "address" },
+      { name: "key", type: "uint192", internalType: "uint192" },
+    ],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    stateMutability: "view",
   },
   {
     type: "event",
@@ -43,6 +54,7 @@ export const custodyAbi = [
       },
       { name: "asset", type: "address", indexed: false, internalType: "address" },
       { name: "amount", type: "uint256", indexed: false, internalType: "uint256" },
+      { name: "nonce", type: "uint256", indexed: false, internalType: "uint256" },
     ],
     anonymous: false,
   },

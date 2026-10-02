@@ -89,6 +89,9 @@ func TestCoreP2WPKHBackendScanTransport(t *testing.T) {
 	if confirmations, known, err := backend.GetTransactionConfirmations(context.Background(), broadcastTxID); err != nil || !known || confirmations != 3 {
 		t.Fatalf("GetTransactionConfirmations = %d, %v, %v", confirmations, known, err)
 	}
+	if outputs, confirmations, known, err := backend.GetTransaction(context.Background(), broadcastTxID); err != nil || !known || confirmations != 3 || len(outputs) != 0 {
+		t.Fatalf("GetTransaction = %+v, %d, %v, %v", outputs, confirmations, known, err)
+	}
 }
 
 func TestCoreP2WPKHBackendWalletModeAndFeeChoices(t *testing.T) {
@@ -215,7 +218,7 @@ func TestEsploraP2WPKHBackendTransport(t *testing.T) {
 		case "/api/blocks/tip/height":
 			fmt.Fprint(w, "200")
 		case "/api/tx/" + txID:
-			fmt.Fprintf(w, `{"vout":[{"scriptpubkey":%q,"value":5000}]}`, script)
+			fmt.Fprintf(w, `{"vout":[{"scriptpubkey":%q,"value":5000}],"status":{"confirmed":true,"block_height":198}}`, script)
 		case "/api/tx/" + txID + "/status":
 			fmt.Fprint(w, `{"confirmed":true,"block_height":198}`)
 		case "/api/fee-estimates":
@@ -251,6 +254,13 @@ func TestEsploraP2WPKHBackendTransport(t *testing.T) {
 	}
 	if confirmations, known, err := backend.GetTransactionConfirmations(context.Background(), txID); err != nil || !known || confirmations != 3 {
 		t.Fatalf("GetTransactionConfirmations = %d, %v, %v", confirmations, known, err)
+	}
+	outputs, confirmations, known, err := backend.GetTransaction(context.Background(), txID)
+	if err != nil || !known || confirmations != 3 || len(outputs) != 1 || outputs[0].ValueSats != 5_000 || outputs[0].ScriptPubKeyHex != script {
+		t.Fatalf("GetTransaction = %+v, %d, %v, %v", outputs, confirmations, known, err)
+	}
+	if outputs, confirmations, known, err := backend.GetTransaction(context.Background(), strings.Repeat("9", 64)); err != nil || known || confirmations != 0 || outputs != nil {
+		t.Fatalf("GetTransaction(unknown) = %+v, %d, %v, %v; want nil, 0, false, nil", outputs, confirmations, known, err)
 	}
 }
 

@@ -86,14 +86,15 @@ const depositor = new BitcoinVaultDepositor({
 console.log(await depositor.depositorAddress()); // fund this P2WPKH address
 console.log(depositor.depositAddress()); // the same generic address for every deposit
 
-const ref = await depositor.submitDeposit({
+const result = await depositor.submitDeposit({
   destination: { account: "000000000000000000000000000000000000a1a1" },
   asset: BITCOIN_NATIVE_ASSET,
   amount: "0.0002",
 });
 
-console.log(ref); // display txid
-console.log(await depositor.verifyDeposit(ref, 1));
+console.log(result.txHash); // display txid
+console.log(result.depositId); // "<txid>:0"
+console.log(await depositor.chainDepositStatus(result.txHash, result.depositId, 1));
 ```
 
 `BitcoinCoreRpcClient` sends Basic Auth only when both `username` and `password`
@@ -157,24 +158,27 @@ const depositor = new EvmVaultDepositor({
 });
 
 try {
-  const ref = await depositor.submitDeposit(
+  const result = await depositor.submitDeposit(
     {
       destination: { account: walletAccount },
       asset: EVM_NATIVE_ASSET,
       amount: "0.01",
     },
     {
-      onSubmitted(submittedRef) {
-        console.log("deposit submitted", submittedRef);
+      onSubmitted(submitted) {
+        console.log("deposit submitted", submitted.txHash, submitted.depositId);
       },
     },
   );
 
-  console.log("deposit mined", ref);
-  console.log("status", await depositor.verifyDeposit(ref, 1));
+  console.log("deposit mined", result.txHash, result.depositId);
+  console.log(
+    "status",
+    await depositor.chainDepositStatus(result.txHash, result.depositId, 1),
+  );
 } catch (error) {
   if (error instanceof ClearnetSdkError) {
-    console.error(error.code, error.txID);
+    console.error(error.code, error.txHash, error.depositId, error.step);
   }
   throw error;
 }
@@ -184,13 +188,58 @@ The SDK checks the configured public RPC chain and wallet chain before signing
 or submitting a deposit. If either chain does not match `chainId`, it throws
 `CHAIN_MISMATCH`.
 
+### EVM nonces
+
+Every EVM deposit consumes the next 2D nonce for `(depositor, nonceKey)` — the
+same `key << 64 | sequence` layout as the ERC-4337 EntryPoint. `nonceKey`
+defaults to `0n`; pass `EvmSubmitDepositInput.nonceKey` to use another key.
+Each key has its own consecutive sequence, so one depositor address can keep
+several independent deposit streams.
+
+Router rule: a contract that deposits on behalf of many users should give each
+user its own key (for example `key = uint192(uint160(user))`, as integration
+rule 2 in custody's `src/interfaces/IDeposit.sol` recommends) and must take the
+sequence from the user's own signed input, never read it from on-chain state
+at execution time (otherwise, after a deep reorg, the replayed call can pick a
+different nonce and be credited twice). `submitDeposit` reads `getNonce`
+itself, so it is meant for an account that submits its own deposits, not for
+building such a contract's calldata.
+
+Do not call `submitDeposit` concurrently for the same `(depositor, nonceKey)` —
+both calls would race the same on-chain counter and one would revert. Calling
+it again after a previous call has already returned successfully is safe.
+
+If `submitDeposit` throws after the nonce has been read, the error carries
+`step` (`"approve"` or `"deposit"`), `depositId`, `nonceKey`, `nonce`, and
+`txHash` when known (see [Troubleshooting](#troubleshooting)). Do not blindly
+retry: a retry reads a fresh nonce and, if the earlier attempt actually landed
+on chain, creates a second real deposit. Resolve the outcome first:
+
+1. `step` is `"deposit"` and `txHash` is set: call
+   `chainDepositStatus(txHash, depositId, minConfirmations)`. `"confirmed"` or
+   `"pending"` means the deposit exists; `"absent"` means that transaction did
+   not produce it.
+2. No `txHash` (the wallet call itself failed, so viem returned no hash), or
+   `step` is `"approve"`: `chainDepositStatus` cannot be used. Read the vault's
+   `getNonce(depositor, nonceKey)` at `latest`. If it is greater than the
+   error's `nonce`, a deposit with that nonce has landed (this one, or another
+   from the same depositor and key); otherwise the nonce is unused and calling
+   `submitDeposit` again is safe.
+3. `STALE_NONCE`: the nonce this call read had already been consumed by
+   another deposit, so this call created no deposit; call `submitDeposit`
+   again, and it reads the now-current nonce.
+
+After a successful mine, `submitDeposit` also checks that the receipt carries
+the vault's `Deposited` log for the returned `depositId`; if it does not, it
+throws `DEPOSIT_EVENT_NOT_FOUND` with `txHash` and `depositId`.
+
 ## ERC-20 Deposits
 
 For ERC-20 deposits, pass the token contract address as `asset` and the token
 amount as a decimal string.
 
 ```ts
-const ref = await depositor.submitDeposit({
+const result = await depositor.submitDeposit({
   destination: { account: walletAccount },
   asset: "0x0000000000000000000000000000000000003000",
   amount: "25",
@@ -198,11 +247,18 @@ const ref = await depositor.submitDeposit({
 ```
 
 The SDK reads and caches the token's `decimals()`, converts the decimal amount
-to base units, submits an exact-amount `approve(custodyAddress, amount)`
-transaction, then submits the custody `deposit(...)` transaction. A successful
-`submitDeposit` call returns the deposit transaction hash, not the approval
-hash. If an ERC-20 approval fails before the deposit is submitted, `error.txID`
-may refer to the approval transaction.
+to base units, and checks the current allowance. If it does not already cover
+the amount, the SDK submits an exact-amount `approve(custodyAddress, amount)`
+transaction and waits for it to mine before submitting the custody
+`deposit(...)` transaction. When the allowance already covers the amount (for
+example on a retry after an earlier approve landed), no approve is sent. An
+allowance that is nonzero but below the amount still gets a
+nonzero-to-nonzero approve, which tokens such as USDT reject; reset such a
+token's allowance to zero first. A successful `submitDeposit` call returns the
+deposit transaction's `{ txHash, depositId }`, not the approval transaction's.
+If an ERC-20 approval or deposit fails, the thrown `ClearnetSdkError` carries
+`step` (`"approve"` or `"deposit"`), the deposit's identity fields, and
+`txHash` when known — see [EVM nonces](#evm-nonces).
 
 ## Solana Deposits
 
@@ -255,7 +311,7 @@ const depositor = new SolanaVaultDepositor({
   commitment: "confirmed",
 });
 
-const ref = await depositor.submitDeposit({
+const result = await depositor.submitDeposit({
   destination: {
     account: "00000000000000000000000000000000000000a1",
     ref: "0x3333333333333333333333333333333333333333333333333333333333333333",
@@ -264,9 +320,9 @@ const ref = await depositor.submitDeposit({
   amount: "0.1",
 });
 
-console.log(ref); // Solana base58 signature
-console.log(ref); // 0x + sha256(signature bytes)
-console.log(await depositor.verifyDeposit(ref, 0));
+console.log(result.txHash); // Solana base58 signature
+console.log(result.depositId); // "0x<sha256(signature bytes)>:0"
+console.log(await depositor.chainDepositStatus(result.txHash, result.depositId, 0));
 ```
 
 Native SOL uses `SOLANA_NATIVE_ASSET`, which is an empty string. For SPL
@@ -308,7 +364,7 @@ const depositor = new XrplVaultDepositor({
 });
 
 try {
-  const ref = await depositor.submitDeposit({
+  const result = await depositor.submitDeposit({
     destination: {
       account: "00000000000000000000000000000000000000a1",
       ref: "0x3333333333333333333333333333333333333333333333333333333333333333",
@@ -317,9 +373,9 @@ try {
     amount: "1",
   });
 
-  console.log(ref); // uppercase XRPL transaction hash
-  console.log(ref); // same bytes as 0x-prefixed hex
-  console.log(await depositor.verifyDeposit(ref, 0));
+  console.log(result.txHash); // uppercase XRPL transaction hash
+  console.log(result.depositId); // the lower-cased hash
+  console.log(await depositor.chainDepositStatus(result.txHash, result.depositId, 0));
 } finally {
   await depositor.disconnect();
 }
@@ -347,7 +403,7 @@ Trustlines and balances must already exist before an issued-currency deposit.
 The SDK builds one XRPL `Payment`, adds one `ynet-account` memo carrying the
 Clearnet account/reference, asks the caller-provided signer to sign, submits the
 signed blob, and returns after rippled accepts the submit result as `tesSUCCESS`
-or `terQUEUED`. Use `verifyDeposit` to observe validated-ledger finality; a
+or `terQUEUED`. Use `chainDepositStatus` to observe validated-ledger finality; a
 just-submitted XRPL payment can return `pending` until it appears in a validated
 ledger.
 
@@ -362,7 +418,7 @@ Pass `destination.ref` to attach a 32-byte opaque sub-account reference to the
 deposit. Omit it when there is no sub-account reference.
 
 ```ts
-const ref = await depositor.submitDeposit({
+const result = await depositor.submitDeposit({
   destination: {
     account: walletAccount,
     ref: "0x3333333333333333333333333333333333333333333333333333333333333333",
@@ -384,10 +440,19 @@ carries no reference on the wire.
 ## Verify A Deposit
 
 ```ts
-const status = await depositor.verifyDeposit(ref, 1);
+const status = await depositor.chainDepositStatus(
+  result.txHash,
+  result.depositId,
+  1,
+);
 ```
 
-`verifyDeposit` returns:
+`chainDepositStatus` is a pure on-chain read — it does not check
+clearing/crediting on Clearnet, only whether the deposit transaction itself is
+present and final. It does not apply custody's crediting rules (for example
+the Bitcoin dust floor and self-deposit guard, or XRPL partial payments and
+asset support), so `"confirmed"` does not guarantee the deposit will be
+credited. It returns:
 
 | Status | Meaning |
 |---|---|
@@ -399,10 +464,10 @@ const status = await depositor.verifyDeposit(ref, 1);
 `bigint`. EVM treats it as an inclusive receipt confirmation count. Solana maps
 it onto the commitment ladder: `0` accepts `confirmed`; `>= 1` requires
 `finalized`. XRPL validates the shape for cross-chain parity but treats XRPL
-finality as binary: a validated transaction is `confirmed`. Bitcoin returns
-`confirmed` for any known transaction when `minConfirmations` is `0`; otherwise
-it returns `pending` for mempool or shallow transactions and `confirmed` when
-the transaction has at least `minConfirmations` confirmations.
+finality as binary: a validated transaction is `confirmed`. Bitcoin treats `0`
+as `1`, so a mempool transaction is never `confirmed`; it returns `pending` for
+mempool or shallow transactions and `confirmed` when the transaction has at
+least `minConfirmations` (at least one) confirmations.
 
 ## API Reference
 
@@ -434,6 +499,7 @@ Input fields:
 | `destination.ref` | `Hash \| undefined` | Optional 32-byte opaque reference. Omitted values are sent as `bytes32(0)`. |
 | `asset` | `Address \| ""` | Use `EVM_NATIVE_ASSET` for native ETH, or an ERC-20 token address. |
 | `amount` | `string` | Positive decimal amount. Native uses `nativeDecimals`; ERC-20 tokens use on-chain `decimals()`. |
+| `nonceKey` | `bigint \| undefined` | Optional upper 192 bits of the 2D deposit nonce, in `[0, 2^192)` (otherwise `INVALID_INPUT`); defaults to `0n`. See [EVM nonces](#evm-nonces). |
 
 Options:
 
@@ -441,17 +507,22 @@ Options:
 |---|---|
 | `signal` | Aborts the receipt wait. |
 | `receiptTimeoutMs` | Overrides the receipt wait timeout for this call. |
-| `onSubmitted` | Called with the deposit `txID` string. |
+| `onSubmitted` | Called once with the deposit's `SubmitDepositResult` (see below), after the deposit transaction mines. |
 
 Returns:
 
 ```ts
-type TxID = string;
+interface SubmitDepositResult {
+  txHash: string;
+  depositId: string;
+}
 ```
 
-For EVM deposits, `txID` is `txHash/logIndex`, identifying the exact
-`Deposited` log. Verification also accepts a raw transaction hash for
-transaction-level status checks.
+`txHash` is the mined deposit transaction's hash. `depositId` is `"0x"` +
+64 lowercase hex characters — the ID custody signs a MintReceipt for; it is
+exported as `depositId(chainId, vault, depositor, nonce)` from
+`@yellow-org/clearnet-sdk`, alongside `requireDepositId`, `composeNonce`, and
+`splitNonce`. Pass both to `chainDepositStatus`.
 
 ### `BitcoinVaultDepositor`
 
@@ -481,12 +552,29 @@ Bitcoin input fields:
 | `asset` | `string` | Use `BITCOIN_NATIVE_ASSET`, the empty string. Other asset values are rejected. |
 | `amount` | `string` | Positive decimal BTC amount that fits in signed 64-bit satoshis. |
 
-For Bitcoin, `txID` is the display txid. `submitDeposit` returns after Bitcoin
-Core accepts the raw transaction; use `verifyDeposit` to observe mempool,
-shallow, and confirmed states.
+For Bitcoin, `SubmitDepositResult.txHash` is the display txid, and
+`depositId` is `"<txid>:<vout>"` with the decimal output index — the ID custody
+signs a MintReceipt for. The SDK-built deposit output is always output 0, so
+`submitDeposit` and `submitSignedDepositPsbt` return
+`bitcoinDepositId(txHash, 0)`; `bitcoinDepositId(txid, vout)` is exported from
+`@yellow-org/clearnet-sdk`. It keeps the txid's case as given; pass the
+lowercase hex txid Bitcoin Core reports. `submitSignedDepositPsbt` throws
+`INVALID_INPUT` without broadcasting unless output 0 of the signed transaction
+pays `depositAddress()` the amount in `expectedOutputs[0]`. `submitDeposit`
+returns after Bitcoin Core accepts the raw transaction; use
+`chainDepositStatus` to observe mempool, shallow, and confirmed states.
+
+Bitcoin `chainDepositStatus` throws `INVALID_DEPOSIT_ID` unless `depositId` is
+exactly `bitcoinDepositId(txHash, vout)`. It reports `"absent"` unless the
+transaction is known, output `vout` pays `depositAddress()` a positive value,
+and the transaction's outputs carry exactly one valid ADR-023 deposit marker.
+`BitcoinRpc.getRawTransaction` must therefore return the transaction's
+`outputs` (value in satoshis and scriptPubKey hex, in output order);
+`BitcoinCoreRpcClient` reads them from verbose `getrawtransaction`. The dust
+floor and self-deposit guard custody applies before crediting are not checked.
 
 For PSBT wallet signing, `prepareDepositPsbt` returns an `unsignedTxID` for the
-unsigned transaction shape. Use the `txID` returned by
+unsigned transaction shape. Use the `txHash` returned by
 `submitSignedDepositPsbt` for verification because wallet finalization can
 change the final txid for nested-SegWit inputs.
 
@@ -529,7 +617,20 @@ Solana input fields:
 | `asset` | `string` | Use `SOLANA_NATIVE_ASSET`, the empty string, or an SPL mint public key. |
 | `amount` | `string` | Positive decimal amount. Native SOL uses 9 decimals; SPL tokens use mint decimals. |
 
-For Solana, `txID` is the base58 signature.
+For Solana, `SubmitDepositResult.txHash` is the base58 signature, and
+`depositId` is `"0x" + lowercase hex of sha256(the 64 signature bytes) + ":" +
+index`, where index is the `Deposited` event's zero-based position among the
+transaction's custody `Deposited` and `Executed` event CPIs. A transaction
+`submitDeposit` builds carries one deposit, so it returns
+`solanaDepositId(signature, 0)`; `solanaDepositId(signature, index)` is
+exported from `@yellow-org/clearnet-sdk`.
+
+Solana `chainDepositStatus` throws `INVALID_DEPOSIT_ID` unless `depositId` is
+exactly `solanaDepositId(txHash, index)`. It keeps the signature-status
+commitment mapping, and for a `confirmed` or `finalized` status also fetches
+the transaction: a failed transaction, or one whose custody event at `index`
+is not a `Deposited` event, is `"absent"`; a transaction the RPC does not
+serve yet is `"pending"`.
 
 ```ts
 const transaction = await depositor.prepareDeposit(input);
@@ -563,7 +664,19 @@ XRPL input fields:
 | `asset` | `string` | Empty string for native, or issued-currency `CUR.rIssuer`. |
 | `amount` | `string` | Positive decimal amount; native XRP uses 6 decimals, issued currencies use configured decimals. |
 
-For XRPL, `txID` is the uppercase 64-hex transaction hash.
+For XRPL, `SubmitDepositResult.txHash` is the uppercase 64-hex transaction
+hash, and `depositId` is that hash lower-cased — the ID custody signs a
+MintReceipt for; `xrplDepositId(txHash)` is exported from
+`@yellow-org/clearnet-sdk`.
+
+XRPL `chainDepositStatus` throws `INVALID_DEPOSIT_ID` unless `depositId` is
+`xrplDepositId(txHash)`. It reports `"absent"` unless the transaction is a
+`Payment` from another account to `vaultAddress` whose first well-formed
+`ynet-account` memo names a non-zero 20-byte account followed by a 32-byte
+reference. Such a transaction is `"pending"` until validated, then
+`"confirmed"` if its result is `tesSUCCESS` and `"absent"` otherwise. Partial
+payments and asset support, which custody checks before crediting, are not
+checked.
 
 ```ts
 const payment = await depositor.prepareDeposit(input);
@@ -574,9 +687,11 @@ console.log(payment.Fee); // autofilled network fee in drops
 `await depositor.disconnect()` when the depositor is no longer needed, such as
 when replacing the signer or shutting down a long-lived process.
 
-### `verifyDeposit(ref, minConfirmations)`
+### `chainDepositStatus(txHash, depositId, minConfirmations)`
 
-Returns `Promise<"absent" | "pending" | "confirmed">`.
+Returns `Promise<"absent" | "pending" | "confirmed">`. A pure on-chain read —
+it does not check clearing/crediting on Clearnet, and `"confirmed"` does not
+guarantee the deposit will be credited.
 
 ## Local Development
 
@@ -731,14 +846,20 @@ Errors thrown by the SDK use `ClearnetSdkError` with a stable `code`.
 | `INVALID_AMOUNT` | `amount` is not positive, has the wrong type/precision, or exceeds the chain limit (`uint256` for EVM, `uint64` for Solana/XRPL native drops, signed 64-bit satoshis for Bitcoin). |
 | `INVALID_CONFIRMATIONS` | `minConfirmations` is negative, fractional, or an unsafe number. |
 | `INVALID_REFERENCE` | `destination.ref` is not a 32-byte hex value. |
-| `INVALID_TX_ID` | `txID` is not valid for the chain: EVM transaction hash or `txHash/logIndex`, Solana 64-byte signature, XRPL 64-hex hash, or Bitcoin 64-hex txid. |
+| `INVALID_TX_ID` | `txHash` is not valid for the chain: EVM transaction hash, Solana 64-byte signature, XRPL 64-hex hash, or Bitcoin 64-hex txid. |
+| `INVALID_DEPOSIT_ID` | `depositId` is not a valid deposit ID: for EVM, exactly `"0x"` + 64 lowercase hex characters (rejects a `txHash/logIndex` shape); for Bitcoin, Solana and XRPL, not exactly the chain's deposit ID helper output for `txHash`. |
 | `MISSING_WALLET_ACCOUNT` | The EVM wallet account is missing/mismatched, or the Solana/XRPL signer is missing. |
 | `CHAIN_MISMATCH` | The configured chain or network does not match the RPC or wallet network, such as an EVM chain ID mismatch or unsupported Bitcoin network. |
 | `INSUFFICIENT_FUNDS` | Bitcoin only: confirmed depositor UTXOs cannot cover the deposit amount plus fee. |
 | `TX_REVERTED` | A submitted approval/deposit transaction reverted, or XRPL rejected the payment engine result. |
 | `RECEIPT_TIMEOUT` | Waiting for a receipt timed out or was aborted. |
+| `STALE_NONCE` | EVM only: the deposit reverted because the nonce read at the start of `submitDeposit` was already consumed by another deposit from the same `(depositor, nonceKey)`. Call `submitDeposit` again — it reads the then-current nonce. |
+| `DEPOSIT_EVENT_NOT_FOUND` | EVM only: the deposit transaction mined successfully, but its receipt has no `Deposited` log from the configured vault whose depositor and nonce reproduce the expected `depositId` (for example a wrong `custodyAddress` or `chainId`). Carries `txHash` and `depositId`. |
 | `RPC_ERROR` | The public RPC or wallet provider returned an unexpected error. |
 
-When a transaction may already have been submitted, `ClearnetSdkError` can include
-`txID`. Use that hash to let a user inspect or retry verification of the
-submitted transaction.
+When a transaction may already have been submitted, `ClearnetSdkError` can
+include `txHash` (the on-chain transaction/signature hash, when known) and,
+for EVM, `depositId`, `nonceKey` and `nonce` (known before broadcast) and
+`step` (`"approve"` or `"deposit"`). Use `txHash` to let a user inspect the
+submitted transaction, and the other fields to decide whether it is safe to
+retry — see [EVM nonces](#evm-nonces).

@@ -1,5 +1,6 @@
 export { XRPL_NATIVE_ASSET } from "./constants.js";
 export { XrplVaultDepositor } from "./depositor.js";
+export { xrplDepositId } from "./depositId.js";
 export type {
   XrplAmount,
   XrplAsset,

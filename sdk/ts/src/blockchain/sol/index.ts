@@ -7,6 +7,7 @@ export {
   SOLANA_CUSTODY_PROGRAM_ID,
   SOLANA_NATIVE_ASSET,
 } from "./constants.js";
+export { solanaDepositId } from "./depositId.js";
 export type {
   SolanaAsset,
   SolanaCommitment,

@@ -122,3 +122,174 @@ function requireNonZeroReference(reference: Uint8Array | undefined): Uint8Array 
   }
   return reference;
 }
+
+/**
+ * Error codes of the marker reader, named as in
+ * pkg/blockchain/btc/marker/testdata/vectors.json. "not_marker" means the
+ * scriptPubKey is not a marker candidate; every other code from
+ * decodeMarkerScript means it is an invalid candidate, which leaves the whole
+ * transaction unattributed. "no_marker" and "multiple_markers" come from
+ * scanMarkerOutputs only.
+ */
+export type BitcoinMarkerErrorCode =
+  | "not_marker"
+  | "multiple_pushes"
+  | "non_canonical_push"
+  | "unknown_version"
+  | "bad_length"
+  | "zero_address"
+  | "zero_reference"
+  | "no_marker"
+  | "multiple_markers";
+
+export type BitcoinMarkerResult =
+  | { ok: true; marker: BitcoinMarker }
+  | { ok: false; error: BitcoinMarkerErrorCode };
+
+const PAYLOAD_LEN_V1 = MARKER_MAGIC.length + 1 + ADDRESS_LEN;
+const PAYLOAD_LEN_V2 = PAYLOAD_LEN_V1 + REFERENCE_LEN;
+const OP_PUSHDATA1 = 0x4c;
+const OP_PUSHDATA2 = 0x4d;
+const OP_PUSHDATA4 = 0x4e;
+
+/** Parses a bare marker payload (no script wrapper). Mirrors marker.go::DecodePayload. */
+export function decodeMarkerPayload(payload: Uint8Array): BitcoinMarkerResult {
+  if (!hasMagic(payload)) {
+    return { ok: false, error: "not_marker" };
+  }
+  if (payload.length < MARKER_MAGIC.length + 1) {
+    return { ok: false, error: "bad_length" };
+  }
+  const version = payload[MARKER_MAGIC.length];
+  let wantLen: number;
+  switch (version) {
+    case MARKER_VERSION_1:
+      wantLen = PAYLOAD_LEN_V1;
+      break;
+    case MARKER_VERSION_2:
+      wantLen = PAYLOAD_LEN_V2;
+      break;
+    default:
+      return { ok: false, error: "unknown_version" };
+  }
+  if (payload.length !== wantLen) {
+    return { ok: false, error: "bad_length" };
+  }
+  const address = payload.slice(MARKER_MAGIC.length + 1, PAYLOAD_LEN_V1);
+  if (isZeroBytes(address)) {
+    return { ok: false, error: "zero_address" };
+  }
+  if (version === MARKER_VERSION_1) {
+    return { ok: true, marker: { version: MARKER_VERSION_1, address } };
+  }
+  const reference = payload.slice(PAYLOAD_LEN_V1);
+  if (isZeroBytes(reference)) {
+    return { ok: false, error: "zero_reference" };
+  }
+  return { ok: true, marker: { version: MARKER_VERSION_2, address, reference } };
+}
+
+/**
+ * Parses one scriptPubKey. Mirrors marker.go::DecodeScript: only the
+ * canonical direct push is accepted, but an OP_PUSHDATA1/2/4 push whose
+ * payload begins with the magic is still a candidate (non_canonical_push).
+ */
+export function decodeMarkerScript(script: Uint8Array): BitcoinMarkerResult {
+  if (script.length === 0 || script[0] !== OP_RETURN) {
+    return { ok: false, error: "not_marker" };
+  }
+  const push = decodePush(script.subarray(1));
+  if (push === undefined || !hasMagic(push.payload)) {
+    return { ok: false, error: "not_marker" };
+  }
+  if (1 + push.consumed !== script.length) {
+    return { ok: false, error: "multiple_pushes" };
+  }
+  if (!push.canonical) {
+    return { ok: false, error: "non_canonical_push" };
+  }
+  return decodeMarkerPayload(push.payload);
+}
+
+/**
+ * Applies the attribution rule to every scriptPubKey of one transaction:
+ * exactly one marker candidate, and it must be valid. Mirrors
+ * marker.go::ScanOutputs. An error means the transaction is not attributed,
+ * not that it can be ignored: a funded deposit output with an error here is
+ * an unattributed inflow.
+ */
+export function scanMarkerOutputs(
+  scriptPubKeys: readonly Uint8Array[],
+): BitcoinMarkerResult {
+  const candidates: BitcoinMarkerResult[] = [];
+  for (const script of scriptPubKeys) {
+    const result = decodeMarkerScript(script);
+    if (!result.ok && result.error === "not_marker") {
+      continue;
+    }
+    candidates.push(result);
+  }
+  if (candidates.length === 0) {
+    return { ok: false, error: "no_marker" };
+  }
+  if (candidates.length > 1) {
+    return { ok: false, error: "multiple_markers" };
+  }
+  return candidates[0] as BitcoinMarkerResult;
+}
+
+function hasMagic(payload: Uint8Array): boolean {
+  if (payload.length < MARKER_MAGIC.length) {
+    return false;
+  }
+  return MARKER_MAGIC.every((byte, index) => payload[index] === byte);
+}
+
+interface DecodedPush {
+  payload: Uint8Array;
+  // True only for the direct-push form (opcode == payload length).
+  canonical: boolean;
+  // Bytes consumed, including the opcode and any length prefix.
+  consumed: number;
+}
+
+function decodePush(s: Uint8Array): DecodedPush | undefined {
+  const op = s[0];
+  if (op === undefined) {
+    return undefined;
+  }
+  let headerLen: number;
+  let length: number;
+  if (op >= 0x01 && op <= 0x4b) {
+    headerLen = 1;
+    length = op;
+  } else if (op === OP_PUSHDATA1) {
+    if (s.length < 2) {
+      return undefined;
+    }
+    headerLen = 2;
+    length = s[1] ?? 0;
+  } else if (op === OP_PUSHDATA2) {
+    if (s.length < 3) {
+      return undefined;
+    }
+    headerLen = 3;
+    length = new DataView(s.buffer, s.byteOffset + 1, 2).getUint16(0, true);
+  } else if (op === OP_PUSHDATA4) {
+    if (s.length < 5) {
+      return undefined;
+    }
+    headerLen = 5;
+    length = new DataView(s.buffer, s.byteOffset + 1, 4).getUint32(0, true);
+  } else {
+    return undefined;
+  }
+  if (s.length < headerLen + length) {
+    return undefined;
+  }
+  return {
+    payload: s.subarray(headerLen, headerLen + length),
+    canonical: headerLen === 1,
+    consumed: headerLen + length,
+  };
+}

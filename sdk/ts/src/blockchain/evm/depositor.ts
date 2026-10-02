@@ -8,11 +8,17 @@ import type {
   EvmDepositorConfig,
   EvmSubmitDepositInput,
   SubmitDepositOptions,
+  SubmitDepositResult,
   VaultDepositor,
 } from "../../core/types.js";
 import { decimalToBaseUnits } from "../amounts.js";
 import { custodyAbi, erc20Abi } from "./abi.js";
 import { DEFAULT_RECEIPT_TIMEOUT_MS } from "./constants.js";
+import {
+  depositId as computeDepositId,
+  requireDepositId,
+  requireNonceKey,
+} from "./depositId.js";
 import {
   isTransactionNotFound,
   requireDepositDestination,
@@ -21,13 +27,44 @@ import {
   requireAddress,
   requireAsset,
   requireChainId,
-  requireTxID,
+  requireTxHash,
   requireWalletAccount,
   walletAccountAddress,
   type ValidatedDepositDestination,
 } from "./validation.js";
 
 type AsyncValidation = Promise<ClearnetSdkError | undefined>;
+
+// DepositIdentity is what is known about a deposit once its nonce has been
+// read; every error raised after that point carries these fields.
+interface DepositIdentity {
+  depositor: Address;
+  nonceKey: bigint;
+  nonce: bigint;
+  depositId: string;
+}
+
+function identityFields(identity: DepositIdentity): {
+  nonceKey: bigint;
+  nonce: bigint;
+  depositId: string;
+} {
+  return {
+    nonceKey: identity.nonceKey,
+    nonce: identity.nonce,
+    depositId: identity.depositId,
+  };
+}
+
+// A stale nonce (already consumed by submission time, e.g. a lagging
+// load-balanced RPC node) is detected from Custody's revert reason or, for a
+// mined revert without a reason, a fresh getNonce read. Liveness only: a fresh
+// submitDeposit call reads the current nonce.
+const STALE_NONCE_REVERT_TEXT = "Invalid nonce";
+
+function isStaleNonceRevert(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(STALE_NONCE_REVERT_TEXT);
+}
 
 export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> {
   private readonly config: EvmDepositorConfig;
@@ -64,37 +101,63 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
     );
   }
 
+  // Do not call concurrently for the same (depositor, nonceKey): both race one
+  // on-chain counter and one reverts. After an error, check the thrown
+  // ClearnetSdkError's step/txHash/depositId/nonceKey/nonce before retrying; a
+  // blind retry reads the next nonce and can create a second real deposit.
   async submitDeposit(
     input: EvmSubmitDepositInput,
     options: SubmitDepositOptions = {},
-  ): Promise<string> {
+  ): Promise<SubmitDepositResult> {
     const destination = requireDepositDestination(input.destination);
     const asset = requireAsset(input.asset);
+    const key = requireNonceKey(input.nonceKey);
     await this.ensureWriteChain();
 
+    const amount =
+      asset === ""
+        ? decimalToBaseUnits(input.amount, this.nativeDecimals)
+        : decimalToBaseUnits(input.amount, await this.assetDecimals(asset));
+
+    const depositorAddr = walletAccountAddress(this.config.walletAccount);
+    // Read at `latest`, never `pending` (that would turn a blind retry into a
+    // second deposit), before any approve.
+    const nonce = await this.readNonce(depositorAddr, key);
+    const identity: DepositIdentity = {
+      depositor: depositorAddr,
+      nonceKey: key,
+      nonce,
+      depositId: computeDepositId(
+        BigInt(this.config.chainId),
+        this.config.custodyAddress,
+        depositorAddr,
+        nonce,
+      ),
+    };
+
     if (asset === "") {
-      const amount = decimalToBaseUnits(input.amount, this.nativeDecimals);
-      return this.submitNativeDeposit(destination, amount, options);
+      return this.submitNativeDeposit(destination, amount, identity, options);
     }
-    const amount = decimalToBaseUnits(
-      input.amount,
-      await this.assetDecimals(asset),
-    );
-    return this.submitErc20Deposit(destination, asset, amount, options);
+    return this.submitErc20Deposit(destination, asset, amount, identity, options);
   }
 
-  async verifyDeposit(
-    txID: string,
+  // Fetches the receipt at txHash and finds the vault's Deposited log whose
+  // depositor and nonce reproduce depositId. Pure on-chain read: custody's
+  // crediting rules are not applied, so "confirmed" does not guarantee a credit.
+  async chainDepositStatus(
+    txHash: string,
+    depositId: string,
     minConfirmations: bigint | number,
   ): Promise<DepositStatus> {
-    const parsedTxID = requireTxID(txID);
+    const hash = requireTxHash(txHash);
+    const wantId = requireDepositId(depositId).toLowerCase();
     const minConf = normalizeMinConfirmations(minConfirmations);
     await this.ensurePublicChain();
 
     let receipt: TransactionReceipt;
     try {
       receipt = await this.config.publicClient.getTransactionReceipt({
-        hash: parsedTxID.hash,
+        hash,
       });
     } catch (error) {
       if (!isTransactionNotFound(error)) {
@@ -102,16 +165,14 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
           cause: error,
         });
       }
-      return this.pendingOrAbsent(parsedTxID.hash);
+      return this.pendingOrAbsent(hash);
     }
 
     if (receipt.status !== "success") {
       return "absent";
     }
-    if (
-      parsedTxID.logIndex !== undefined &&
-      !hasDepositedLog(receipt, this.config.custodyAddress, parsedTxID.logIndex)
-    ) {
+    const chainId = BigInt(this.config.chainId);
+    if (!hasDepositedLog(receipt, this.config.custodyAddress, chainId, wantId)) {
       return "absent";
     }
 
@@ -133,74 +194,122 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
     return confirmations >= minConf ? "confirmed" : "pending";
   }
 
+  private async readNonce(depositor: Address, key: bigint): Promise<bigint> {
+    try {
+      return await this.config.publicClient.readContract({
+        address: this.config.custodyAddress,
+        abi: custodyAbi,
+        functionName: "getNonce",
+        args: [depositor, key],
+      });
+    } catch (error) {
+      throw new ClearnetSdkError("RPC_ERROR", "evm: get nonce", {
+        cause: error,
+      });
+    }
+  }
+
   private async submitNativeDeposit(
     destination: ValidatedDepositDestination,
     amount: bigint,
+    identity: DepositIdentity,
     options: SubmitDepositOptions,
-  ): Promise<string> {
-    const hash = await this.writeContractRpc(() =>
-      this.config.walletClient.writeContract({
-        address: this.config.custodyAddress,
-        abi: custodyAbi,
-        functionName: "deposit",
-        args: [destination.account, zeroAddress, amount, destination.ref],
-        value: amount,
-        account: this.config.walletAccount,
-        chain: this.config.walletClient.chain ?? null,
-      }),
+  ): Promise<SubmitDepositResult> {
+    const hash = await this.writeContractRpc(
+      () =>
+        this.config.walletClient.writeContract({
+          address: this.config.custodyAddress,
+          abi: custodyAbi,
+          functionName: "deposit",
+          args: [
+            destination.account,
+            zeroAddress,
+            amount,
+            destination.ref,
+            identity.nonce,
+          ],
+          value: amount,
+          account: this.config.walletAccount,
+          chain: this.config.walletClient.chain ?? null,
+        }),
+      "deposit",
+      identity,
     );
-    const receipt = await this.waitForSuccessfulReceipt(hash, hash, options);
-    const txID = depositTxID(
-      receipt,
-      this.config.custodyAddress,
-      destination.account,
-      zeroAddress,
-      amount,
-      destination.ref,
-    );
-    options.onSubmitted?.(txID);
-    return txID;
+    await this.waitForDeposit(hash, identity, options);
+    const result: SubmitDepositResult = { txHash: hash, depositId: identity.depositId };
+    options.onSubmitted?.(result);
+    return result;
   }
 
   private async submitErc20Deposit(
     destination: ValidatedDepositDestination,
     asset: Address,
     amount: bigint,
+    identity: DepositIdentity,
     options: SubmitDepositOptions,
-  ): Promise<string> {
-    const approvalHash = await this.writeContractRpc(() =>
-      this.config.walletClient.writeContract({
+  ): Promise<SubmitDepositResult> {
+    // Approve exactly amount unless the allowance already covers it.
+    // Known gap: a nonzero allowance below amount still sends a
+    // nonzero-to-nonzero approve, which USDT-style tokens reject; reset the
+    // allowance to zero first.
+    const currentAllowance = await this.readAllowance(asset, identity);
+    if (currentAllowance < amount) {
+      const approvalHash = await this.writeContractRpc(
+        () =>
+          this.config.walletClient.writeContract({
+            address: asset,
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [this.config.custodyAddress, amount],
+            account: this.config.walletAccount,
+            chain: this.config.walletClient.chain ?? null,
+          }),
+        "approve",
+        identity,
+      );
+      await this.waitForSuccessfulReceipt(approvalHash, "approve", identity, options);
+    }
+
+    const depositHash = await this.writeContractRpc(
+      () =>
+        this.config.walletClient.writeContract({
+          address: this.config.custodyAddress,
+          abi: custodyAbi,
+          functionName: "deposit",
+          args: [destination.account, asset, amount, destination.ref, identity.nonce],
+          account: this.config.walletAccount,
+          chain: this.config.walletClient.chain ?? null,
+        }),
+      "deposit",
+      identity,
+    );
+    await this.waitForDeposit(depositHash, identity, options);
+    const result: SubmitDepositResult = {
+      txHash: depositHash,
+      depositId: identity.depositId,
+    };
+    options.onSubmitted?.(result);
+    return result;
+  }
+
+  private async readAllowance(
+    asset: Address,
+    identity: DepositIdentity,
+  ): Promise<bigint> {
+    try {
+      return await this.config.publicClient.readContract({
         address: asset,
         abi: erc20Abi,
-        functionName: "approve",
-        args: [this.config.custodyAddress, amount],
-        account: this.config.walletAccount,
-        chain: this.config.walletClient.chain ?? null,
-      }),
-    );
-    await this.waitForSuccessfulReceipt(approvalHash, approvalHash, options);
-
-    const depositHash = await this.writeContractRpc(() =>
-      this.config.walletClient.writeContract({
-        address: this.config.custodyAddress,
-        abi: custodyAbi,
-        functionName: "deposit",
-        args: [destination.account, asset, amount, destination.ref],
-        account: this.config.walletAccount,
-        chain: this.config.walletClient.chain ?? null,
-      }),
-    );
-    const receipt = await this.waitForSuccessfulReceipt(depositHash, depositHash, options);
-    const txID = depositTxID(
-      receipt,
-      this.config.custodyAddress,
-      destination.account,
-      asset,
-      amount,
-      destination.ref,
-    );
-    options.onSubmitted?.(txID);
-    return txID;
+        functionName: "allowance",
+        args: [identity.depositor, this.config.custodyAddress],
+      });
+    } catch (error) {
+      throw new ClearnetSdkError("RPC_ERROR", "evm: read allowance", {
+        step: "approve",
+        ...identityFields(identity),
+        cause: error,
+      });
+    }
   }
 
   private async assetDecimals(asset: Address): Promise<number> {
@@ -294,22 +403,96 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
     }
   }
 
-  private async writeContractRpc(write: () => Promise<Hash>): Promise<Hash> {
+  // writeContractRpc wraps a write call so its error carries step, nonceKey,
+  // nonce and depositId. viem's writeContract signs and sends atomically, so
+  // no txHash is available when it throws: read getNonce(depositor, nonceKey)
+  // at `latest`; a value above the error's nonce means that deposit landed,
+  // otherwise a retry is safe.
+  private async writeContractRpc(
+    write: () => Promise<Hash>,
+    step: "approve" | "deposit",
+    identity: DepositIdentity,
+  ): Promise<Hash> {
     try {
       return await write();
     } catch (error) {
       if (error instanceof ClearnetSdkError) {
         throw error;
       }
-      throw new ClearnetSdkError("RPC_ERROR", "evm: write contract", {
+      if (step === "deposit" && isStaleNonceRevert(error)) {
+        throw new ClearnetSdkError("STALE_NONCE", `evm: write contract (${step})`, {
+          step,
+          ...identityFields(identity),
+          cause: error,
+        });
+      }
+      throw new ClearnetSdkError("RPC_ERROR", `evm: write contract (${step})`, {
+        step,
+        ...identityFields(identity),
         cause: error,
       });
     }
   }
 
+  // waitForDeposit waits for the deposit transaction, then requires the
+  // vault's Deposited log for identity.depositId. A mined revert is
+  // STALE_NONCE when a fresh getNonce shows the nonce was consumed, else
+  // TX_REVERTED.
+  private async waitForDeposit(
+    hash: Hash,
+    identity: DepositIdentity,
+    options: SubmitDepositOptions,
+  ): Promise<void> {
+    let receipt: TransactionReceipt;
+    try {
+      receipt = await this.waitForSuccessfulReceipt(hash, "deposit", identity, options);
+    } catch (error) {
+      if (
+        error instanceof ClearnetSdkError &&
+        error.code === "TX_REVERTED" &&
+        (await this.nonceConsumed(identity))
+      ) {
+        throw new ClearnetSdkError(
+          "STALE_NONCE",
+          `evm: deposit reverted; nonce already consumed (tx=${hash})`,
+          { txHash: hash, step: "deposit", ...identityFields(identity), cause: error },
+        );
+      }
+      throw error;
+    }
+    const chainId = BigInt(this.config.chainId);
+    if (
+      !hasDepositedLog(
+        receipt,
+        this.config.custodyAddress,
+        chainId,
+        identity.depositId.toLowerCase(),
+      )
+    ) {
+      throw new ClearnetSdkError(
+        "DEPOSIT_EVENT_NOT_FOUND",
+        `evm: deposited event not found (tx=${hash})`,
+        { txHash: hash, step: "deposit", ...identityFields(identity) },
+      );
+    }
+  }
+
+  // nonceConsumed reports whether the vault's counter for identity's key has
+  // moved past identity.nonce. A failed read counts as not consumed, so the
+  // original error is kept.
+  private async nonceConsumed(identity: DepositIdentity): Promise<boolean> {
+    try {
+      const current = await this.readNonce(identity.depositor, identity.nonceKey);
+      return current > identity.nonce;
+    } catch {
+      return false;
+    }
+  }
+
   private async waitForSuccessfulReceipt(
     hash: Hash,
-    txID: string | undefined,
+    step: "approve" | "deposit",
+    identity: DepositIdentity,
     options: SubmitDepositOptions,
   ): Promise<TransactionReceipt> {
     const timeoutMs = requireReceiptTimeout(
@@ -321,15 +504,19 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
         () => this.config.publicClient.waitForTransactionReceipt({ hash }),
         timeoutMs,
         options.signal,
-        txID,
+        hash,
+        step,
+        identity,
       );
     } catch (error) {
       if (error instanceof ClearnetSdkError) {
         throw error;
       }
-      throw new ClearnetSdkError("RPC_ERROR", "evm: wait receipt", {
+      throw new ClearnetSdkError("RPC_ERROR", `evm: wait receipt (${step})`, {
         cause: error,
-        ...(txID !== undefined ? { txID } : {}),
+        txHash: hash,
+        step,
+        ...identityFields(identity),
       });
     }
 
@@ -337,55 +524,35 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
       throw new ClearnetSdkError(
         "TX_REVERTED",
         `transaction reverted (tx=${hash})`,
-        txID !== undefined ? { txID } : {},
+        { txHash: hash, step, ...identityFields(identity) },
       );
     }
     return receipt;
   }
 }
 
-function depositTxID(
-  receipt: TransactionReceipt,
-  custodyAddress: Address,
-  account: Address,
-  asset: Address,
-  amount: bigint,
-  reference: Hash,
-): string {
-  const log = parseEventLogs({
-    abi: custodyAbi,
-    eventName: "Deposited",
-    logs: [...receipt.logs],
-  }).find(
-    (candidate) =>
-      candidate.address.toLowerCase() === custodyAddress.toLowerCase() &&
-      candidate.args.account.toLowerCase() === account.toLowerCase() &&
-      candidate.args.depositReference.toLowerCase() === reference.toLowerCase() &&
-      candidate.args.asset.toLowerCase() === asset.toLowerCase() &&
-      candidate.args.amount === amount,
-  );
-  if (log === undefined) {
-    throw new ClearnetSdkError("RPC_ERROR", "evm: deposited event not found", {
-      txID: receipt.transactionHash,
-    });
-  }
-  return `${log.transactionHash}/${log.logIndex}`;
-}
-
 function hasDepositedLog(
   receipt: TransactionReceipt,
   custodyAddress: Address,
-  logIndex: number,
+  chainId: bigint,
+  wantDepositIdLower: string,
 ): boolean {
   return parseEventLogs({
     abi: custodyAbi,
     eventName: "Deposited",
     logs: [...receipt.logs],
-  }).some(
-    (log) =>
-      log.address.toLowerCase() === custodyAddress.toLowerCase() &&
-      log.logIndex === logIndex,
-  );
+  }).some((log) => {
+    if (log.address.toLowerCase() !== custodyAddress.toLowerCase()) {
+      return false;
+    }
+    const gotId = computeDepositId(
+      chainId,
+      custodyAddress,
+      log.args.depositor,
+      log.args.nonce,
+    );
+    return gotId.toLowerCase() === wantDepositIdLower;
+  });
 }
 
 function captureValidation(validation: Promise<void>): AsyncValidation {
@@ -411,14 +578,16 @@ async function waitWithControls(
   wait: () => Promise<TransactionReceipt>,
   timeoutMs: number,
   signal: AbortSignal | undefined,
-  ref: string | undefined,
+  hash: Hash,
+  step: "approve" | "deposit",
+  identity: DepositIdentity,
 ): Promise<TransactionReceipt> {
   if (signal?.aborted) {
-    throw new ClearnetSdkError(
-      "RECEIPT_TIMEOUT",
-      "receipt wait aborted",
-      ref !== undefined ? { txID: ref } : {},
-    );
+    throw new ClearnetSdkError("RECEIPT_TIMEOUT", "receipt wait aborted", {
+      txHash: hash,
+      step,
+      ...identityFields(identity),
+    });
   }
 
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -430,7 +599,7 @@ async function waitWithControls(
         new ClearnetSdkError(
           "RECEIPT_TIMEOUT",
           `receipt wait timed out after ${timeoutMs}ms`,
-          ref !== undefined ? { txID: ref } : {},
+          { txHash: hash, step, ...identityFields(identity) },
         ),
       );
     }, timeoutMs);
@@ -442,11 +611,11 @@ async function waitWithControls(
       : new Promise<never>((_, reject) => {
           abortHandler = () => {
             reject(
-              new ClearnetSdkError(
-                "RECEIPT_TIMEOUT",
-                "receipt wait aborted",
-                ref !== undefined ? { txID: ref } : {},
-              ),
+              new ClearnetSdkError("RECEIPT_TIMEOUT", "receipt wait aborted", {
+                txHash: hash,
+                step,
+                ...identityFields(identity),
+              }),
             );
           };
           signal.addEventListener("abort", abortHandler, { once: true });

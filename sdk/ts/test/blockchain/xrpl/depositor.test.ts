@@ -22,6 +22,7 @@ import type {
   Bytes32Hex,
   DepositStatus,
   SubmitDepositOptions,
+  SubmitDepositResult,
   VaultDepositor,
   XrplDepositDestination,
   XrplIssuedDepositInput,
@@ -43,6 +44,7 @@ const REFERENCE =
 const HASH_RAW =
   "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
 const HASH_REF = HASH_RAW;
+const DEPOSIT_ID = HASH_RAW.toLowerCase();
 const TX_BLOB = "1200002280000000240000000161400000000000000A68400000000000000C";
 const MEMO_TYPE = "796e65742d6163636f756e74";
 
@@ -94,7 +96,10 @@ describe("XrplVaultDepositor", () => {
       amount: string;
       destination: XrplDepositDestination;
     }>().toMatchTypeOf<XrplSubmitDepositInput>();
-    expectTypeOf<string>().toEqualTypeOf<string>();
+    expectTypeOf<SubmitDepositResult>().toEqualTypeOf<{
+      txHash: string;
+      depositId: string;
+    }>();
     expectTypeOf<DepositStatus>().toEqualTypeOf<
       "absent" | "pending" | "confirmed"
     >();
@@ -166,7 +171,7 @@ describe("XrplVaultDepositor", () => {
     expect(client.submit).toHaveBeenCalledExactlyOnceWith(TX_BLOB, {
       autofill: false,
     });
-    expect(ref).toEqual(HASH_REF);
+    expect(ref).toEqual({ txHash: HASH_REF, depositId: DEPOSIT_ID });
     expect(onSubmitted).toHaveBeenCalledExactlyOnceWith(ref);
   });
 
@@ -203,7 +208,7 @@ describe("XrplVaultDepositor", () => {
         amount: "1",
         destination: { account: ACCOUNT },
       }),
-    ).resolves.toEqual(HASH_REF);
+    ).resolves.toEqual({ txHash: HASH_REF, depositId: DEPOSIT_ID });
 
     expect(client.request).not.toHaveBeenCalled();
   });
@@ -406,7 +411,7 @@ describe("XrplVaultDepositor", () => {
         amount: "1",
         destination: { account: ACCOUNT },
       }),
-    ).rejects.toMatchObject({ code: "TX_REVERTED", txID: HASH_REF });
+    ).rejects.toMatchObject({ code: "TX_REVERTED", txHash: HASH_REF });
 
     signer.sign.mockResolvedValueOnce({ txBlob: TX_BLOB, hash: "not-a-hash" });
     await expect(
@@ -422,45 +427,100 @@ describe("XrplVaultDepositor", () => {
     const depositor = createDepositor(createSigner());
 
     client.request.mockResolvedValueOnce(txResponse(true));
-    await expect(depositor.verifyDeposit(HASH_REF, 100)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(HASH_REF, DEPOSIT_ID, 100)).resolves.toBe(
       "confirmed",
     );
 
     client.request.mockResolvedValueOnce(txResponse(true));
-    await expect(depositor.verifyDeposit(HASH_REF, 1n << 80n)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(HASH_REF, DEPOSIT_ID, 1n << 80n)).resolves.toBe(
       "confirmed",
     );
 
     client.request.mockResolvedValueOnce(txResponse(false));
-    await expect(depositor.verifyDeposit(HASH_REF, 1n)).resolves.toBe("pending");
+    await expect(depositor.chainDepositStatus(HASH_REF, DEPOSIT_ID, 1n)).resolves.toBe("pending");
 
     client.request.mockRejectedValueOnce({
       message: "Transaction not found.",
       data: { error: "txnNotFound" },
     });
-    await expect(depositor.verifyDeposit(HASH_REF, 0)).resolves.toBe("absent");
+    await expect(depositor.chainDepositStatus(HASH_REF, DEPOSIT_ID, 0)).resolves.toBe("absent");
 
     const rpcError = new Error("node offline");
     client.request.mockRejectedValueOnce(rpcError);
-    await expect(depositor.verifyDeposit(HASH_REF, 0)).rejects.toMatchObject({
+    await expect(depositor.chainDepositStatus(HASH_REF, DEPOSIT_ID, 0)).rejects.toMatchObject({
       code: "RPC_ERROR",
       cause: rpcError,
     });
+  });
+
+  it("reads a transaction that is not a vault deposit as absent", async () => {
+    const depositor = createDepositor(createSigner());
+    const zeroAccountMemo = depositMemo(MEMO_TYPE, `${"0".repeat(40)}${REFERENCE.slice(2)}`);
+    const cases: [string, TxResponse][] = [
+      ["failed validated tx", txResponse(true, {}, "tecPATH_DRY")],
+      ["not a Payment", txResponse(true, { TransactionType: "TrustSet" })],
+      ["wrong destination", txResponse(true, { Destination: ISSUER_ADDRESS })],
+      ["sent by the vault", txResponse(true, { Account: VAULT_ADDRESS })],
+      ["no memos", txResponse(true, { Memos: undefined })],
+      ["other memo type", txResponse(true, { Memos: [depositMemo("74657374")] })],
+      ["zero account memo", txResponse(true, { Memos: [zeroAccountMemo] })],
+      ["short memo data", txResponse(true, { Memos: [depositMemo(MEMO_TYPE, ACCOUNT_NO_PREFIX)] })],
+      ["unvalidated, missing memo", txResponse(false, { Memos: [] })],
+      ["first well-formed memo is zero", txResponse(true, { Memos: [zeroAccountMemo, depositMemo()] })],
+    ];
+    for (const [name, response] of cases) {
+      client.request.mockResolvedValueOnce(response);
+      await expect(
+        depositor.chainDepositStatus(HASH_REF, DEPOSIT_ID, 0),
+        name,
+      ).resolves.toBe("absent");
+    }
+  });
+
+  it("accepts a well-formed ynet-account memo after malformed ones, in any hex case", async () => {
+    const depositor = createDepositor(createSigner());
+
+    client.request.mockResolvedValueOnce(
+      txResponse(true, {
+        Memos: [
+          depositMemo("74657374"),
+          depositMemo(MEMO_TYPE, "zz"),
+          depositMemo(MEMO_TYPE.toUpperCase()),
+        ],
+      }),
+    );
+    await expect(depositor.chainDepositStatus(HASH_REF, DEPOSIT_ID, 0)).resolves.toBe(
+      "confirmed",
+    );
+  });
+
+  it("rejects a deposit ID that is not the lower-cased tx hash before tx lookup", async () => {
+    const depositor = createDepositor(createSigner());
+
+    for (const depositId of [HASH_REF, `0x${DEPOSIT_ID}`, `${DEPOSIT_ID}:0`, ""]) {
+      await expect(
+        depositor.chainDepositStatus(HASH_REF, depositId, 0),
+      ).rejects.toMatchObject({ code: "INVALID_DEPOSIT_ID" });
+    }
+    await expect(
+      depositor.chainDepositStatus(HASH_RAW.toLowerCase(), DEPOSIT_ID, 0),
+    ).resolves.toBe("confirmed");
+    expect(client.request).toHaveBeenCalledOnce();
   });
 
   it("validates tx refs and min confirmations before tx lookup", async () => {
     const depositor = createDepositor(createSigner());
 
     await expect(
-      depositor.verifyDeposit("0x1234", 0),
+      depositor.chainDepositStatus("0x1234", "0x1234", 0),
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
     await expect(
-      depositor.verifyDeposit("not-a-hash", 0),
+      depositor.chainDepositStatus("not-a-hash", "not-a-hash", 0),
     ).rejects.toMatchObject({ code: "INVALID_TX_ID" });
-    await expect(depositor.verifyDeposit(HASH_REF, -1)).rejects.toMatchObject({
+    await expect(depositor.chainDepositStatus(HASH_REF, DEPOSIT_ID, -1)).rejects.toMatchObject({
       code: "INVALID_CONFIRMATIONS",
     });
-    await expect(depositor.verifyDeposit(HASH_REF, 1.5)).rejects.toMatchObject({
+    await expect(depositor.chainDepositStatus(HASH_REF, DEPOSIT_ID, 1.5)).rejects.toMatchObject({
       code: "INVALID_CONFIRMATIONS",
       message: "minConfirmations must be a non-negative safe integer",
     });
@@ -500,7 +560,7 @@ describe("XrplVaultDepositor", () => {
     await depositor.disconnect();
 
     client.isConnected.mockReturnValueOnce(false);
-    await expect(depositor.verifyDeposit(HASH_REF, 0)).resolves.toBe(
+    await expect(depositor.chainDepositStatus(HASH_REF, DEPOSIT_ID, 0)).resolves.toBe(
       "confirmed",
     );
     expect(client.connect).toHaveBeenCalledOnce();
@@ -511,7 +571,7 @@ describe("XrplVaultDepositor", () => {
     client.connect.mockImplementationOnce(() => connect.promise);
     const depositor = createDepositor(createSigner());
 
-    const verification = depositor.verifyDeposit(HASH_REF, 0);
+    const verification = depositor.chainDepositStatus(HASH_REF, DEPOSIT_ID, 0);
     await Promise.resolve();
 
     const disconnect = depositor.disconnect();
@@ -594,15 +654,34 @@ function submitResponse(engineResult: string): SubmitResponse {
   } as unknown as SubmitResponse;
 }
 
-function txResponse(validated: boolean): TxResponse {
+function txResponse(
+  validated: boolean,
+  txJson: Record<string, unknown> = {},
+  transactionResult = "tesSUCCESS",
+): TxResponse {
   return {
     type: "response",
     result: {
       hash: HASH_RAW,
       validated,
-      tx_json: { TransactionType: "Payment" },
+      tx_json: {
+        TransactionType: "Payment",
+        Account: DEPOSITOR_ADDRESS,
+        Destination: VAULT_ADDRESS,
+        Amount: "10",
+        Memos: [depositMemo()],
+        ...txJson,
+      },
+      meta: { TransactionResult: transactionResult },
     },
   } as unknown as TxResponse;
+}
+
+function depositMemo(
+  memoType = MEMO_TYPE,
+  memoData = `${ACCOUNT_NO_PREFIX}${REFERENCE.slice(2)}`,
+): { Memo: { MemoType: string; MemoData: string } } {
+  return { Memo: { MemoType: memoType, MemoData: memoData } };
 }
 
 function deferred<T>(): {

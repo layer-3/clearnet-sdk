@@ -7,13 +7,16 @@ import { BITCOIN_NATIVE_ASSET, BitcoinVaultDepositor } from "../../../src/index.
 import type { BitcoinRpc, Bytes32Hex } from "../../../src/index.js";
 import { depositPayment, taggedRedeemScript } from "../../../src/blockchain/btc/address.js";
 import {
+  decodeMarkerScript,
   encodeMarkerPayload,
   encodeMarkerScript,
   GENERIC_DEPOSIT_TAG_HEX,
   GENERIC_DEPOSIT_TAG_PREIMAGE,
   MARKER_VERSION_1,
   MARKER_VERSION_2,
+  scanMarkerOutputs,
 } from "../../../src/blockchain/btc/marker.js";
+import type { BitcoinMarkerResult } from "../../../src/blockchain/btc/marker.js";
 import { networkParams } from "../../../src/blockchain/btc/networks.js";
 import { bytesToHex, hexToBytes } from "../../../src/core/bytes.js";
 
@@ -34,9 +37,32 @@ interface EncodeVector {
   expectError?: string;
 }
 
+interface ReadExpectation {
+  ok: boolean;
+  error?: string;
+  version?: number;
+  addressHex?: string;
+  referenceHex?: string;
+}
+
+interface DecodeVector {
+  case: string;
+  scriptHex: string;
+  expect: ReadExpectation;
+}
+
+interface ScanVector {
+  case: string;
+  scriptPubKeysHex: readonly string[];
+  expect: ReadExpectation;
+}
+
 interface VectorsFile {
   genericTag: { preimage: string; sha256Hex: string };
+  errorCodes: readonly string[];
   encode: readonly EncodeVector[];
+  decode: readonly DecodeVector[];
+  scan: readonly ScanVector[];
 }
 
 const vectors: VectorsFile = JSON.parse(readFileSync(VECTORS_PATH, "utf8"));
@@ -78,6 +104,23 @@ describe("BTC deposit marker vectors (pkg/blockchain/btc/marker/testdata/vectors
     expect(vector.scriptHex).toBeDefined();
     expect(bytesToHex(encodeMarkerPayload(marker))).toBe(vector.payloadHex);
     expect(bytesToHex(encodeMarkerScript(marker))).toBe(vector.scriptHex);
+  });
+
+  it("has decode and scan cases", () => {
+    expect(vectors.decode.length).toBeGreaterThan(0);
+    expect(vectors.scan.length).toBeGreaterThan(0);
+  });
+
+  it.each(vectors.decode)("decode: $case", (vector) => {
+    const result = decodeMarkerScript(hexToBytes(vector.scriptHex, "scriptHex"));
+    expectReadResult(result, vector.expect);
+  });
+
+  it.each(vectors.scan)("scan: $case", (vector) => {
+    const result = scanMarkerOutputs(
+      vector.scriptPubKeysHex.map((hex) => hexToBytes(hex, "scriptPubKeysHex")),
+    );
+    expectReadResult(result, vector.expect);
   });
 
   it("pins the TS generic tag preimage and hash against vectors.json", () => {
@@ -141,6 +184,23 @@ describe("BTC deposit marker vectors (pkg/blockchain/btc/marker/testdata/vectors
     expect(prepared.inputIndexesToSign).toEqual([0]);
   });
 });
+
+function expectReadResult(result: BitcoinMarkerResult, want: ReadExpectation): void {
+  if (!want.ok) {
+    expect(result).toEqual({ ok: false, error: want.error });
+    expect(vectors.errorCodes).toContain(want.error);
+    return;
+  }
+  expect(result.ok).toBe(true);
+  if (!result.ok) {
+    return;
+  }
+  expect(result.marker.version).toBe(want.version);
+  expect(bytesToHex(result.marker.address)).toBe(want.addressHex);
+  expect(
+    result.marker.reference === undefined ? undefined : bytesToHex(result.marker.reference),
+  ).toBe(want.referenceHex);
+}
 
 function markerOutput(tx: Transaction): { script: Uint8Array; amount: bigint } {
   for (let i = 0; i < tx.outputsLength; i += 1) {

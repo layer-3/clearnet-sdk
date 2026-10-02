@@ -107,7 +107,9 @@ change without a corresponding intentional code change is a red flag.
 ## Validate release artifacts
 
 Run `make check-evm-artifacts CUSTODY_SOURCE=/path/to/custody` against the checkout
-recorded in `custody-source-revision`. When artifacts change, validate the SDK
+recorded in `custody-source-revision`. The parity step compiles custody's
+contracts, so run `make evm-contracts` in that custody checkout first to fetch
+its Foundry dependencies. When artifacts change, validate the SDK
 artifact commit in custody CI, then update `custody-source-revision` and
 `validated-sdk-revision` together to record that source and artifact pair.
 
