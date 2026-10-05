@@ -25,6 +25,8 @@ const defaultTimeout = 15 * time.Second
 // host.Host. It is a stateless convenience: the caller is responsible for
 // making peerID reachable (adding it to the peerstore and/or dialing) before
 // the first send.
+// Sends, including ACK reads, time out after 15 seconds or the caller's earlier
+// deadline.
 type Client struct {
 	host    host.Host
 	peerID  peer.ID

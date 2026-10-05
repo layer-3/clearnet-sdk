@@ -17,9 +17,8 @@ import (
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
 
-// ClearingFinalityPolicyKey's v1 payload is abi.encode(uint64(K)). Its single
-// epoch is frozen for the registry's lifetime; live transitions need a new
-// protocol binding attestations to historical policy and membership snapshots.
+// ClearingFinalityPolicyKey identifies the Registry's fixed signing-cluster policy.
+// Its v1 payload is abi.encode(uint64(K)).
 var ClearingFinalityPolicyKey = crypto.Keccak256Hash([]byte("CLEARNET_FINALITY_POLICY_V1"))
 
 type ClearingPolicyReader interface {
@@ -41,13 +40,12 @@ func ClearingFinalityPolicyChecksum(k uint64) common.Hash {
 	return crypto.Keccak256Hash(payload[:])
 }
 
-// ReadRegistryFinalityPolicy reads all state at the same confirmed block.
-// legacyK is used ONLY for a deployed direct legacy registry without CONFIG().
-// RPC errors, an absent contract, or a broken advertised config never fall back.
-// A new registry's policy takes precedence over legacy YAML settings.
-// Legacy fallback supports direct Solidity registries only. Callers must not
-// enable it for proxies: selector absence in proxy bytecode cannot distinguish
-// an absent extension from a broken implementation getter.
+// ReadRegistryFinalityPolicy reads the signing cluster size at a confirmed block.
+// When CONFIG() exists, its Config must be Registry-owned with epoch 1 and a
+// known v1 checksum. The Registry must prevent later policy writes.
+// legacyK applies only to direct Solidity Registries without CONFIG(); missing
+// contracts, RPC failures, and invalid advertised policy return errors.
+// Proxies cannot use legacy fallback because their bytecode hides the getter.
 func ReadRegistryFinalityPolicy(ctx context.Context, r ClearingPolicyReader, registry common.Address, confirmations, legacyK uint64) (ClearingFinalityPolicy, error) {
 	var policy ClearingFinalityPolicy
 	if registry == (common.Address{}) || legacyK == 0 || legacyK > core.MaxClusterSize {

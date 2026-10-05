@@ -49,6 +49,9 @@ func NewClient(opts ClientOpts) *Client {
 // Authenticate runs the handshake against pid over h. With opts.Signer it
 // performs operator auth; otherwise passive auth with opts.IdentityKey. The
 // remote's HandleAuth marks us authenticated on success.
+// Success is reported after the server's admission callback returns.
+// Older servers close the stream on rejection too; upgrade them before relying
+// on this guarantee. Receipt servers must still enforce authentication.
 func (c *Client) Authenticate(ctx context.Context, h host.Host, pid peer.ID) error {
 	if pid == "" {
 		return fmt.Errorf("auth: empty peer id")
@@ -105,7 +108,7 @@ func (c *Client) requestPassive(s network.Stream) error {
 	})
 }
 
-// respond reads the challenge, builds the response, and writes it back.
+// respond sends the challenge response and waits for server completion.
 func respond(s network.Stream, build func([32]byte) (p2pproto.AuthResponse, error)) error {
 	var challenge p2pproto.AuthChallenge
 	var v cborx.Version
@@ -128,8 +131,6 @@ func respond(s network.Stream, build func([32]byte) (p2pproto.AuthResponse, erro
 	// No new wire fields: successful server completion is an orderly EOF,
 	// after its admission callback. A rejection resets the stream. Returning
 	// before completion races the first restricted receipt stream.
-	// This completion guarantee requires the updated Server.HandleAuth: legacy
-	// servers also close normally on rejection, which EOF cannot distinguish.
 	var extra [1]byte
 	n, err := s.Read(extra[:])
 	if n == 0 && err == io.EOF {

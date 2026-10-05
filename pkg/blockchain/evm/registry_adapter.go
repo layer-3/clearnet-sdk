@@ -57,10 +57,10 @@ func NewRegistryAdapter(ctx context.Context, client *ethclient.Client, registryA
 
 // ─── Write ───────────────────────────────────────────────────────────────────
 
-// Lock onboards a new operator: approves collateral, then calls
-// Registry.register (which mints the NodeID NFT into escrow and activates it).
-// Returns the freshly-minted tokenId. popSignature is verified on chain over
-// bls.RegistryProofOfPossessionDigest, binding chain, Registry, operator and both keys.
+// Lock approves collateral and calls Registry.register, which mints a NodeID
+// into escrow and activates it. It returns the token ID.
+// popSignature signs bls.RegistryProofOfPossessionDigest and is verified on chain.
+// The Registry must support the possessionSignature registration argument.
 func (a *RegistryAdapter) Lock(ctx context.Context, blsPubkeyG1 [2]*big.Int, blsPubkeyG2 [4]*big.Int, popSignature [2]*big.Int, maxPrice *big.Int) (uint32, error) {
 
 	floor, err := a.registry.FloorPrice(&bind.CallOpts{Context: ctx})

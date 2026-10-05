@@ -76,41 +76,9 @@ Common entry points:
 - `pkg/blockchain/sol`: Solana custody vault flows.
 - `pkg/blockchain/xrpl`: XRPL custody vault flows.
 - `pkg/blockchain/btc`: Bitcoin custody vault flows.
-
-The Go finality verifier accepts a trusted deployment-specific
-`ExpectedSigningClusterSize`. `evm.ReadRegistryFinalityPolicy` independently reads
-it from the validator Registry's optional `CONFIG()` extension at confirmed
-anchor state. Config ownership, frozen epoch 1 and canonical v1 checksum are
-validated; unavailable/invalid advertised state fails closed. The v1 payload is
-`abi.encode(uint64(K))` under `keccak256("CLEARNET_FINALITY_POLICY_V1")`. New
-clearnet Registries and custodydev fixtures initialize `5` for clustered clearnet (four
-distinct registered signatures on both attestations). Zero/omission preserves
-the legacy exact `K=1` policy; it does not accept arbitrary incoming `Block.K`.
-`core.BlockSigningClusterSize` remains `1` for source compatibility and is
-deprecated as a universal policy. Configure a verifier once, before use; never
-derive its expected quorum from received blocks. Wire encoding and signing
-preimages are unchanged. Legacy registries without `CONFIG()` alone permit the
-caller-supplied legacy default, preserving existing deployments without a
-migration. Live policy changes and historical membership binding are deferred.
-Published v0.7.0 does not expose this field or Registry policy reader.
-
-Legacy policy detection uses selector absence in runtime bytecode and an empty
-result/revert. It supports direct Solidity registries; callers must not use that
-fallback for proxies, whose bytecode cannot establish whether the implementation
-advertises a working `CONFIG()` getter. This reader verifies epoch 1 at startup;
-the owning Registry implementation must prevent subsequent finality-policy writes.
-
-Validator registration now requires `bls.RegistryProofOfPossessionDigest` and a
-Registry implementing the new `register`/`activate` proof arguments. The writer
-does not support legacy registration selectors; compatible finality verification
-does not make old Registries compatible with the new onboarding writer.
-
-Authentication waits for server callback completion before returning. Upgrade
-auth servers before relying on this guarantee: older servers close normally for
-rejection too, so the unchanged `/ynp/auth/1.0.0` protocol cannot distinguish that
-case from success. Receipt admission must still enforce authenticated connection
-state at the server. Receipt ACK reads are bounded by the caller deadline or the
-SDK's 15-second timeout, whichever is earlier.
+- `pkg/finality`: finalized withdrawal verification. Set
+  `ExpectedSigningClusterSize` from `evm.ReadRegistryFinalityPolicy` before
+  verifying withdrawals.
 
 Run the Go checks:
 

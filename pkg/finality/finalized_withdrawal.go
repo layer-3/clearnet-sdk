@@ -24,6 +24,7 @@ type FinalizedWithdrawalVerifier struct {
 	// not its signature threshold (which is floor(2K/3)+1). Zero preserves
 	// the legacy K=1 policy for existing callers. Clustered deployments must
 	// explicitly select their K; never populate this from an incoming block.
+	// Set this before the first Verify call and leave it unchanged while in use.
 	ExpectedSigningClusterSize uint64
 }
 
