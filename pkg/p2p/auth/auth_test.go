@@ -93,16 +93,53 @@ func TestAuth_OperatorRejectedBySignerSource(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// The client side returns nil — it does not wait for the server's verdict;
-	// rejection is observed by the server never invoking onAuth.
-	if err := NewClient(ClientOpts{Signer: signer, IssuerID: testIssuerID}).Authenticate(ctx, cli, srv.ID()); err != nil {
-		t.Fatalf("Authenticate: %v", err)
+	if err := NewClient(ClientOpts{Signer: signer, IssuerID: testIssuerID}).Authenticate(ctx, cli, srv.ID()); err == nil {
+		t.Fatal("client did not observe operator rejection")
 	}
 	select {
 	case r := <-results:
 		t.Fatalf("expected rejection, but server authenticated %+v", r)
 	case <-time.After(time.Second):
 		// expected: no callback
+	}
+}
+
+func TestAuth_WaitsForAdmissionCallback(t *testing.T) {
+	srv, cli := newPair(t, nil)
+	signer := sign.NewKeySignerFromECDSA(mustKey(t))
+	addr, err := sign.EthAddress(signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	NewServer(testSignerSource{sets: map[common.Address]core.ReceiptSignerState{
+		testIssuerID: {Signers: []common.Address{addr}, Threshold: 1},
+	}}, func(network.Conn, Result) {
+		close(entered)
+		<-release
+	}, nil).Register(srv)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- NewClient(ClientOpts{Signer: signer, IssuerID: testIssuerID}).Authenticate(ctx, cli, srv.ID())
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("server did not reach admission callback")
+	}
+	// A still-running callback must not be reported as success. Waiting is
+	// bounded by the caller's deadline, even though stream opening succeeded.
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("auth succeeded before admission callback completed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("auth completion read ignored its deadline")
 	}
 }
 
@@ -126,8 +163,8 @@ func TestAuth_OperatorRejectedByTrustedIssuerFilter(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := NewClient(ClientOpts{Signer: signer, IssuerID: testIssuerID}).Authenticate(ctx, cli, srv.ID()); err != nil {
-		t.Fatalf("Authenticate: %v", err)
+	if err := NewClient(ClientOpts{Signer: signer, IssuerID: testIssuerID}).Authenticate(ctx, cli, srv.ID()); err == nil {
+		t.Fatal("client did not observe issuer rejection")
 	}
 	select {
 	case r := <-results:
@@ -195,8 +232,8 @@ func TestAuth_PassiveRejectedWhenSignerSourceConfigured(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := NewClient(ClientOpts{IdentityKey: priv}).Authenticate(ctx, cli, srv.ID()); err != nil {
-		t.Fatalf("Authenticate: %v", err)
+	if err := NewClient(ClientOpts{IdentityKey: priv}).Authenticate(ctx, cli, srv.ID()); err == nil {
+		t.Fatal("client did not observe passive rejection")
 	}
 	select {
 	case r := <-results:

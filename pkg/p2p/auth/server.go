@@ -92,6 +92,7 @@ func (s *Server) HandleAuth(stream network.Stream) {
 	res, err := s.verify(ctx, stream, conn.RemotePublicKey())
 	if err != nil {
 		s.logger.Debug("auth handshake failed", "peer", conn.RemotePeer().ShortString(), "error", err)
+		_ = stream.Reset()
 		return
 	}
 	s.logger.Info("peer authenticated", "peer", conn.RemotePeer().ShortString(), "address", res.Address, "role", res.Role.String())

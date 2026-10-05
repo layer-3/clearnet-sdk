@@ -204,8 +204,8 @@ type RegistryReader interface {
 //
 // `Lock` is a high-level onboarding helper: it calls `Registry.register`,
 // which mints a NodeID NFT directly into Registry escrow and locks collateral.
-// The `popSignature` parameter is accepted for source-compat but ignored on
-// chain (ADR-008 2026-05-08: PoP verification moved to off-chain tooling).
+// The `popSignature` must sign bls.RegistryProofOfPossessionDigest. Registry requires
+// it on chain; a legacy operator-only proof is not accepted.
 type RegistryWriter interface {
 	Lock(ctx context.Context, blsPubkeyG1 [2]*big.Int, blsPubkeyG2 [4]*big.Int, popSignature [2]*big.Int, maxPrice *big.Int) (uint32, error)
 	Unlock(ctx context.Context, tokenId uint32) error

@@ -72,6 +72,13 @@ func (c *Client) submit(ctx context.Context, proto string, body cbg.CBORMarshale
 		return p2pproto.ReceiptAck{}, fmt.Errorf("open stream %s: %w", proto, err)
 	}
 	defer s.Close()
+	// NewStream's context only bounds opening the stream. Bound ACK reads too,
+	// so an unavailable proposer cannot wedge the durable receipt retry worker.
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := s.SetDeadline(deadline); err != nil {
+			return p2pproto.ReceiptAck{}, fmt.Errorf("receipt stream deadline: %w", err)
+		}
+	}
 
 	var reqBuf bytes.Buffer
 	if err := cborx.WriteFrame(&reqBuf, cborx.V1, body); err != nil {

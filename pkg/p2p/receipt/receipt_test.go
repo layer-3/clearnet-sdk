@@ -8,6 +8,7 @@ import (
 
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
@@ -21,6 +22,26 @@ import (
 type testHandler struct {
 	burn func(context.Context, *core.BurnReceipt) (p2pproto.ReceiptAck, error)
 	mint func(context.Context, *core.MintReceipt) (p2pproto.ReceiptAck, error)
+}
+
+func TestReceipt_ClientBoundsMissingACK(t *testing.T) {
+	srv, cli := newPair(t)
+	done := make(chan struct{})
+	defer close(done)
+	srv.SetStreamHandler(protocol.ID(p2pproto.ProtocolMintReceipt), func(s network.Stream) {
+		defer s.Close()
+		_, _ = io.Copy(io.Discard, s)
+		<-done // a live remote that reads the request but never sends an ACK
+	})
+	c := NewClient(cli, srv.ID(), nil)
+	c.timeout = 100 * time.Millisecond
+	start := time.Now()
+	if _, err := c.SendMintReceipt(context.Background(), &core.MintReceipt{}); err == nil {
+		t.Fatal("missing ACK must fail, never imply acceptance")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("receipt timeout did not bound the ACK read: %s", elapsed)
+	}
 }
 
 func (h testHandler) OnBurnReceipt(ctx context.Context, r *core.BurnReceipt) (p2pproto.ReceiptAck, error) {

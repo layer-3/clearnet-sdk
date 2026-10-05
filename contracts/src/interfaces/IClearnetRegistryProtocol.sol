@@ -80,14 +80,21 @@ interface IClearnetRegistryProtocol is IClearnetRegistry {
     // ─── Operator lifecycle ───────────────────────────────────────
     /// @notice Self-funded registration: mint a fresh NodeID directly into
     ///         Registry escrow and activate it in one transaction.
-    function register(uint256[2] calldata blsPubkeyG1, uint256[4] calldata blsPubkeyG2, uint256 operatorCollateral)
-        external
-        returns (uint32 tokenId, bytes32 nodeId);
+    /// @dev possessionSignature signs keccak256(abi.encode(
+    /// keccak256("CLEARNET_REGISTRY_BLS_POP_V1"), block.chainid, address(this),
+    /// msg.sender, blsPubkeyG1, blsPubkeyG2)). Coordinates use EVM order.
+    function register(
+        uint256[2] calldata blsPubkeyG1,
+        uint256[4] calldata blsPubkeyG2,
+        uint256[2] calldata possessionSignature,
+        uint256 operatorCollateral
+    ) external returns (uint32 tokenId, bytes32 nodeId);
     /// @notice Lock a held slot NFT into the registry with BLS keys and collateral.
     function activate(
         uint32 tokenId,
         uint256[2] calldata blsPubkeyG1,
         uint256[4] calldata blsPubkeyG2,
+        uint256[2] calldata possessionSignature,
         uint256 operatorCollateral
     ) external returns (bytes32 nodeId);
     /// @notice Fund an active slot with additional collateral. Anyone can pay;

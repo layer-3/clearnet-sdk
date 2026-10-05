@@ -65,6 +65,11 @@ func (c *Client) Authenticate(ctx context.Context, h host.Host, pid peer.ID) err
 		return fmt.Errorf("open auth stream to %s: %w", pid.ShortString(), err)
 	}
 	defer s.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := s.SetDeadline(deadline); err != nil {
+			return fmt.Errorf("auth deadline: %w", err)
+		}
+	}
 
 	if c.opts.Signer != nil {
 		return c.requestOperator(ctx, s)
@@ -117,5 +122,21 @@ func respond(s network.Stream, build func([32]byte) (p2pproto.AuthResponse, erro
 	if err := cborx.WriteEnvelope(s, cborx.V1, &resp); err != nil {
 		return fmt.Errorf("send response: %w", err)
 	}
-	return nil
+	if err := s.CloseWrite(); err != nil {
+		return fmt.Errorf("finish auth response: %w", err)
+	}
+	// No new wire fields: successful server completion is an orderly EOF,
+	// after its admission callback. A rejection resets the stream. Returning
+	// before completion races the first restricted receipt stream.
+	// This completion guarantee requires the updated Server.HandleAuth: legacy
+	// servers also close normally on rejection, which EOF cannot distinguish.
+	var extra [1]byte
+	n, err := s.Read(extra[:])
+	if n == 0 && err == io.EOF {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("auth rejected or incomplete: %w", err)
+	}
+	return fmt.Errorf("unexpected auth completion payload")
 }

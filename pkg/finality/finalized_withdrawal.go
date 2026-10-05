@@ -20,6 +20,11 @@ type TrustedValidatorChecker interface {
 // envelope for a finalized withdrawal.
 type FinalizedWithdrawalVerifier struct {
 	TrustedValidators TrustedValidatorChecker
+	// ExpectedSigningClusterSize is the trusted deployment's exact Block.K,
+	// not its signature threshold (which is floor(2K/3)+1). Zero preserves
+	// the legacy K=1 policy for existing callers. Clustered deployments must
+	// explicitly select their K; never populate this from an incoming block.
+	ExpectedSigningClusterSize uint64
 }
 
 // VerifiedFinalizedWithdrawal is the trusted projection returned after all
@@ -44,8 +49,15 @@ func (v *FinalizedWithdrawalVerifier) Verify(fw *core.FinalizedWithdrawal) (*Ver
 	if v == nil || v.TrustedValidators == nil {
 		return nil, errors.New("finality: trusted validators required")
 	}
-	if fw.Block.K != core.BlockSigningClusterSize {
-		return nil, fmt.Errorf("finality: invalid signing quorum k=%d (want %d)", fw.Block.K, core.BlockSigningClusterSize)
+	expectedK := v.ExpectedSigningClusterSize
+	if expectedK == 0 {
+		expectedK = core.BlockSigningClusterSize
+	}
+	if expectedK > core.MaxClusterSize {
+		return nil, fmt.Errorf("finality: invalid expected signing cluster size k=%d (want 1..%d)", expectedK, core.MaxClusterSize)
+	}
+	if fw.Block.K != expectedK {
+		return nil, fmt.Errorf("finality: invalid signing cluster size k=%d (want %d)", fw.Block.K, expectedK)
 	}
 	if fw.FinalizedAt < fw.Block.SealedAt {
 		return nil, fmt.Errorf("finality: finalized_at %d before block sealed_at %d", fw.FinalizedAt, fw.Block.SealedAt)
@@ -110,7 +122,7 @@ func (v *FinalizedWithdrawalVerifier) Verify(fw *core.FinalizedWithdrawal) (*Ver
 
 func verifyAttestationWithChecker(message []byte, att core.Attestation, k uint64, checker TrustedValidatorChecker) error {
 	if k == 0 || k > core.MaxClusterSize {
-		return fmt.Errorf("invalid signing quorum k=%d (want 1..%d)", k, core.MaxClusterSize)
+		return fmt.Errorf("invalid signing cluster size k=%d (want 1..%d)", k, core.MaxClusterSize)
 	}
 	if err := verifyRosterTrusted(att.Validators, checker); err != nil {
 		return err
