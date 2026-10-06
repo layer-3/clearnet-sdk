@@ -92,6 +92,8 @@ func ReadRegistryFinalityPolicy(ctx context.Context, r RegistryPolicyReader, reg
 	result, err := r.CallContractAtHash(ctx, ethereum.CallMsg{To: &registry, Data: selector}, policy.ConfirmedHash)
 	// Unknown selectors on old Solidity registries revert without data. Require
 	// both that evidence and the selector's absence; do not mask a failing getter.
+	// TODO: Remove this deprecated legacy fallback after existing deployments
+	// migrate to Registry-owned finality policy.
 	if !bytes.Contains(code, selector) && !hasDelegateCall(code) && emptyRevert(err) {
 		policy.SigningClusterSize, policy.Legacy = legacyK, true
 		return policy, checkPolicyAnchor(ctx, r, block, policy.ConfirmedHash)

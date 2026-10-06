@@ -74,6 +74,8 @@ func (v *FinalizedWithdrawalVerifier) Verify(fw *core.FinalizedWithdrawal) (*Ver
 		expectedK = v.ExpectedSigningClusterSize
 	}
 	if expectedK == 0 {
+		// TODO: Remove this deprecated K=1 default after legacy callers migrate
+		// to NewFinalizedWithdrawalVerifier with an explicit trusted policy.
 		expectedK = 1 // Existing struct-literal callers use the legacy policy.
 	}
 	if expectedK > core.MaxClusterSize {
