@@ -25,6 +25,8 @@ const defaultTimeout = 15 * time.Second
 // host.Host. It is a stateless convenience: the caller is responsible for
 // making peerID reachable (adding it to the peerstore and/or dialing) before
 // the first send.
+// Sends, including ACK reads, time out after 15 seconds or the caller's earlier
+// deadline.
 type Client struct {
 	host    host.Host
 	peerID  peer.ID
@@ -60,7 +62,7 @@ func (c *Client) SendMintReceipt(ctx context.Context, r *core.MintReceipt) (p2pp
 }
 
 // submit is the shared transport path for both receipt kinds.
-func (c *Client) submit(ctx context.Context, proto string, body cbg.CBORMarshaler) (p2pproto.ReceiptAck, error) {
+func (c *Client) submit(ctx context.Context, proto string, body cbg.CBORMarshaler) (ack p2pproto.ReceiptAck, err error) {
 	if c.peerID == "" {
 		return p2pproto.ReceiptAck{}, fmt.Errorf("receipt: no peer configured")
 	}
@@ -72,6 +74,20 @@ func (c *Client) submit(ctx context.Context, proto string, body cbg.CBORMarshale
 		return p2pproto.ReceiptAck{}, fmt.Errorf("open stream %s: %w", proto, err)
 	}
 	defer s.Close()
+	stopReset := context.AfterFunc(ctx, func() { _ = s.Reset() })
+	defer func() {
+		stopReset()
+		if ctx.Err() != nil {
+			ack, err = p2pproto.ReceiptAck{}, ctx.Err()
+		}
+	}()
+	// NewStream's context only bounds opening the stream. Bound ACK reads too,
+	// so an unavailable proposer cannot wedge the durable receipt retry worker.
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := s.SetDeadline(deadline); err != nil {
+			return p2pproto.ReceiptAck{}, fmt.Errorf("receipt stream deadline: %w", err)
+		}
+	}
 
 	var reqBuf bytes.Buffer
 	if err := cborx.WriteFrame(&reqBuf, cborx.V1, body); err != nil {
@@ -84,7 +100,6 @@ func (c *Client) submit(ctx context.Context, proto string, body cbg.CBORMarshale
 		return p2pproto.ReceiptAck{}, fmt.Errorf("close write: %w", err)
 	}
 
-	var ack p2pproto.ReceiptAck
 	var v cborx.Version
 	if err := cborx.ReadFrame(io.LimitReader(s, int64(maxReceiptBytes)), cborx.MaxControlFrame, &v, &ack); err != nil {
 		return p2pproto.ReceiptAck{}, fmt.Errorf("decode ack: %w", err)

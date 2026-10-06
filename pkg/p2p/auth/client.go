@@ -49,7 +49,11 @@ func NewClient(opts ClientOpts) *Client {
 // Authenticate runs the handshake against pid over h. With opts.Signer it
 // performs operator auth; otherwise passive auth with opts.IdentityKey. The
 // remote's HandleAuth marks us authenticated on success.
-func (c *Client) Authenticate(ctx context.Context, h host.Host, pid peer.ID) error {
+// Success is reported after the server's admission callback returns.
+// Against older servers an authentication rejection can be reported as success;
+// there is no runtime version detection. Upgrade all servers before relying on
+// this guarantee. Receipt servers must still enforce authentication.
+func (c *Client) Authenticate(ctx context.Context, h host.Host, pid peer.ID) (err error) {
 	if pid == "" {
 		return fmt.Errorf("auth: empty peer id")
 	}
@@ -65,6 +69,18 @@ func (c *Client) Authenticate(ctx context.Context, h host.Host, pid peer.ID) err
 		return fmt.Errorf("open auth stream to %s: %w", pid.ShortString(), err)
 	}
 	defer s.Close()
+	stopReset := context.AfterFunc(ctx, func() { _ = s.Reset() })
+	defer func() {
+		stopReset()
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+	}()
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := s.SetDeadline(deadline); err != nil {
+			return fmt.Errorf("auth deadline: %w", err)
+		}
+	}
 
 	if c.opts.Signer != nil {
 		return c.requestOperator(ctx, s)
@@ -100,7 +116,7 @@ func (c *Client) requestPassive(s network.Stream) error {
 	})
 }
 
-// respond reads the challenge, builds the response, and writes it back.
+// respond sends the challenge response and waits for server completion.
 func respond(s network.Stream, build func([32]byte) (p2pproto.AuthResponse, error)) error {
 	var challenge p2pproto.AuthChallenge
 	var v cborx.Version
@@ -117,5 +133,19 @@ func respond(s network.Stream, build func([32]byte) (p2pproto.AuthResponse, erro
 	if err := cborx.WriteEnvelope(s, cborx.V1, &resp); err != nil {
 		return fmt.Errorf("send response: %w", err)
 	}
-	return nil
+	if err := s.CloseWrite(); err != nil {
+		return fmt.Errorf("finish auth response: %w", err)
+	}
+	// No new wire fields: successful server completion is an orderly EOF,
+	// after its admission callback. A rejection resets the stream. Returning
+	// before completion races the first restricted receipt stream.
+	var extra [1]byte
+	n, err := s.Read(extra[:])
+	if n == 0 && err == io.EOF {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("auth rejected or incomplete: %w", err)
+	}
+	return fmt.Errorf("unexpected auth completion payload")
 }

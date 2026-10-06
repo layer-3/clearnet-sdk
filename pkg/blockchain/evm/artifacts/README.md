@@ -39,6 +39,7 @@ Solidity source. The source trees are split three ways:
   is a local `forge build`, with no other repo in the loop:
   - `contracts/src/interfaces/IClearnetRegistry.sol` (issuer read subset) and
     `IClearnetRegistryProtocol.sol` (clearing-side superset).
+  - `IClearnetRegistryConfig.sol` (optional Registry-owned Config getter).
   - `contracts/src/ConfigRegistry.sol`, `contracts/src/Config.sol`, and their
     interfaces + `libraries/ConfigRegistryDigests.sol` — the per-issuer config
     governance surface every issuer implementation must satisfy.

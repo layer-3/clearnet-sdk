@@ -3,13 +3,16 @@ package evm
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"math/big"
 
+	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 
+	"github.com/layer-3/clearnet-sdk/pkg/bls"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
 
@@ -28,6 +31,9 @@ var (
 	_ core.RegistryReader = (*RegistryAdapter)(nil)
 	_ core.RegistryWriter = (*RegistryAdapter)(nil)
 )
+
+// ErrInvalidRegistryProof is returned before approval for a malformed or invalid PoP.
+var ErrInvalidRegistryProof = errors.New("invalid Registry proof of possession")
 
 // NewRegistryAdapter binds the registry at registryAddr through
 // IClearnetRegistryProtocol, and the staking token at tokenAddr, over client,
@@ -57,13 +63,22 @@ func NewRegistryAdapter(ctx context.Context, client *ethclient.Client, registryA
 
 // ─── Write ───────────────────────────────────────────────────────────────────
 
-// Lock onboards a new operator: approves collateral, then calls
-// Registry.register (which mints the NodeID NFT into escrow and activates it).
-// Returns the freshly-minted tokenId. popSignature is accepted for
-// source-compat but ignored on chain (ADR-008 2026-05-08).
+// Lock approves collateral and calls Registry.register, which mints a NodeID
+// into escrow and activates it. It returns the token ID.
+// popSignature signs bls.RegistryProofOfPossessionDigest and is verified on chain.
+// The Registry must support the possessionSignature registration argument.
+// Registries with the old three-argument register ABI are unsupported. Local
+// proof validation precedes approval; registration gas is estimated after
+// approval. An on-chain failure can still leave allowance: approval and register
+// are separate transactions, not an atomic operation.
 func (a *RegistryAdapter) Lock(ctx context.Context, blsPubkeyG1 [2]*big.Int, blsPubkeyG2 [4]*big.Int, popSignature [2]*big.Int, maxPrice *big.Int) (uint32, error) {
-	_ = popSignature
-
+	chainID, err := a.client.ChainID(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("registration chain ID: %w", err)
+	}
+	if err := validateRegistryProof(chainID, a.registryAddr, a.auth.From, blsPubkeyG1, blsPubkeyG2, popSignature); err != nil {
+		return 0, err
+	}
 	floor, err := a.registry.FloorPrice(&bind.CallOpts{Context: ctx})
 	if err != nil {
 		return 0, fmt.Errorf("floor price: %w", err)
@@ -82,8 +97,7 @@ func (a *RegistryAdapter) Lock(ctx context.Context, blsPubkeyG1 [2]*big.Int, bls
 	}
 
 	registerOpts := txOpts(a.auth, ctx)
-	registerOpts.GasLimit = 10_000_000
-	registerTx, err := a.registry.Register(registerOpts, blsPubkeyG1, blsPubkeyG2, collateral)
+	registerTx, err := a.registry.Register(registerOpts, blsPubkeyG1, blsPubkeyG2, popSignature, collateral)
 	if err != nil {
 		return 0, fmt.Errorf("register: %w", err)
 	}
@@ -99,6 +113,52 @@ func (a *RegistryAdapter) Lock(ctx context.Context, blsPubkeyG1 [2]*big.Int, bls
 		return 0, fmt.Errorf("parse NodeActivated: %w", err)
 	}
 	return tokenId, nil
+}
+
+func validateRegistryProof(chainID *big.Int, registry, operator common.Address, g1 [2]*big.Int, g2 [4]*big.Int, proof [2]*big.Int) error {
+	digest, err := bls.RegistryProofOfPossessionDigest(chainID, registry, operator, g1, g2)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRegistryProof, err)
+	}
+	var encoded [64]byte
+	for i, c := range proof {
+		if c == nil || c.Sign() < 0 || c.BitLen() > 256 {
+			return fmt.Errorf("%w: malformed signature", ErrInvalidRegistryProof)
+		}
+		c.FillBytes(encoded[i*32 : (i+1)*32])
+	}
+	sigma, err := bls.DeserializeG1(encoded[:])
+	if err != nil || sigma.IsInfinity() {
+		return fmt.Errorf("%w: invalid signature point", ErrInvalidRegistryProof)
+	}
+	var keyBytes [128]byte
+	for i, c := range g2 {
+		c.FillBytes(keyBytes[i*32 : (i+1)*32])
+	}
+	key, err := bls.DeserializeG2(keyBytes[:])
+	if err != nil || key.IsInfinity() {
+		return fmt.Errorf("%w: invalid public key", ErrInvalidRegistryProof)
+	}
+	valid, err := bls.Verify(sigma, key, digest)
+	if err != nil || !valid {
+		return fmt.Errorf("%w: signature does not verify", ErrInvalidRegistryProof)
+	}
+	// The proof binds both keys but must not authorize an inconsistent G1 key.
+	var g1Bytes [64]byte
+	for i, c := range g1 {
+		c.FillBytes(g1Bytes[i*32 : (i+1)*32])
+	}
+	pubG1, err := bls.DeserializeG1(g1Bytes[:])
+	if err != nil || pubG1.IsInfinity() {
+		return fmt.Errorf("%w: invalid G1 public key", ErrInvalidRegistryProof)
+	}
+	_, _, genG1, genG2 := bn254.Generators()
+	genG1.Neg(&genG1)
+	consistent, err := bn254.PairingCheck([]bn254.G1Affine{pubG1, genG1}, []bn254.G2Affine{genG2, key})
+	if err != nil || !consistent {
+		return fmt.Errorf("%w: inconsistent G1/G2 key", ErrInvalidRegistryProof)
+	}
+	return nil
 }
 
 func (a *RegistryAdapter) Unlock(ctx context.Context, tokenId uint32) error {

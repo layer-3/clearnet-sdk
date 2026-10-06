@@ -76,6 +76,9 @@ Common entry points:
 - `pkg/blockchain/sol`: Solana custody vault flows.
 - `pkg/blockchain/xrpl`: XRPL custody vault flows.
 - `pkg/blockchain/btc`: Bitcoin custody vault flows.
+- `pkg/finality`: finalized withdrawal verification. Pass the signing cluster
+  size from `evm.ReadRegistryFinalityPolicy` to
+  `finality.NewFinalizedWithdrawalVerifier` before verifying withdrawals.
 
 Run the Go checks:
 

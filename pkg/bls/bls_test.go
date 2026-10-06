@@ -285,14 +285,10 @@ func TestComputePopHash(t *testing.T) {
 	}
 }
 
-// TestComputePopHash_GoldenVectors pins B8's on-chain byte layout
-// against literal expected hashes. Spec: ADR-008 §WS-1 +
-// contracts/evm/src/Registry.sol:531 compute
-// keccak256(abi.encodePacked(msg.sender)) — which for a single address
-// is 20 raw address bytes, no 32-byte left-padding. A mutation from
-// addr.Bytes() to abi.encode(addr) (32-byte padded), to
-// []byte(addr.Hex()) (ASCII), or to keccak over addr+salt, all produce
-// different 32-byte outputs that this test catches.
+// TestComputePopHash_GoldenVectors pins the deprecated operator-only layout
+// for existing callers. The current Registry requires
+// RegistryProofOfPossessionDigest instead. This hash uses the 20 raw address
+// bytes, without the 32-byte padding of abi.encode(address).
 func TestComputePopHash_GoldenVectors(t *testing.T) {
 	cases := []struct {
 		addr   string
@@ -318,10 +314,8 @@ func TestComputePopHash_GoldenVectors(t *testing.T) {
 		var want [32]byte
 		copy(want[:], wantBytes)
 		if got != want {
-			t.Fatalf("ComputePopHash(%s) layout drift:\n  got  %x\n  want %x\n"+
-				"This indicates an abi.encode vs abi.encodePacked divergence from "+
-				"Registry.sol:531 — coordinate any change with the on-chain verifier.",
-				tc.addr, got, want)
+				t.Fatalf("ComputePopHash(%s) legacy layout drift:\n  got  %x\n  want %x",
+					tc.addr, got, want)
 		}
 	}
 }

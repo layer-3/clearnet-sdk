@@ -33,7 +33,8 @@ func (s mapValidatorChecker) IsTrustedValidator(pubkey []byte) bool {
 func TestFinalizedWithdrawalVerifier_Valid(t *testing.T) {
 	fw, validators := finalizedWithdrawalFixture(t)
 	verifier := &FinalizedWithdrawalVerifier{
-		TrustedValidators: newMapValidatorChecker(validators),
+		TrustedValidators:          newMapValidatorChecker(validators),
+		ExpectedSigningClusterSize: 5,
 	}
 
 	got, err := verifier.Verify(fw)
@@ -114,15 +115,18 @@ func TestFinalizedWithdrawalVerifier_RejectsBlockAttestationMismatch(t *testing.
 }
 
 func TestFinalizedWithdrawalVerifier_RejectsUnexpectedSigningClusterSize(t *testing.T) {
-	fw, validators := finalizedWithdrawalFixture(t)
-	fw.Block.K = core.BlockSigningClusterSize + 1
-	resignBlock(t, &fw.Block)
-	fw.BlockHash = fw.Block.Hash()
-	resignFinalizedWithdrawal(t, fw)
-
-	err := verifyFixtureFails(fw, validators)
-	if err == nil || !strings.Contains(err.Error(), "invalid signing quorum") {
-		t.Fatalf("expected signing cluster size rejection, got %v", err)
+	for _, k := range []uint64{1, 4, 6} {
+		t.Run(fmt.Sprintf("K=%d", k), func(t *testing.T) {
+			fw, validators := finalizedWithdrawalFixture(t)
+			fw.Block.K = k
+			resignBlock(t, &fw.Block)
+			fw.BlockHash = fw.Block.Hash()
+			resignFinalizedWithdrawal(t, fw)
+			err := verifyFixtureFails(fw, validators)
+			if err == nil || !strings.Contains(err.Error(), "invalid signing cluster size") {
+				t.Fatalf("expected signing cluster size rejection, got %v", err)
+			}
+		})
 	}
 }
 
@@ -140,7 +144,8 @@ func TestFinalizedWithdrawalVerifier_RejectsUnauthorizedValidator(t *testing.T) 
 	fw, validators := finalizedWithdrawalFixture(t)
 	trusted := newMapValidatorChecker(validators[:len(validators)-1])
 	verifier := &FinalizedWithdrawalVerifier{
-		TrustedValidators: trusted,
+		TrustedValidators:          trusted,
+		ExpectedSigningClusterSize: 5,
 	}
 
 	err := verifierErr(verifier, fw)
@@ -153,7 +158,8 @@ func TestFinalizedWithdrawalVerifier_RejectsDuplicateValidator(t *testing.T) {
 	fw, validators := finalizedWithdrawalFixture(t)
 	fw.Attestation.Validators[3] = append([]byte(nil), fw.Attestation.Validators[0]...)
 	verifier := &FinalizedWithdrawalVerifier{
-		TrustedValidators: newMapValidatorChecker(validators),
+		TrustedValidators:          newMapValidatorChecker(validators),
+		ExpectedSigningClusterSize: 5,
 	}
 
 	err := verifierErr(verifier, fw)
@@ -249,7 +255,8 @@ func TestFinalizedWithdrawalVerifier_RejectsFinalizedBeforeSealed(t *testing.T) 
 
 func verifyFixtureFails(fw *core.FinalizedWithdrawal, validators [][]byte) error {
 	verifier := &FinalizedWithdrawalVerifier{
-		TrustedValidators: newMapValidatorChecker(validators),
+		TrustedValidators:          newMapValidatorChecker(validators),
+		ExpectedSigningClusterSize: 5,
 	}
 	return verifierErr(verifier, fw)
 }
@@ -262,9 +269,13 @@ func verifierErr(verifier *FinalizedWithdrawalVerifier, fw *core.FinalizedWithdr
 var fixtureKeyPairs []*bls.KeyPair
 
 func finalizedWithdrawalFixture(t *testing.T) (*core.FinalizedWithdrawal, [][]byte) {
+	return finalizedWithdrawalFixtureForK(t, 5)
+}
+
+func finalizedWithdrawalFixtureForK(t *testing.T, k uint64) (*core.FinalizedWithdrawal, [][]byte) {
 	t.Helper()
 
-	const n = 5
+	n := int(k)
 	fixtureKeyPairs = make([]*bls.KeyPair, n)
 	validators := make([][]byte, n)
 	for i := range n {
@@ -290,12 +301,12 @@ func finalizedWithdrawalFixture(t *testing.T) (*core.FinalizedWithdrawal, [][]by
 		Entries:       []core.BlockEntry{entry},
 		EntriesDigest: core.ComputeEntriesDigest([]core.BlockEntry{entry}),
 		StateRoot:     [32]byte{0xbb},
-		K:             core.BlockSigningClusterSize,
+		K:             k,
 		Attestation: core.Attestation{
 			Validators: cloneValidators(validators),
 		},
 	}
-	setFixtureBitmask(&block.Attestation)
+	setFixtureBitmask(&block.Attestation, k)
 	resignBlock(t, &block)
 
 	blockHash := block.Hash()
@@ -318,15 +329,15 @@ func finalizedWithdrawalFixture(t *testing.T) (*core.FinalizedWithdrawal, [][]by
 			Validators: cloneValidators(validators),
 		},
 	}
-	setFixtureBitmask(&fw.Attestation)
+	setFixtureBitmask(&fw.Attestation, k)
 	resignFinalizedWithdrawal(t, fw)
 
 	return fw, validators
 }
 
-func setFixtureBitmask(att *core.Attestation) {
+func setFixtureBitmask(att *core.Attestation, k uint64) {
 	att.Bitmask = [32]byte{}
-	for _, i := range []int{0, 1, 2, 3} {
+	for i := 0; i < int(2*k/3+1); i++ {
 		core.SetBitmaskBit(&att.Bitmask, i)
 	}
 }
@@ -346,7 +357,10 @@ func signAttestation(t *testing.T, message []byte, att *core.Attestation) {
 	msgHash := crypto.Keccak256Hash(message)
 	sigmas := make([]bn254.G1Affine, 0, 4)
 	pubs := make([]bn254.G2Affine, 0, 4)
-	for _, i := range []int{0, 1, 2, 3} {
+	for i := range fixtureKeyPairs {
+		if !core.GetBitmaskBit(att.Bitmask, i) {
+			continue
+		}
 		sigma, err := bls.Sign(&fixtureKeyPairs[i].Secret, msgHash)
 		if err != nil {
 			t.Fatalf("Sign: %v", err)

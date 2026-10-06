@@ -45,6 +45,8 @@ jobs:
             > ../pkg/blockchain/evm/artifacts/ClearnetRegistry.abi
           jq '.abi' out/IClearnetRegistryProtocol.sol/IClearnetRegistryProtocol.json \
             > ../pkg/blockchain/evm/artifacts/ClearnetRegistryProtocol.abi
+          jq '.abi' out/IClearnetRegistryConfig.sol/IClearnetRegistryConfig.json \
+            > ../pkg/blockchain/evm/artifacts/ClearnetRegistryConfig.abi
           jq -r '.abi' out/ConfigRegistry.sol/ConfigRegistry.json \
             > ../pkg/blockchain/evm/artifacts/ConfigRegistry.abi
           jq -r '.bytecode.object' out/ConfigRegistry.sol/ConfigRegistry.json \

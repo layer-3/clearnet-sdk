@@ -12,13 +12,9 @@ import (
 )
 
 const (
-	// BlockSigningClusterSize is the exact signing-cluster size that custody
-	// currently requires in Block.K. It is the cluster size used to derive the
-	// signature threshold floor(2K/3)+1, not the threshold itself.
-	//
-	// SECURITY TODO(first-production): replace the single-validator
-	// pre-production value with the governed production signing-cluster size
-	// before the first production deployment.
+	// BlockSigningClusterSize preserves the legacy single-validator default.
+	// Deprecated: select ExpectedSigningClusterSize on the finality verifier
+	// from trusted deployment configuration, never from the received Block.K.
 	BlockSigningClusterSize uint64 = 1
 
 	// MaxClusterSize is the protocol upper bound on a block's signing cluster.
