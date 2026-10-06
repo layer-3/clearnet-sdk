@@ -342,8 +342,11 @@ func DeserializeG2(data []byte) (bn254.G2Affine, error) {
 	return pt, nil
 }
 
-// ComputePopHash computes the proof-of-possession message hash for a given operator address.
-// Matches the Solidity contract: keccak256(abi.encodePacked(msg.sender)).
+// ComputePopHash computes the legacy operator-only proof-of-possession hash:
+// keccak256(abi.encodePacked(operator)).
+//
+// Deprecated: Registry no longer accepts this digest. Use
+// RegistryProofOfPossessionDigest for Registry registration proofs.
 func ComputePopHash(operator common.Address) [32]byte {
 	return crypto.Keccak256Hash(operator.Bytes())
 }
