@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -15,8 +16,10 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
+	p2pproto "github.com/layer-3/clearnet-sdk/pkg/p2p/protocol"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
@@ -120,7 +123,7 @@ func TestAuth_WaitsForAdmissionCallback(t *testing.T) {
 		close(entered)
 		<-release
 	}, nil).Register(srv)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
@@ -128,18 +131,107 @@ func TestAuth_WaitsForAdmissionCallback(t *testing.T) {
 	}()
 	select {
 	case <-entered:
-	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
 		t.Fatal("server did not reach admission callback")
 	}
 	// A still-running callback must not be reported as success. Waiting is
 	// bounded by the caller's deadline, even though stream opening succeeded.
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("auth succeeded before admission callback completed")
+		var timeout net.Error
+		if !errors.Is(err, context.DeadlineExceeded) && !(errors.As(err, &timeout) && timeout.Timeout()) {
+			t.Fatalf("want deadline error while callback is running, got %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("auth completion read ignored its deadline")
+	}
+}
+
+func TestAuth_AdmissionRejectsAndPanics(t *testing.T) {
+	for _, mode := range []string{"reject", "panic"} {
+		t.Run(mode, func(t *testing.T) {
+			priv, _, err := libp2pcrypto.GenerateKeyPair(libp2pcrypto.Ed25519, -1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv, cli := newPair(t, priv)
+			NewServer(nil, nil, nil, WithAdmissionCallback(func(ctx context.Context, _ network.Conn, _ Result) error {
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("admission lacks deadline")
+				}
+				if mode == "panic" {
+					panic("admission panic")
+				}
+				return errors.New("admission refused")
+			})).Register(srv)
+			if err := NewClient(ClientOpts{IdentityKey: priv}).Authenticate(context.Background(), cli, srv.ID()); err == nil {
+				t.Fatal("unsuccessful admission reported as success")
+			}
+		})
+	}
+}
+
+func TestAuth_CancellationInterruptsOpenStream(t *testing.T) {
+	for _, phase := range []string{"challenge", "admission"} {
+		t.Run(phase, func(t *testing.T) {
+			priv, _, err := libp2pcrypto.GenerateKeyPair(libp2pcrypto.Ed25519, -1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv, cli := newPair(t, priv)
+			entered, release := make(chan struct{}), make(chan struct{})
+			defer close(release)
+			if phase == "challenge" {
+				srv.SetStreamHandler(protocol.ID(p2pproto.ProtocolAuth), func(s network.Stream) {
+					defer s.Close()
+					close(entered)
+					<-release
+				})
+			} else {
+				NewServer(nil, func(network.Conn, Result) { close(entered); <-release }, nil).Register(srv)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- NewClient(ClientOpts{IdentityKey: priv}).Authenticate(ctx, cli, srv.ID()) }()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("stream did not open")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancel error: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("cancellation did not interrupt stream")
+			}
+		})
+	}
+}
+
+func TestAuth_RejectsUnexpectedCompletionPayload(t *testing.T) {
+	priv, _, err := libp2pcrypto.GenerateKeyPair(libp2pcrypto.Ed25519, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, cli := newPair(t, priv)
+	server := NewServer(nil, nil, nil)
+	srv.SetStreamHandler(protocol.ID(p2pproto.ProtocolAuth), func(s network.Stream) {
+		defer s.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if _, err := server.verify(ctx, s, s.Conn().RemotePublicKey()); err != nil {
+			_ = s.Reset()
+			return
+		}
+		_, _ = s.Write([]byte{1})
+	})
+	err = NewClient(ClientOpts{IdentityKey: priv}).Authenticate(context.Background(), cli, srv.ID())
+	if err == nil || !strings.Contains(err.Error(), "unexpected auth completion payload") {
+		t.Fatalf("extra completion payload: %v", err)
 	}
 }
 

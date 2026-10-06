@@ -2,6 +2,7 @@ package receipt
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -22,6 +23,36 @@ import (
 type testHandler struct {
 	burn func(context.Context, *core.BurnReceipt) (p2pproto.ReceiptAck, error)
 	mint func(context.Context, *core.MintReceipt) (p2pproto.ReceiptAck, error)
+}
+
+func TestReceipt_CancellationInterruptsACK(t *testing.T) {
+	srv, cli := newPair(t)
+	read, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	srv.SetStreamHandler(protocol.ID(p2pproto.ProtocolMintReceipt), func(s network.Stream) {
+		defer s.Close()
+		_, _ = io.Copy(io.Discard, s)
+		close(read)
+		<-release
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := NewClient(cli, srv.ID(), nil).SendMintReceipt(ctx, &core.MintReceipt{}); done <- err }()
+	select {
+	case <-read:
+	case <-time.After(5 * time.Second):
+		t.Fatal("receipt did not arrive")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancel error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not interrupt ACK read")
+	}
 }
 
 func TestReceipt_ClientBoundsMissingACK(t *testing.T) {

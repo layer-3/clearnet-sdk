@@ -13,11 +13,11 @@ import (
 // are in EVM (imaginary-first) order. A proof is bound to chain, Registry,
 // operator and BOTH representations of the key; it is not the legacy node PoP.
 func RegistryProofOfPossessionDigest(chainID *big.Int, registry, operator common.Address, g1 [2]*big.Int, g2 [4]*big.Int) ([32]byte, error) {
-	if chainID == nil || chainID.Sign() < 0 || chainID.BitLen() > 256 {
+	if chainID == nil || chainID.Sign() <= 0 || chainID.BitLen() > 256 {
 		return [32]byte{}, fmt.Errorf("invalid Registry chain ID")
 	}
 	for _, c := range append(g1[:], g2[:]...) {
-		if c == nil || c.Sign() < 0 || c.BitLen() > 256 {
+		if c == nil || c.Sign() < 0 || c.Cmp(fieldP) >= 0 {
 			return [32]byte{}, fmt.Errorf("invalid Registry key coordinate")
 		}
 	}
@@ -36,10 +36,4 @@ func RegistryProofOfPossessionDigest(chainID *big.Int, registry, operator common
 		return [32]byte{}, err
 	}
 	return crypto.Keccak256Hash(encoded), nil
-}
-
-// RegistryPossessionDigest is the original name used by coordinated callers.
-// Deprecated: use RegistryProofOfPossessionDigest.
-func RegistryPossessionDigest(chainID *big.Int, registry, operator common.Address, g1 [2]*big.Int, g2 [4]*big.Int) ([32]byte, error) {
-	return RegistryProofOfPossessionDigest(chainID, registry, operator, g1, g2)
 }

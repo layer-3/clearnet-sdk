@@ -1,12 +1,36 @@
 package finality
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
+
+func TestExplicitVerifierPolicyIsImmutable(t *testing.T) {
+	fw, validators := finalizedWithdrawalFixture(t)
+	checker := newMapValidatorChecker(validators)
+	for _, k := range []uint64{0, core.MaxClusterSize + 1} {
+		if _, err := NewFinalizedWithdrawalVerifier(checker, k); !errors.Is(err, ErrSigningClusterSize) {
+			t.Fatalf("invalid policy %d: %v", k, err)
+		}
+	}
+	v, err := NewFinalizedWithdrawalVerifier(checker, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ExpectedSigningClusterSize = 1 // Legacy field cannot change constructor policy.
+	if _, err := v.Verify(fw); err != nil {
+		t.Fatal(err)
+	}
+	one, validators := finalizedWithdrawalFixtureForK(t, 1)
+	v.TrustedValidators = newMapValidatorChecker(validators)
+	if _, err := v.Verify(one); !errors.Is(err, ErrSigningClusterSize) {
+		t.Fatalf("K=1 accepted by immutable K=5 verifier: %v", err)
+	}
+}
 
 func TestDeploymentQuorumPolicies(t *testing.T) {
 	for _, k := range []uint64{1, 5} {

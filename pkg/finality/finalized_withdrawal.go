@@ -16,6 +16,9 @@ type TrustedValidatorChecker interface {
 	IsTrustedValidator(pubkey []byte) bool
 }
 
+// ErrSigningClusterSize identifies an invalid or mismatched signing policy.
+var ErrSigningClusterSize = errors.New("invalid signing cluster size")
+
 // FinalizedWithdrawalVerifier verifies the complete custody authorization
 // envelope for a finalized withdrawal.
 type FinalizedWithdrawalVerifier struct {
@@ -25,7 +28,23 @@ type FinalizedWithdrawalVerifier struct {
 	// the legacy K=1 policy for existing callers. Clustered deployments must
 	// explicitly select their K; never populate this from an incoming block.
 	// Set this before the first Verify call and leave it unchanged while in use.
+	// Ignored on instances created by NewFinalizedWithdrawalVerifier.
 	ExpectedSigningClusterSize uint64
+	signingClusterSize         uint64
+}
+
+// NewFinalizedWithdrawalVerifier snapshots an explicit trusted deployment K.
+// Pass the Registry policy's SigningClusterSize, never a value from a withdrawal.
+// K cannot be changed on the returned verifier; use a new instance for a new
+// deployment. Struct literals retain the legacy K=1 default for compatibility.
+func NewFinalizedWithdrawalVerifier(checker TrustedValidatorChecker, k uint64) (*FinalizedWithdrawalVerifier, error) {
+	if checker == nil {
+		return nil, errors.New("finality: trusted validators required")
+	}
+	if k == 0 || k > core.MaxClusterSize {
+		return nil, fmt.Errorf("finality: %w k=%d (want 1..%d)", ErrSigningClusterSize, k, core.MaxClusterSize)
+	}
+	return &FinalizedWithdrawalVerifier{TrustedValidators: checker, signingClusterSize: k}, nil
 }
 
 // VerifiedFinalizedWithdrawal is the trusted projection returned after all
@@ -50,15 +69,18 @@ func (v *FinalizedWithdrawalVerifier) Verify(fw *core.FinalizedWithdrawal) (*Ver
 	if v == nil || v.TrustedValidators == nil {
 		return nil, errors.New("finality: trusted validators required")
 	}
-	expectedK := v.ExpectedSigningClusterSize
+	expectedK := v.signingClusterSize
 	if expectedK == 0 {
-		expectedK = core.BlockSigningClusterSize
+		expectedK = v.ExpectedSigningClusterSize
+	}
+	if expectedK == 0 {
+		expectedK = 1 // Existing struct-literal callers use the legacy policy.
 	}
 	if expectedK > core.MaxClusterSize {
-		return nil, fmt.Errorf("finality: invalid expected signing cluster size k=%d (want 1..%d)", expectedK, core.MaxClusterSize)
+		return nil, fmt.Errorf("finality: invalid expected signing cluster size k=%d (want 1..%d): %w", expectedK, core.MaxClusterSize, ErrSigningClusterSize)
 	}
 	if fw.Block.K != expectedK {
-		return nil, fmt.Errorf("finality: invalid signing cluster size k=%d (want %d)", fw.Block.K, expectedK)
+		return nil, fmt.Errorf("finality: %w k=%d (want %d)", ErrSigningClusterSize, fw.Block.K, expectedK)
 	}
 	if fw.FinalizedAt < fw.Block.SealedAt {
 		return nil, fmt.Errorf("finality: finalized_at %d before block sealed_at %d", fw.FinalizedAt, fw.Block.SealedAt)
@@ -123,7 +145,7 @@ func (v *FinalizedWithdrawalVerifier) Verify(fw *core.FinalizedWithdrawal) (*Ver
 
 func verifyAttestationWithChecker(message []byte, att core.Attestation, k uint64, checker TrustedValidatorChecker) error {
 	if k == 0 || k > core.MaxClusterSize {
-		return fmt.Errorf("invalid signing cluster size k=%d (want 1..%d)", k, core.MaxClusterSize)
+		return fmt.Errorf("%w k=%d (want 1..%d)", ErrSigningClusterSize, k, core.MaxClusterSize)
 	}
 	if err := verifyRosterTrusted(att.Validators, checker); err != nil {
 		return err

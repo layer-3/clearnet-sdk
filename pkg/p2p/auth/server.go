@@ -27,6 +27,7 @@ type Server struct {
 	signers             core.ReceiptSignerSource
 	trustedIssuerFilter TrustedIssuerFilter
 	onAuth              func(network.Conn, Result)
+	admit               func(context.Context, network.Conn, Result) error
 	logger              log.Logger
 }
 
@@ -38,6 +39,13 @@ type TrustedIssuerFilter func(ctx context.Context, issuerID common.Address) erro
 
 // ServerOption configures auth server behavior.
 type ServerOption func(*Server)
+
+// WithAdmissionCallback replaces the legacy notification callback with a
+// fallible admission hook. It must respect ctx and be idempotent across retries:
+// a disconnect can lose completion even after admission succeeds.
+func WithAdmissionCallback(admit func(context.Context, network.Conn, Result) error) ServerOption {
+	return func(s *Server) { s.admit = admit }
+}
 
 // WithTrustedIssuerFilter installs an issuer authorization hook for operator
 // auth. Passing nil is a no-op.
@@ -73,12 +81,22 @@ func (s *Server) Register(h host.Host) {
 }
 
 // handshakeTimeout bounds one server-side handshake end to end (challenge write
-// + response read), so a stalled peer cannot pin the handler goroutine.
+// + response read + admission), so a stalled peer cannot pin stream I/O.
 const handshakeTimeout = 10 * time.Second
 
 // HandleAuth is the stream handler for /ynp/auth/1.0.0.
 func (s *Server) HandleAuth(stream network.Stream) {
-	defer stream.Close()
+	success := false
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			s.logger.Error("auth handler panicked", "error", recovered)
+		}
+		if success {
+			_ = stream.Close()
+		} else {
+			_ = stream.Reset()
+		}
+	}()
 	conn := stream.Conn()
 	deadline := time.Now().Add(handshakeTimeout)
 	// Bound the whole handshake: the server writes the challenge then reads the
@@ -92,13 +110,24 @@ func (s *Server) HandleAuth(stream network.Stream) {
 	res, err := s.verify(ctx, stream, conn.RemotePublicKey())
 	if err != nil {
 		s.logger.Debug("auth handshake failed", "peer", conn.RemotePeer().ShortString(), "error", err)
-		_ = stream.Reset()
 		return
 	}
-	s.logger.Info("peer authenticated", "peer", conn.RemotePeer().ShortString(), "address", res.Address, "role", res.Role.String())
-	if s.onAuth != nil {
+	if ctx.Err() != nil {
+		return
+	}
+	if s.admit != nil {
+		if err := s.admit(ctx, conn, res); err != nil {
+			s.logger.Debug("auth admission rejected", "error", err)
+			return
+		}
+	} else if s.onAuth != nil {
 		s.onAuth(conn, res)
 	}
+	if ctx.Err() != nil {
+		return
+	}
+	success = true
+	s.logger.Info("peer authenticated", "peer", conn.RemotePeer().ShortString(), "address", res.Address, "role", res.Role.String())
 }
 
 // verify runs the server side of one handshake on stream: generate a nonce,

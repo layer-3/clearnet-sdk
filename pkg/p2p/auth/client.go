@@ -50,9 +50,10 @@ func NewClient(opts ClientOpts) *Client {
 // performs operator auth; otherwise passive auth with opts.IdentityKey. The
 // remote's HandleAuth marks us authenticated on success.
 // Success is reported after the server's admission callback returns.
-// Older servers close the stream on rejection too; upgrade them before relying
-// on this guarantee. Receipt servers must still enforce authentication.
-func (c *Client) Authenticate(ctx context.Context, h host.Host, pid peer.ID) error {
+// Against older servers an authentication rejection can be reported as success;
+// there is no runtime version detection. Upgrade all servers before relying on
+// this guarantee. Receipt servers must still enforce authentication.
+func (c *Client) Authenticate(ctx context.Context, h host.Host, pid peer.ID) (err error) {
 	if pid == "" {
 		return fmt.Errorf("auth: empty peer id")
 	}
@@ -68,6 +69,13 @@ func (c *Client) Authenticate(ctx context.Context, h host.Host, pid peer.ID) err
 		return fmt.Errorf("open auth stream to %s: %w", pid.ShortString(), err)
 	}
 	defer s.Close()
+	stopReset := context.AfterFunc(ctx, func() { _ = s.Reset() })
+	defer func() {
+		stopReset()
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+	}()
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := s.SetDeadline(deadline); err != nil {
 			return fmt.Errorf("auth deadline: %w", err)

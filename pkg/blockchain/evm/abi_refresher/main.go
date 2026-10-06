@@ -56,6 +56,7 @@ type group struct {
 
 var groups = []group{
 	{names: []string{"ClearnetRegistry", "ClearnetRegistryProtocol"}, out: "registry_abi.go"},
+	{names: []string{"ClearnetRegistryConfig"}, out: "registry_config_abi.go"},
 	{names: []string{"Slasher"}, out: "adjudicator_abi.go"},
 	{names: []string{"MockERC20"}, out: "mockerc20_abi.go"},
 	{names: []string{"Custody"}, out: "custody_abi.go"},

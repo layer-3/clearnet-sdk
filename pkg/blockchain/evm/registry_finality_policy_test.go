@@ -23,18 +23,33 @@ type policyRPC struct {
 	epoch                       []byte
 	checksum                    []byte
 	callErr                     error
-	blocks                      []uint64
+	blocks                      []common.Hash
+	headerOverride              *types.Header
+	nilHeader                   bool
+	reorg                       bool
+	headerReads                 int
 }
 
-func (r *policyRPC) HeaderByNumber(context.Context, *big.Int) (*types.Header, error) {
-	return &types.Header{Number: new(big.Int).SetUint64(r.head)}, r.headErr
+func (r *policyRPC) HeaderByNumber(_ context.Context, number *big.Int) (*types.Header, error) {
+	r.headerReads++
+	if r.nilHeader || r.headerOverride != nil {
+		return r.headerOverride, r.headErr
+	}
+	if number == nil {
+		number = new(big.Int).SetUint64(r.head)
+	}
+	h := &types.Header{Number: new(big.Int).Set(number)}
+	if r.reorg && r.headerReads > 2 {
+		h.Extra = []byte{1}
+	}
+	return h, r.headErr
 }
-func (r *policyRPC) CodeAt(_ context.Context, _ common.Address, block *big.Int) ([]byte, error) {
-	r.blocks = append(r.blocks, block.Uint64())
+func (r *policyRPC) CodeAtHash(_ context.Context, _ common.Address, block common.Hash) ([]byte, error) {
+	r.blocks = append(r.blocks, block)
 	return r.code, r.codeErr
 }
-func (r *policyRPC) CallContract(_ context.Context, msg ethereum.CallMsg, block *big.Int) ([]byte, error) {
-	r.blocks = append(r.blocks, block.Uint64())
+func (r *policyRPC) CallContractAtHash(_ context.Context, msg ethereum.CallMsg, block common.Hash) ([]byte, error) {
+	r.blocks = append(r.blocks, block)
 	if *msg.To == r.registry {
 		return r.getter, r.getterErr
 	}
@@ -48,7 +63,7 @@ func (r *policyRPC) CallContract(_ context.Context, msg ethereum.CallMsg, block 
 	case common.Bytes2Hex(crypto.Keccak256([]byte("owner()"))[:4]):
 		return r.owner, nil
 	case common.Bytes2Hex(crypto.Keccak256([]byte("configEpoch(bytes32)"))[:4]):
-		if common.BytesToHash(msg.Data[4:]) != ClearingFinalityPolicyKey {
+		if common.BytesToHash(msg.Data[4:]) != RegistryFinalityPolicyKey {
 			return nil, errors.New("wrong key")
 		}
 		return r.epoch, nil
@@ -58,7 +73,7 @@ func (r *policyRPC) CallContract(_ context.Context, msg ethereum.CallMsg, block 
 	return nil, errors.New("unexpected call")
 }
 
-type policyRevert struct{ message string }
+type policyRevert struct{ message, data string }
 
 func (e policyRevert) Error() string {
 	if e.message != "" {
@@ -66,7 +81,12 @@ func (e policyRevert) Error() string {
 	}
 	return "execution reverted"
 }
-func (policyRevert) ErrorData() interface{} { return "0x" }
+func (e policyRevert) ErrorData() interface{} {
+	if e.data != "" {
+		return e.data
+	}
+	return "0x"
+}
 
 func newPolicyRPC(k uint64) *policyRPC {
 	r := &policyRPC{registry: common.HexToAddress("0x1234"), config: common.HexToAddress("0x5678"), head: 100}
@@ -74,11 +94,11 @@ func newPolicyRPC(k uint64) *policyRPC {
 	r.getter = common.LeftPadBytes(r.config.Bytes(), 32)
 	r.owner = common.LeftPadBytes(r.registry.Bytes(), 32)
 	r.epoch = common.LeftPadBytes([]byte{1}, 32)
-	r.checksum = ClearingFinalityPolicyChecksum(k).Bytes()
+	r.checksum = RegistryFinalityPolicyChecksum(k).Bytes()
 	return r
 }
 
-func TestRegistryClearingPolicyConfirmedAndIndependent(t *testing.T) {
+func TestRegistryFinalityPolicyConfirmedAndIndependent(t *testing.T) {
 	for _, k := range []uint64{1, 5, 256} {
 		r := newPolicyRPC(k)
 		p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7, 1)
@@ -86,8 +106,8 @@ func TestRegistryClearingPolicyConfirmedAndIndependent(t *testing.T) {
 			t.Fatalf("policy=%+v err=%v", p, err)
 		}
 		for _, block := range r.blocks {
-			if block != 93 {
-				t.Fatalf("unconfirmed read at %d", block)
+			if block != (&types.Header{Number: big.NewInt(93)}).Hash() {
+				t.Fatalf("mixed fork read at %s", block)
 			}
 		}
 		// Re-read after restart: no YAML default or event replay is needed.
@@ -98,14 +118,12 @@ func TestRegistryClearingPolicyConfirmedAndIndependent(t *testing.T) {
 	}
 }
 
-func TestRegistryClearingPolicyLegacyCompatibility(t *testing.T) {
+func TestRegistryFinalityPolicyLegacyCompatibility(t *testing.T) {
 	for _, k := range []uint64{1, 5} {
-		for _, reverted := range []bool{false, true} {
+		for _, pushData := range []byte{0, 0xf4} {
 			r := newPolicyRPC(k)
-			r.code, r.getter = []byte{0x60, 0x00}, nil
-			if reverted {
-				r.getterErr = policyRevert{}
-			}
+			r.code, r.getter = []byte{0x60, pushData, 0x60, 0, 0xfd}, nil
+			r.getterErr = policyRevert{}
 			p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7, k)
 			if err != nil || !p.Legacy || p.SigningClusterSize != k || p.ConfigAddress != (common.Address{}) {
 				t.Fatalf("policy=%+v err=%v", p, err)
@@ -114,11 +132,21 @@ func TestRegistryClearingPolicyLegacyCompatibility(t *testing.T) {
 	}
 }
 
-func TestRegistryClearingPolicyFailsClosed(t *testing.T) {
+func TestRegistryFinalityPolicyFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(*policyRPC)
 	}{
+		{"nil header", func(r *policyRPC) { r.nilHeader = true }},
+		{"nil header number", func(r *policyRPC) { r.headerOverride = &types.Header{} }},
+		{"oversized header number", func(r *policyRPC) { r.headerOverride = &types.Header{Number: new(big.Int).Lsh(big.NewInt(1), 65)} }},
+		{"negative header number", func(r *policyRPC) { r.headerOverride = &types.Header{Number: big.NewInt(-1)} }},
+		{"anchor reorg", func(r *policyRPC) { r.reorg = true }},
+		{"empty success", func(r *policyRPC) { r.code = []byte{0}; r.getter = nil }},
+		{"proxy without implementation", func(r *policyRPC) { r.code = []byte{0xf4}; r.getter = nil }},
+		{"reverting proxy implementation", func(r *policyRPC) { r.code = []byte{0xf4}; r.getter = nil; r.getterErr = policyRevert{} }},
+		{"callcode proxy", func(r *policyRPC) { r.code = []byte{0xf2}; r.getter = nil; r.getterErr = policyRevert{} }},
+		{"nonempty revert", func(r *policyRPC) { r.code = []byte{0}; r.getter = nil; r.getterErr = policyRevert{data: "0x1234"} }},
 		{"rpc loss", func(r *policyRPC) { r.headErr = errors.New("offline") }},
 		{"code RPC loss", func(r *policyRPC) { r.codeErr = errors.New("offline") }},
 		{"undeployed", func(r *policyRPC) { r.code = nil }},
@@ -138,8 +166,8 @@ func TestRegistryClearingPolicyFailsClosed(t *testing.T) {
 		{"missing epoch", func(r *policyRPC) { r.epoch = make([]byte, 32) }},
 		{"changed epoch", func(r *policyRPC) { r.epoch[31] = 2 }},
 		{"invalid checksum", func(r *policyRPC) { r.checksum[0] ^= 1 }},
-		{"zero K", func(r *policyRPC) { r.checksum = ClearingFinalityPolicyChecksum(0).Bytes() }},
-		{"oversized K", func(r *policyRPC) { r.checksum = ClearingFinalityPolicyChecksum(257).Bytes() }},
+		{"zero K", func(r *policyRPC) { r.checksum = RegistryFinalityPolicyChecksum(0).Bytes() }},
+		{"oversized K", func(r *policyRPC) { r.checksum = RegistryFinalityPolicyChecksum(257).Bytes() }},
 		{"Config RPC loss", func(r *policyRPC) { r.callErr = errors.New("offline") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,7 +180,35 @@ func TestRegistryClearingPolicyFailsClosed(t *testing.T) {
 	}
 }
 
-func TestClearingPolicyChecksumMatchesSolidityABI(t *testing.T) {
+func TestRegistryFinalityPolicyInputs(t *testing.T) {
+	for _, tc := range []struct {
+		registry common.Address
+		k        uint64
+	}{
+		{common.Address{}, 1}, {common.HexToAddress("0x1234"), 0}, {common.HexToAddress("0x1234"), 257},
+	} {
+		r := newPolicyRPC(5)
+		if _, err := ReadRegistryFinalityPolicy(context.Background(), r, tc.registry, 7, tc.k); err == nil {
+			t.Fatal("invalid input accepted")
+		}
+	}
+	for _, confirmations := range []uint64{0, 100} {
+		r := newPolicyRPC(5)
+		if p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, confirmations, 1); err != nil || p.ConfirmedBlock != 100-confirmations {
+			t.Fatalf("valid boundary policy=%+v error=%v", p, err)
+		}
+	}
+}
+
+func TestRegistryFinalityPolicyAdvertisedThroughProxy(t *testing.T) {
+	r := newPolicyRPC(5)
+	r.code = []byte{0xf4}
+	if p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7, 1); err != nil || p.Legacy || p.SigningClusterSize != 5 {
+		t.Fatalf("valid advertised policy=%+v error=%v", p, err)
+	}
+}
+
+func TestRegistryFinalityPolicyChecksumMatchesSolidityABI(t *testing.T) {
 	typ, err := abi.NewType("uint64", "", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +218,7 @@ func TestClearingPolicyChecksumMatchesSolidityABI(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ClearingFinalityPolicyChecksum(k) != crypto.Keccak256Hash(payload) {
+		if RegistryFinalityPolicyChecksum(k) != crypto.Keccak256Hash(payload) {
 			t.Fatal("Solidity checksum mismatch")
 		}
 	}
