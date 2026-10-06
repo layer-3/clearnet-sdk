@@ -16,10 +16,6 @@
     "stateMutability": "nonpayable"
   },
   {
-    "type": "receive",
-    "stateMutability": "payable"
-  },
-  {
     "type": "function",
     "name": "WITHDRAWAL_EXECUTION_WINDOW",
     "inputs": [],
