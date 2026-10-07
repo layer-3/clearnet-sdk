@@ -23,3 +23,7 @@ jobs:
   integration:
     name: Integration
     uses: ./.github/workflows/test-integration.yml
+
+  artifacts:
+    name: Artifacts
+    uses: ./.github/workflows/check-release-artifacts.yml

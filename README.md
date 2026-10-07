@@ -171,6 +171,7 @@ provisioning behavior, and environment overrides.
   checking runtime dependency advisories for the TypeScript package.
 - Keep generated files and vendored chain artifacts in sync with their source
   inputs.
+- Release maintainers: see the [release guide](docs/releasing.md).
 - Keep public SDK documentation broad: this repository supports Clearnet
   integration surfaces, not only custody-specific flows.
 

@@ -24,18 +24,10 @@ cd sdk/ts
 npm ci
 ```
 
-Solana signer adapters use the `@solana/web3.js` v1 transaction API. The npm
-package bundles its Solana client with patched JSON-RPC dependencies so the
-fix also reaches consumers, where this SDK's npm overrides do not apply.
+Solana signer adapters use the `@solana/web3.js` v1 transaction API.
 Import Solana client helpers from the SDK's `solana` namespace so transactions
 and RPC clients share the same constructors. Mixing transactions with a
 separately installed client can break methods such as `simulateTransaction`.
-
-Before an npm release, run `npm run typecheck`, `npm test`,
-`npm audit --audit-level=moderate`, and `npm run check:package`.
-The package check builds and packs the SDK, installs it into a fresh app,
-audits that app without overrides, and verifies Solana preparation, signing,
-serialization, and RPC calls. CI runs these checks and builds all four demos.
 
 ## Bitcoin Quick Start
 
