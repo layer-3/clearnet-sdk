@@ -171,39 +171,9 @@ provisioning behavior, and environment overrides.
   checking runtime dependency advisories for the TypeScript package.
 - Keep generated files and vendored chain artifacts in sync with their source
   inputs.
+- Release maintainers: see the [release guide](docs/releasing.md).
 - Keep public SDK documentation broad: this repository supports Clearnet
   integration surfaces, not only custody-specific flows.
-
-## Release Artifact Validation
-
-SDK releases do not require custody CI results, custody dependency pin updates,
-or access to the private custody repository. Normal SDK CI checks Go and
-TypeScript tests, SDK-owned contract compilation, generated EVM bindings,
-devnet integration, and the shipped artifacts.
-
-`check-release-artifacts.yml` runs on pull requests, master pushes, release tags,
-and manual dispatch. It validates ABI/bytecode formats, EVM artifact checksums,
-recorded source revisions, and the Solana program checksum using this checkout
-only. Run its checks locally with:
-
-```sh
-python3 scripts/test-check-release-artifacts.py
-python3 scripts/check-release-artifacts.py .
-```
-
-When EVM artifacts change intentionally, regenerate their checksum manifest
-from `pkg/blockchain/evm/artifacts` with
-`shasum -a 256 *.abi *.bin > artifacts.sha256`, and review it alongside the
-artifact and binding changes. Keep the Solana source revision and program
-checksum in sync when refreshing that program.
-
-Custody owns source-to-artifact parity and compatibility checks for its contract
-implementations and SDK dependency pins. Developers with its sources can still
-run the optional `make check-evm-artifacts CUSTODY_SOURCE=/path/to/custody` check;
-that check is not an SDK release prerequisite.
-
-The TypeScript npm package has additional checks in `sdk/ts/README.md`; pushing
-a GitHub tag does not publish it to npm.
 
 ## License
 
