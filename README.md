@@ -174,6 +174,31 @@ provisioning behavior, and environment overrides.
 - Keep public SDK documentation broad: this repository supports Clearnet
   integration surfaces, not only custody-specific flows.
 
+## Release Artifact Validation
+
+Validate an untagged SDK candidate before publishing a release. This avoids
+requiring custody to pin a release that the SDK gate has not approved yet.
+
+1. Push the SDK candidate and record its full commit SHA. In custody, manually
+   run `test-sdk-artifact-parity.yml` with `sdk_revision` set to that SHA, on a
+   branch or tag resolving to the custody source revision recorded in
+   `pkg/blockchain/evm/artifacts/custody-source-revision`.
+2. After that exact source/candidate pair passes, update
+   `pkg/blockchain/evm/artifacts/validated-sdk-revision` to the candidate SHA
+   and commit the record. The record refers to the earlier validated snapshot,
+   not to the commit containing the record; the gate compares their artifacts.
+3. Run `check-release-artifacts.yml` on the release commit. It checks that the
+   artifact set is unchanged from the validated snapshot, verifies Solana
+   provenance, and checks the successful private custody run. Configure
+   `CUSTODY_ACTIONS_READ_TOKEN` with Actions read access to `layer-3/custody`
+   before running this gate.
+4. Once this gate and normal SDK CI pass, create the SDK release tag. Only then
+   update custody's Go and Foundry release pins and run custody's pin and parity
+   checks against the tagged SDK.
+
+The TypeScript npm package has separate checks in `sdk/ts/README.md`; pushing
+a GitHub tag does not publish it to npm.
+
 ## License
 
 MIT. See `LICENSE`.
