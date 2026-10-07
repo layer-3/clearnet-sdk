@@ -10,6 +10,11 @@ VerifyExecution` itself, so no p2p mesh is needed.
 The TypeScript SDK integration tests live under `sdk/ts/test` and run through
 the same `make integration` target.
 
+Cross-component Go tests live under `internal/integration`. The
+[EIP-712 deployment test](../internal/integration/eip712deployment/README.md)
+has its own Go module to isolate the embedded Ethereum node's dependencies;
+it runs without the devnet and is also included in `make integration`.
+
 ## Run
 
 ```sh

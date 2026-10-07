@@ -25,7 +25,7 @@ import { bytesToHex, hexToBytes } from "../../../src/core/bytes.js";
 // Go tests assert against - do not duplicate the literals here, they would drift
 // from the source of truth.
 const VECTORS_PATH = new URL(
-  "../../../../../pkg/blockchain/btc/marker/testdata/vectors.json",
+  "../../../../../testdata/btc/marker_vectors.json",
   import.meta.url,
 );
 
@@ -78,7 +78,7 @@ const ACCOUNT = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const NON_ZERO_REF =
   "0x0000000000000000000000000000000000000000000000000000000000000001" as Bytes32Hex;
 
-describe("BTC deposit marker vectors (pkg/blockchain/btc/marker/testdata/vectors.json)", () => {
+describe("BTC deposit marker vectors (testdata/btc/marker_vectors.json)", () => {
   it("has the 10 encode cases guardrail 4 requires, 4 of them expectError", () => {
     expect(vectors.encode).toHaveLength(10);
     expect(vectors.encode.filter((c) => c.expectError !== undefined)).toHaveLength(4);

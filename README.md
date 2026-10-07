@@ -11,7 +11,7 @@ This repository currently contains:
 - Docker-backed local devnet tooling for Go and TypeScript integration tests.
 
 The Go SDK is the broader backend-facing SDK. The TypeScript SDK currently
-focuses on browser and application deposit flows for EVM, Solana, and XRPL.
+focuses on browser and application deposit flows for EVM, Solana, XRPL, and Bitcoin.
 
 ## Where This Fits
 
@@ -58,6 +58,11 @@ mechanical rather than a fresh audit.
 | `pkg/p2p`, `pkg/receipt`, `pkg/log` | Supporting networking, receipt, and logging packages. |
 | `sdk/ts` | TypeScript SDK package, tests, and browser demos. See `sdk/ts/README.md`. |
 | `devnet` | Docker Compose local blockchain devnet and readiness probe. See `devnet/README.md`. |
+| `contracts` | Shared Solidity governance contracts, interfaces, and Foundry tests. |
+| `internal` | Private Go helpers and integration suites. The EIP-712 deployment test has an isolated test module; see `internal/integration/eip712deployment/README.md`. |
+| `scripts` | Artifact validation and release checks. |
+| `testdata` | Shared conformance fixtures, including vectors used by both Go and TypeScript. |
+| `docs` | Release guidance. See `docs/releasing.md`. |
 
 ## Go SDK
 
@@ -117,7 +122,8 @@ The package currently exposes vault depositors for:
 
 - EVM native ETH and ERC-20 deposits;
 - Solana native SOL and SPL token deposits;
-- XRPL native XRP and issued-currency deposits.
+- XRPL native XRP and issued-currency deposits;
+- Bitcoin native BTC deposits.
 
 Read the package guide and API examples in `sdk/ts/README.md`.
 
@@ -129,6 +135,7 @@ The TypeScript package includes local demo apps for manual wallet testing:
 npm --prefix sdk/ts run demo:evm
 npm --prefix sdk/ts run demo:sol
 npm --prefix sdk/ts run demo:xrpl
+npm --prefix sdk/ts run demo:btc
 ```
 
 The demos expect a local or configured chain endpoint, funded wallet accounts,
@@ -157,16 +164,21 @@ npm --prefix sdk/ts run test:integration:sol
 
 make devnet-xrpl
 npm --prefix sdk/ts run test:integration:xrpl
+
+make devnet-btc
+npm --prefix sdk/ts run test:integration:btc
 ```
 
-`make integration` runs the Go blockchain integrations and the TypeScript EVM,
-Solana, and XRPL integration tests. See `devnet/README.md` for ports,
+`make integration` runs the Go blockchain and cross-component integrations,
+the isolated EIP-712 deployment test, and the TypeScript EVM, Solana, XRPL, and
+Bitcoin integration tests. See `devnet/README.md` for ports,
 provisioning behavior, and environment overrides.
 
 ## Development Notes
 
 - Use `make test` for the Go race-enabled test suite.
-- Use `npm --prefix sdk/ts test` for TypeScript unit tests.
+- Use `npm --prefix sdk/ts test` to discover all TypeScript unit and example
+  tests. Integration tests run separately through the `test:integration:*` scripts.
 - Use `npm --prefix sdk/ts audit --omit=dev --audit-level=moderate` when
   checking runtime dependency advisories for the TypeScript package.
 - Keep generated files and vendored chain artifacts in sync with their source

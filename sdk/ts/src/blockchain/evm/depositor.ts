@@ -1,4 +1,4 @@
-import { parseEventLogs, zeroAddress } from "viem";
+import { zeroAddress } from "viem";
 import type { Address, Hash, TransactionReceipt } from "viem";
 
 import { ClearnetSdkError } from "../../core/errors.js";
@@ -14,6 +14,7 @@ import type {
 import { decimalToBaseUnits } from "../amounts.js";
 import { custodyAbi, erc20Abi } from "./abi.js";
 import { DEFAULT_RECEIPT_TIMEOUT_MS } from "./constants.js";
+import { hasDepositedLog } from "./depositEvents.js";
 import {
   depositId as computeDepositId,
   requireDepositId,
@@ -529,30 +530,6 @@ export class EvmVaultDepositor implements VaultDepositor<EvmSubmitDepositInput> 
     }
     return receipt;
   }
-}
-
-function hasDepositedLog(
-  receipt: TransactionReceipt,
-  custodyAddress: Address,
-  chainId: bigint,
-  wantDepositIdLower: string,
-): boolean {
-  return parseEventLogs({
-    abi: custodyAbi,
-    eventName: "Deposited",
-    logs: [...receipt.logs],
-  }).some((log) => {
-    if (log.address.toLowerCase() !== custodyAddress.toLowerCase()) {
-      return false;
-    }
-    const gotId = computeDepositId(
-      chainId,
-      custodyAddress,
-      log.args.depositor,
-      log.args.nonce,
-    );
-    return gotId.toLowerCase() === wantDepositIdLower;
-  });
 }
 
 function captureValidation(validation: Promise<void>): AsyncValidation {
