@@ -50,5 +50,6 @@ versions can embed different platform-tools library paths and produce a
 different `.so`; they are not the canonical artifacts checked by custody CI.
 
 When either artifact changes, update the source revision and checksum together,
-run custody's parity workflow against the SDK artifact commit, and update
-`pkg/blockchain/evm/artifacts/validated-sdk-revision` to that SDK commit.
+and run `python3 scripts/check-release-artifacts.py .` from the SDK root.
+Custody owns source parity checks; SDK publication does not require custody CI
+results or access to the private repository.

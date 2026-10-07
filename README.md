@@ -176,27 +176,33 @@ provisioning behavior, and environment overrides.
 
 ## Release Artifact Validation
 
-Validate an untagged SDK candidate before publishing a release. This avoids
-requiring custody to pin a release that the SDK gate has not approved yet.
+SDK releases do not require custody CI results, custody dependency pin updates,
+or access to the private custody repository. Normal SDK CI checks Go and
+TypeScript tests, SDK-owned contract compilation, generated EVM bindings,
+devnet integration, and the shipped artifacts.
 
-1. Push the SDK candidate and record its full commit SHA. In custody, manually
-   run `test-sdk-artifact-parity.yml` with `sdk_revision` set to that SHA, on a
-   branch or tag resolving to the custody source revision recorded in
-   `pkg/blockchain/evm/artifacts/custody-source-revision`.
-2. After that exact source/candidate pair passes, update
-   `pkg/blockchain/evm/artifacts/validated-sdk-revision` to the candidate SHA
-   and commit the record. The record refers to the earlier validated snapshot,
-   not to the commit containing the record; the gate compares their artifacts.
-3. Run `check-release-artifacts.yml` on the release commit. It checks that the
-   artifact set is unchanged from the validated snapshot, verifies Solana
-   provenance, and checks the successful private custody run. Configure
-   `CUSTODY_ACTIONS_READ_TOKEN` with Actions read access to `layer-3/custody`
-   before running this gate.
-4. Once this gate and normal SDK CI pass, create the SDK release tag. Only then
-   update custody's Go and Foundry release pins and run custody's pin and parity
-   checks against the tagged SDK.
+`check-release-artifacts.yml` runs on pull requests, master pushes, release tags,
+and manual dispatch. It validates ABI/bytecode formats, EVM artifact checksums,
+recorded source revisions, and the Solana program checksum using this checkout
+only. Run its checks locally with:
 
-The TypeScript npm package has separate checks in `sdk/ts/README.md`; pushing
+```sh
+python3 scripts/test-check-release-artifacts.py
+python3 scripts/check-release-artifacts.py .
+```
+
+When EVM artifacts change intentionally, regenerate their checksum manifest
+from `pkg/blockchain/evm/artifacts` with
+`shasum -a 256 *.abi *.bin > artifacts.sha256`, and review it alongside the
+artifact and binding changes. Keep the Solana source revision and program
+checksum in sync when refreshing that program.
+
+Custody owns source-to-artifact parity and compatibility checks for its contract
+implementations and SDK dependency pins. Developers with its sources can still
+run the optional `make check-evm-artifacts CUSTODY_SOURCE=/path/to/custody` check;
+that check is not an SDK release prerequisite.
+
+The TypeScript npm package has additional checks in `sdk/ts/README.md`; pushing
 a GitHub tag does not publish it to npm.
 
 ## License

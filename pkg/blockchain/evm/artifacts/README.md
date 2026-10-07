@@ -107,16 +107,18 @@ change without a corresponding intentional code change is a red flag.
 
 ## Validate release artifacts
 
-Run `make check-evm-artifacts CUSTODY_SOURCE=/path/to/custody` against the checkout
-recorded in `custody-source-revision`. The parity step compiles custody's
-contracts, so run `make evm-contracts` in that custody checkout first to fetch
-its Foundry dependencies. When artifacts change, validate the SDK
-artifact commit in custody CI, then update `custody-source-revision` and
-`validated-sdk-revision` together to record that source and artifact pair.
+`artifacts.sha256` pins the committed ABI and bytecode files. After an
+intentional artifact refresh, regenerate it in this directory with
+`shasum -a 256 *.abi *.bin > artifacts.sha256`, and review the artifact, checksum,
+and generated binding changes together.
 
-Before publishing, run `check-release-artifacts.yml` manually; release tags rerun
-it. It requires a successful custody parity run at the recorded source revision
-and unchanged artifacts from the validated SDK revision. Configure
-`CUSTODY_ACTIONS_READ_TOKEN` with Actions-read access to custody; the public SDK
-workflow reads result metadata only. If the result is older than the latest 100
-runs, rerun custody validation.
+SDK CI runs `scripts/check-release-artifacts.py` to check formats, checksums,
+and source-revision metadata. SDK-owned contracts and EVM bindings are also
+checked by the Forge workflow. SDK releases do not require private custody CI
+results or cross-repository credentials.
+
+For developers with custody source access, optional source parity can be
+checked with `make check-evm-artifacts CUSTODY_SOURCE=/path/to/custody` against
+the checkout recorded in `custody-source-revision`. Run `make evm-contracts`
+in that checkout first. Custody owns its source parity and SDK pin checks;
+those checks are independent of SDK publication.
