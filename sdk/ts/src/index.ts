@@ -1,3 +1,5 @@
+// Share the bundled v1 constructors with signer adapters and RPC clients.
+export * as solana from "@solana/web3.js";
 export type {
   Bytes32Hex,
   DepositDestination,

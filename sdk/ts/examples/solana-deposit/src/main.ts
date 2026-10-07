@@ -1,12 +1,12 @@
 import {
   SOLANA_CUSTODY_PROGRAM_ID,
   SolanaVaultDepositor,
+  solana,
 } from "@yellow-org/clearnet-sdk";
 import {
   SolanaSignTransaction,
   type SolanaSignTransactionFeature,
 } from "@solana/wallet-standard-features";
-import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { getWallets } from "@wallet-standard/app";
 import type {
   Wallet,
@@ -22,6 +22,8 @@ import type {
   SolanaSigner,
   SubmitDepositResult,
 } from "@yellow-org/clearnet-sdk";
+
+const { Connection, PublicKey } = solana;
 
 type SolanaWalletChain =
   | "solana:localnet"
@@ -185,7 +187,7 @@ class BrowserSolanaSigner implements SolanaSigner {
     }
   }
 
-  async signAndSend(transaction: Transaction): Promise<string> {
+  async signAndSend(transaction: solana.Transaction): Promise<string> {
     const latest = await this.connection().getLatestBlockhash(this.commitment);
     transaction.recentBlockhash = latest.blockhash;
     transaction.feePayer ??= new PublicKey(this.publicKey);
@@ -208,7 +210,7 @@ class BrowserSolanaSigner implements SolanaSigner {
     });
   }
 
-  private connection(): Connection {
+  private connection(): solana.Connection {
     return new Connection(this.rpcUrl, this.commitment);
   }
 }

@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { BaseAdapter } from "sats-connect";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   configureXverseRegtestNetwork,
   connectXverseWallet,
   signPsbtWithXverse,
+  type XverseRequest,
 } from "../../../examples/bitcoin-deposit/src/xverse.js";
 
 const PAYMENT_ADDRESS = "2NAUYAHhujozruyzpsFRP63mbrdaU5wnEpN";
@@ -11,6 +13,32 @@ const PAYMENT_PUBLIC_KEY =
   "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
 describe("bitcoin demo Xverse adapter", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("connects through the real sats-connect provider and response validation", async () => {
+    const request = vi.fn(async (method: string) => method === "getInfo"
+      ? { jsonrpc: "2.0", id: "1", error: { code: -32601, message: "Not supported" } }
+      : { jsonrpc: "2.0", id: "2", result: [{
+        purpose: "payment", addressType: "p2sh", address: PAYMENT_ADDRESS,
+        publicKey: PAYMENT_PUBLIC_KEY, walletType: "software",
+      }] });
+    vi.stubGlobal("window", { XverseProviders: { BitcoinProvider: { request } } });
+    const adapter = new BaseAdapter("XverseProviders.BitcoinProvider");
+    const wallet = await connectXverseWallet(adapter.request.bind(adapter) as XverseRequest);
+    expect(wallet.address).toBe(PAYMENT_ADDRESS);
+    expect(request).toHaveBeenCalledWith("getAccounts", {
+      purposes: ["payment"], message: "Connect Bitcoin deposit demo",
+    });
+  });
+
+  it("rejects malformed responses through the real sats-connect provider", async () => {
+    const request = vi.fn(async () => ({ unexpected: "response" }));
+    vi.stubGlobal("window", { XverseProviders: { BitcoinProvider: { request } } });
+    const adapter = new BaseAdapter("XverseProviders.BitcoinProvider");
+    await expect(connectXverseWallet(adapter.request.bind(adapter) as XverseRequest))
+      .rejects.toThrow("Received unknown response from provider");
+  });
+
   it("adds the configured regtest network with switch requested", async () => {
     const request = vi.fn(async () => ({ status: "success", result: null }));
 
