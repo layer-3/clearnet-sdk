@@ -36,6 +36,14 @@ jobs:
         run: npm test
         working-directory: sdk/ts
 
+      - name: Audit dependencies and demos
+        run: npm audit --audit-level=moderate
+        working-directory: sdk/ts
+
+      - name: Verify packed consumer package
+        run: npm run check:package
+        working-directory: sdk/ts
+
       - name: Build EVM demo
         run: npm --workspace @yellow-org/evm-deposit-demo run build
         working-directory: sdk/ts
