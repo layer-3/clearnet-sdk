@@ -428,7 +428,7 @@ func TestValidationPrecedence(t *testing.T) {
 // counts pushes rather than bytes. Reporting ErrMultiplePushes keeps such an
 // scriptPubKey a candidate, so the transaction is held rather than credited.
 //
-// The same four scripts are in vectors.json as the trailing_* decode cases,
+// The same four scripts are in marker_vectors.json as the trailing_* decode cases,
 // so a mirror implementation is held to this reading too.
 func TestTrailingBytesAreNotSilentlyAccepted(t *testing.T) {
 	valid := rawDirectPush(v1Payload(t, testAddrHex))
@@ -455,7 +455,7 @@ func TestTrailingBytesAreNotSilentlyAccepted(t *testing.T) {
 // well-formed marker payload is therefore NOT a candidate: it is ignored
 // outright.
 //
-// The script below is also vectors.json's junk_push_before_marker_is_not_a_candidate
+// The script below is also marker_vectors.json's junk_push_before_marker_is_not_a_candidate
 // case, so a mirror is held to the same classification.
 func TestMagicIsTestedOnTheFirstPushOnly(t *testing.T) {
 	v1p := v1Payload(t, testAddrHex)

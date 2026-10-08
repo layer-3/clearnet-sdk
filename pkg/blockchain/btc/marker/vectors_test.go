@@ -89,7 +89,7 @@ type scanCaseJSON struct {
 // ---- error <-> stable string code -----------------------------------------
 
 // codeByErr maps every sentinel this package exports to the stable string
-// code vectors.json uses. Error codes are contract, not Go error text:
+// code marker_vectors.json uses. Error codes are contract, not Go error text:
 // changing a code is a formatVersion bump, not a refactor.
 var codeByErr = map[error]string{
 	ErrNotMarker:        "not_marker",
@@ -511,7 +511,7 @@ func TestScanVectors(t *testing.T) {
 	}
 }
 
-// ---- vectors.json driver ----------------------------------------------------
+// ---- marker_vectors.json driver ---------------------------------------------
 
 func vectorsPath(t *testing.T) string {
 	t.Helper()
@@ -591,7 +591,7 @@ func buildVectorsFile(t *testing.T) vectorsFile {
 
 	for _, spec := range scanSpecs(t) {
 		// ScriptPubKeysHex is initialised non-nil so an empty list serialises
-		// as [] rather than null: vectors.json is consumed by non-Go
+		// as [] rather than null: marker_vectors.json is consumed by non-Go
 		// implementations, and a null where an array is declared is a
 		// gratuitous special case for every one of them.
 		sc := scanCaseJSON{Case: spec.Case, Notes: spec.Notes, ScriptPubKeysHex: []string{}}
