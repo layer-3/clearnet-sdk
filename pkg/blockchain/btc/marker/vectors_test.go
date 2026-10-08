@@ -1,13 +1,13 @@
 package marker
 
-// vectors_test.go drives testdata/vectors.json, the language-neutral
+// vectors_test.go drives testdata/btc/marker_vectors.json, the language-neutral
 // golden-vector file a non-Go (e.g. TypeScript) mirror implementation
 // conforms to. Every case below is exercised against the real
 // Encode/Decode/Scan functions, so a bug in the implementation cannot
 // silently produce a wrong golden file - the same assertions that check
 // the code also generate the fixture.
 //
-// Run with -update to (re)write testdata/vectors.json:
+// Run with -update to (re)write testdata/btc/marker_vectors.json:
 //
 //	go test ./pkg/blockchain/btc/marker/... -update -run TestVectors
 
@@ -22,7 +22,7 @@ import (
 // vectorsUpdate mirrors sdk pkg/cborx/goldens_test.go:31's flag and policy:
 // CI treats a missing or drifted fixture as a failure, not a reason to
 // re-seed.
-var vectorsUpdate = flag.Bool("update", false, "regenerate testdata/vectors.json")
+var vectorsUpdate = flag.Bool("update", false, "regenerate testdata/btc/marker_vectors.json")
 
 // ---- JSON schema ----------------------------------------------------------
 
@@ -89,7 +89,7 @@ type scanCaseJSON struct {
 // ---- error <-> stable string code -----------------------------------------
 
 // codeByErr maps every sentinel this package exports to the stable string
-// code vectors.json uses. Error codes are contract, not Go error text:
+// code marker_vectors.json uses. Error codes are contract, not Go error text:
 // changing a code is a formatVersion bump, not a refactor.
 var codeByErr = map[error]string{
 	ErrNotMarker:        "not_marker",
@@ -511,11 +511,11 @@ func TestScanVectors(t *testing.T) {
 	}
 }
 
-// ---- vectors.json driver ----------------------------------------------------
+// ---- marker_vectors.json driver ---------------------------------------------
 
 func vectorsPath(t *testing.T) string {
 	t.Helper()
-	return filepath.Join("testdata", "vectors.json")
+	return filepath.Join("../../../../testdata/btc", "marker_vectors.json")
 }
 
 // buildVectorsFile assembles the full vectorsFile from the same specs the
@@ -591,7 +591,7 @@ func buildVectorsFile(t *testing.T) vectorsFile {
 
 	for _, spec := range scanSpecs(t) {
 		// ScriptPubKeysHex is initialised non-nil so an empty list serialises
-		// as [] rather than null: vectors.json is consumed by non-Go
+		// as [] rather than null: marker_vectors.json is consumed by non-Go
 		// implementations, and a null where an array is declared is a
 		// gratuitous special case for every one of them.
 		sc := scanCaseJSON{Case: spec.Case, Notes: spec.Notes, ScriptPubKeysHex: []string{}}
@@ -642,7 +642,7 @@ func hexEnc(b []byte) string {
 }
 
 // TestVectorsFile is the golden-file driver: with -update it (re)writes
-// testdata/vectors.json; otherwise it asserts the file already on disk is
+// testdata/btc/marker_vectors.json; otherwise it asserts the file already on disk is
 // byte-identical to what the current code produces.
 func TestVectorsFile(t *testing.T) {
 	vf := buildVectorsFile(t)

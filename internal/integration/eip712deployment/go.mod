@@ -1,4 +1,4 @@
-module github.com/layer-3/clearnet-sdk/integration/eip712deployment
+module github.com/layer-3/clearnet-sdk/internal/integration/eip712deployment
 
 go 1.25.6
 
@@ -113,4 +113,4 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/layer-3/clearnet-sdk => ../..
+replace github.com/layer-3/clearnet-sdk => ../../..

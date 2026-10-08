@@ -713,6 +713,11 @@ npm --workspace @yellow-org/xrpl-deposit-demo run build
 npm --workspace @yellow-org/bitcoin-deposit-demo run build
 ```
 
+`npm test` discovers every unit and example test under `test/`, excluding
+`*.integration.test.ts`. The `test:core`, `test:evm`, `test:sol`, `test:xrpl`,
+and `test:btc` scripts run focused subsets. The `test:integration:*` scripts
+select Vitest's `integration` mode, which discovers only integration tests.
+
 Run the EVM integration test against local Anvil:
 
 ```sh

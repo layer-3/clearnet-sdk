@@ -6,7 +6,7 @@ import { concatBytes } from "../../core/bytes.js";
  * alongside every generic-address BTC deposit (ADR §2, §4). TS has no shared
  * code with the Go `marker` package, so this module is a direct, byte-for-byte
  * mirror of it, and is asserted against the same golden vectors
- * (pkg/blockchain/btc/marker/testdata/vectors.json) in test/blockchain/btc/marker.test.ts.
+ * (testdata/btc/marker_vectors.json) in test/blockchain/btc/marker.test.ts.
  * Magic, version bytes and the generic deposit tag preimage are compile-time
  * constants here too - never config, never caller-supplied.
  */
@@ -125,7 +125,7 @@ function requireNonZeroReference(reference: Uint8Array | undefined): Uint8Array 
 
 /**
  * Error codes of the marker reader, named as in
- * pkg/blockchain/btc/marker/testdata/vectors.json. "not_marker" means the
+ * testdata/btc/marker_vectors.json. "not_marker" means the
  * scriptPubKey is not a marker candidate; every other code from
  * decodeMarkerScript means it is an invalid candidate, which leaves the whole
  * transaction unattributed. "no_marker" and "multiple_markers" come from
