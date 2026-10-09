@@ -39,15 +39,18 @@ func RegistryFinalityPolicyChecksum(k uint64) common.Hash {
 }
 
 // ReadRegistryFinalityPolicy reads the signing cluster size at a confirmed block.
-// CONFIG() is required; its Config must be Registry-owned with epoch 1 and a
-// known v1 checksum. The Registry must prevent later policy writes.
+// Registry policy is required for every signing cluster, including K=1.
+// `evm.ReadRegistryFinalityPolicy(ctx, reader, registry, confirmations)` requires
+// `CONFIG()` to return a nonzero Registry-owned Config with finality epoch 1 and
+// a known K=1..256 checksum. Reads are pinned to one confirmed block hash and
+// rechecked for an anchor reorg; missing or invalid policy fails closed.
+// The Registry must prevent later policy writes.
 // This reader does not prove immutability: use a non-upgradeable Registry with a
 // frozen CONFIG address and finality row. Live policy changes are unsupported.
-// Read at startup with a bounded context, not per withdrawal. All state reads
-// use one block hash; RPC endpoints must support EIP-1898 hash parameters.
+// Read at startup with a bounded context, not per withdrawal. State reads
+// require RPC endpoints that support EIP-1898 hash parameters.
 // confirmations=0 explicitly selects unconfirmed state for local development;
 // production callers must use their chain's confirmation policy.
-// Missing contracts, CONFIG() failures, and invalid advertised policy return errors.
 func ReadRegistryFinalityPolicy(ctx context.Context, r RegistryPolicyReader, registry common.Address, confirmations uint64) (RegistryFinalityPolicy, error) {
 	var policy RegistryFinalityPolicy
 	if registry == (common.Address{}) {
