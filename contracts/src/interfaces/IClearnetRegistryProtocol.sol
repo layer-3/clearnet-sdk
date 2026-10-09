@@ -13,6 +13,9 @@ import {NodeRecord, IClearnetRegistry} from "./IClearnetRegistry.sol";
 ///         Sibling interfaces (composed at the contract level, not nested here):
 ///           IRegistryAdmin — governance (off-protocol)
 ///           ISlash         — slasher-only `slash` mutator + `Slashed` event
+///           IClearnetRegistryConfig — required Registry-owned frozen finality policy
+///         Finalized-withdrawal consumers require CONFIG() even for K=1; see
+///         IClearnetRegistryConfig for ownership, epoch, checksum and freeze rules.
 ///
 ///         Dashboard / UI sugar (slot terms, status, supply) is composed
 ///         off-chain from `NODE_ID()` + the NodeID contract directly — Registry

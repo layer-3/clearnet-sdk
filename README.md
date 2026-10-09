@@ -83,7 +83,10 @@ Common entry points:
 - `pkg/blockchain/btc`: Bitcoin custody vault flows.
 - `pkg/finality`: finalized withdrawal verification. Pass the signing cluster
   size from `evm.ReadRegistryFinalityPolicy` to
-  `finality.NewFinalizedWithdrawalVerifier` before verifying withdrawals.
+  `finality.NewFinalizedWithdrawalVerifier` before verifying withdrawals. The
+  checker reference and K are private; use the constructor, including for K=1.
+  Former struct literals setting `TrustedValidators` no longer compile. The
+  checker may still track live registry membership; its reference cannot be replaced.
 
 Run the Go checks:
 

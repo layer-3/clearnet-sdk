@@ -12,11 +12,6 @@ import (
 )
 
 const (
-	// BlockSigningClusterSize preserves the legacy single-validator default.
-	// Deprecated: select ExpectedSigningClusterSize on the finality verifier
-	// from trusted deployment configuration, never from the received Block.K.
-	BlockSigningClusterSize uint64 = 1
-
 	// MaxClusterSize is the protocol upper bound on a block's signing cluster.
 	// The attestation bitmask has 256 bits, so larger clusters cannot bind every
 	// validator to the aggregate signature.
