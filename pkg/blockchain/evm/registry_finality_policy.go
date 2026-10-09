@@ -84,7 +84,7 @@ func ReadRegistryFinalityPolicy(ctx context.Context, r RegistryPolicyReader, reg
 	selector := registryABI.Methods["CONFIG"].ID
 	result, err := r.CallContractAtHash(ctx, ethereum.CallMsg{To: &registry, Data: selector}, policy.ConfirmedHash)
 	if err != nil {
-		return policy, fmt.Errorf("clearing policy: CONFIG: %w", err)
+		return policy, fmt.Errorf("clearing policy: Registry CONFIG() call failed (Registry must implement IClearnetRegistryConfig): %w", err)
 	}
 	config, err := policyAddress(result)
 	if err != nil {

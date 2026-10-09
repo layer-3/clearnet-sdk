@@ -27,8 +27,7 @@ func TestExplicitVerifierPolicyIsImmutable(t *testing.T) {
 	if _, err := v.Verify(fw); err != nil {
 		t.Fatal(err)
 	}
-	one, validators := finalizedWithdrawalFixtureForK(t, 1)
-	v.TrustedValidators = newMapValidatorChecker(validators)
+	one, _ := finalizedWithdrawalFixtureForK(t, 1)
 	if _, err := v.Verify(one); !errors.Is(err, ErrSigningClusterSize) {
 		t.Fatalf("K=1 accepted by immutable K=5 verifier: %v", err)
 	}
@@ -56,8 +55,11 @@ func TestDeploymentQuorumPolicies(t *testing.T) {
 			if _, err := other.Verify(fw); err == nil || !strings.Contains(err.Error(), "invalid signing cluster size") {
 				t.Fatalf("valid K=%d envelope accepted by K=%d policy: %v", k, otherK, err)
 			}
-			v.TrustedValidators = mapValidatorChecker{}
-			if _, err := v.Verify(fw); err == nil || !strings.Contains(err.Error(), "not authorized") {
+			untrusted, err := NewFinalizedWithdrawalVerifier(mapValidatorChecker{}, k)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := untrusted.Verify(fw); err == nil || !strings.Contains(err.Error(), "not authorized") {
 				t.Fatalf("untrusted validators accepted: %v", err)
 			}
 		})
@@ -67,10 +69,11 @@ func TestDeploymentQuorumPolicies(t *testing.T) {
 func TestVerifierRejectsMissingPolicy(t *testing.T) {
 	for _, k := range []uint64{1, 5} {
 		t.Run(fmt.Sprintf("K=%d", k), func(t *testing.T) {
-			fw, validators := finalizedWithdrawalFixtureForK(t, k)
-			v := &FinalizedWithdrawalVerifier{TrustedValidators: newMapValidatorChecker(validators)}
-			if _, err := v.Verify(fw); !errors.Is(err, ErrSigningClusterSize) {
-				t.Fatalf("unconfigured verifier accepted K=%d: %v", k, err)
+			fw, _ := finalizedWithdrawalFixtureForK(t, k)
+			for _, v := range []*FinalizedWithdrawalVerifier{nil, {}} {
+				if _, err := v.Verify(fw); !errors.Is(err, ErrSigningClusterSize) || !strings.Contains(err.Error(), "NewFinalizedWithdrawalVerifier") {
+					t.Fatalf("unconfigured verifier K=%d: %v, want constructor guidance", k, err)
+				}
 			}
 		})
 	}

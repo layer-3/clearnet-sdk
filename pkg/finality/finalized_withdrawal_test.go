@@ -63,18 +63,12 @@ func TestFinalizedWithdrawalVerifier_Valid(t *testing.T) {
 }
 
 func TestFinalizedWithdrawalVerifier_RejectsNilFinalizedWithdrawal(t *testing.T) {
-	verifier := &FinalizedWithdrawalVerifier{
-		TrustedValidators: mapValidatorChecker{},
+	verifier, err := NewFinalizedWithdrawalVerifier(mapValidatorChecker{}, 1)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := verifier.Verify(nil); err == nil {
-		t.Fatal("expected nil finalized withdrawal rejection")
-	}
-}
-
-func TestFinalizedWithdrawalVerifier_RejectsMissingTrustedValidators(t *testing.T) {
-	fw, _ := finalizedWithdrawalFixture(t)
-	if _, err := (&FinalizedWithdrawalVerifier{}).Verify(fw); err == nil {
-		t.Fatal("expected missing trusted validators rejection")
+	if _, err := verifier.Verify(nil); err == nil || !strings.Contains(err.Error(), "nil finalized withdrawal") {
+		t.Fatalf("nil finalized withdrawal: %v", err)
 	}
 }
 

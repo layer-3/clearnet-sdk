@@ -22,14 +22,15 @@ var ErrSigningClusterSize = errors.New("invalid signing cluster size")
 // FinalizedWithdrawalVerifier verifies the complete custody authorization
 // envelope for a finalized withdrawal.
 type FinalizedWithdrawalVerifier struct {
-	TrustedValidators  TrustedValidatorChecker
+	trustedValidators  TrustedValidatorChecker
 	signingClusterSize uint64
 }
 
 // NewFinalizedWithdrawalVerifier snapshots an explicit trusted deployment K.
 // Pass the Registry policy's SigningClusterSize, never a value from a withdrawal.
-// K cannot be changed on the returned verifier; use a new instance for a new
-// deployment. Verifiers without an explicit constructor policy fail closed.
+// The checker reference and K cannot be replaced on the returned verifier; use
+// a new instance for a new deployment. The checker may still track a live registry
+// cache. Zero-value verifiers fail closed and must be initialized with this constructor.
 func NewFinalizedWithdrawalVerifier(checker TrustedValidatorChecker, k uint64) (*FinalizedWithdrawalVerifier, error) {
 	if checker == nil {
 		return nil, errors.New("finality: trusted validators required")
@@ -37,7 +38,7 @@ func NewFinalizedWithdrawalVerifier(checker TrustedValidatorChecker, k uint64) (
 	if k == 0 || k > core.MaxClusterSize {
 		return nil, fmt.Errorf("finality: %w k=%d (want 1..%d)", ErrSigningClusterSize, k, core.MaxClusterSize)
 	}
-	return &FinalizedWithdrawalVerifier{TrustedValidators: checker, signingClusterSize: k}, nil
+	return &FinalizedWithdrawalVerifier{trustedValidators: checker, signingClusterSize: k}, nil
 }
 
 // VerifiedFinalizedWithdrawal is the trusted projection returned after all
@@ -59,13 +60,13 @@ func (v *FinalizedWithdrawalVerifier) Verify(fw *core.FinalizedWithdrawal) (*Ver
 	if fw == nil {
 		return nil, errors.New("finality: nil finalized withdrawal")
 	}
-	if v == nil || v.TrustedValidators == nil {
+	if v == nil || v.signingClusterSize == 0 {
+		return nil, fmt.Errorf("finality: verifier must be initialized with NewFinalizedWithdrawalVerifier: %w", ErrSigningClusterSize)
+	}
+	if v.trustedValidators == nil {
 		return nil, errors.New("finality: trusted validators required")
 	}
 	expectedK := v.signingClusterSize
-	if expectedK == 0 || expectedK > core.MaxClusterSize {
-		return nil, fmt.Errorf("finality: invalid expected signing cluster size k=%d (want 1..%d): %w", expectedK, core.MaxClusterSize, ErrSigningClusterSize)
-	}
 	if fw.Block.K != expectedK {
 		return nil, fmt.Errorf("finality: %w k=%d (want %d)", ErrSigningClusterSize, fw.Block.K, expectedK)
 	}
@@ -85,11 +86,11 @@ func (v *FinalizedWithdrawalVerifier) Verify(fw *core.FinalizedWithdrawal) (*Ver
 	// core.ValidateEntryOrder. It is protocol hardening, but may reject
 	// historical producers if canonical ordering was not always enforced.
 
-	if err := verifyAttestationWithChecker(fw.Block.SigningMessage(), fw.Block.Attestation, fw.Block.K, v.TrustedValidators); err != nil {
+	if err := verifyAttestationWithChecker(fw.Block.SigningMessage(), fw.Block.Attestation, fw.Block.K, v.trustedValidators); err != nil {
 		return nil, fmt.Errorf("finality: block attestation: %w", err)
 	}
 
-	if err := verifyAttestationWithChecker(fw.SigningMessage(), fw.Attestation, fw.Block.K, v.TrustedValidators); err != nil {
+	if err := verifyAttestationWithChecker(fw.SigningMessage(), fw.Attestation, fw.Block.K, v.trustedValidators); err != nil {
 		return nil, fmt.Errorf("finality: finalized withdrawal attestation: %w", err)
 	}
 
