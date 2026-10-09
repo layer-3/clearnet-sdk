@@ -99,10 +99,10 @@ func newPolicyRPC(k uint64) *policyRPC {
 }
 
 func TestRegistryFinalityPolicyConfirmedAndIndependent(t *testing.T) {
-	for _, k := range []uint64{1, 5, 256} {
+	for _, k := range []uint64{1, 2, 5, 7, 64, 256} {
 		r := newPolicyRPC(k)
-		p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7, 1)
-		if err != nil || p.Legacy || p.SigningClusterSize != k || p.ConfigAddress != r.config || p.ConfirmedBlock != 93 {
+		p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7)
+		if err != nil || p.SigningClusterSize != k || p.ConfigAddress != r.config || p.ConfirmedBlock != 93 {
 			t.Fatalf("policy=%+v err=%v", p, err)
 		}
 		for _, block := range r.blocks {
@@ -111,24 +111,20 @@ func TestRegistryFinalityPolicyConfirmedAndIndependent(t *testing.T) {
 			}
 		}
 		// Re-read after restart: no YAML default or event replay is needed.
-		again, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7, 5)
+		again, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7)
 		if err != nil || again != p {
 			t.Fatalf("restart policy=%+v err=%v", again, err)
 		}
 	}
 }
 
-func TestRegistryFinalityPolicyLegacyCompatibility(t *testing.T) {
-	for _, k := range []uint64{1, 5} {
-		for _, pushData := range []byte{0, 0xf4} {
-			r := newPolicyRPC(k)
-			r.code, r.getter = []byte{0x60, pushData, 0x60, 0, 0xfd}, nil
-			r.getterErr = policyRevert{}
-			p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7, k)
-			if err != nil || !p.Legacy || p.SigningClusterSize != k || p.ConfigAddress != (common.Address{}) {
-				t.Fatalf("policy=%+v err=%v", p, err)
-			}
-		}
+func TestRegistryFinalityPolicyRejectsMissingConfig(t *testing.T) {
+	r := newPolicyRPC(1)
+	r.code, r.getter = []byte{0x60, 0, 0x60, 0, 0xfd}, nil
+	r.getterErr = policyRevert{}
+	p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7)
+	if !errors.Is(err, r.getterErr) || p.SigningClusterSize != 0 || p.ConfigAddress != (common.Address{}) {
+		t.Fatalf("missing CONFIG() policy=%+v err=%v", p, err)
 	}
 }
 
@@ -151,7 +147,7 @@ func TestRegistryFinalityPolicyFailsClosed(t *testing.T) {
 		{"code RPC loss", func(r *policyRPC) { r.codeErr = errors.New("offline") }},
 		{"undeployed", func(r *policyRPC) { r.code = nil }},
 		{"no confirmed state", func(r *policyRPC) { r.head = 1 }},
-		{"legacy RPC loss", func(r *policyRPC) { r.code = []byte{0}; r.getterErr = errors.New("offline"); r.getter = nil }},
+		{"CONFIG RPC loss", func(r *policyRPC) { r.code = []byte{0}; r.getterErr = errors.New("offline"); r.getter = nil }},
 		{"RPC error with empty data is not a revert", func(r *policyRPC) {
 			r.code = []byte{0}
 			r.getterErr = policyRevert{message: "RPC unavailable"}
@@ -173,7 +169,7 @@ func TestRegistryFinalityPolicyFailsClosed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newPolicyRPC(5)
 			tc.mutate(r)
-			if p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7, 1); err == nil {
+			if p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7); err == nil {
 				t.Fatalf("accepted invalid policy: %+v", p)
 			}
 		})
@@ -181,20 +177,13 @@ func TestRegistryFinalityPolicyFailsClosed(t *testing.T) {
 }
 
 func TestRegistryFinalityPolicyInputs(t *testing.T) {
-	for _, tc := range []struct {
-		registry common.Address
-		k        uint64
-	}{
-		{common.Address{}, 1}, {common.HexToAddress("0x1234"), 0}, {common.HexToAddress("0x1234"), 257},
-	} {
-		r := newPolicyRPC(5)
-		if _, err := ReadRegistryFinalityPolicy(context.Background(), r, tc.registry, 7, tc.k); err == nil {
-			t.Fatal("invalid input accepted")
-		}
+	r := newPolicyRPC(5)
+	if _, err := ReadRegistryFinalityPolicy(context.Background(), r, common.Address{}, 7); err == nil {
+		t.Fatal("zero registry address accepted")
 	}
 	for _, confirmations := range []uint64{0, 100} {
 		r := newPolicyRPC(5)
-		if p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, confirmations, 1); err != nil || p.ConfirmedBlock != 100-confirmations {
+		if p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, confirmations); err != nil || p.ConfirmedBlock != 100-confirmations {
 			t.Fatalf("valid boundary policy=%+v error=%v", p, err)
 		}
 	}
@@ -203,7 +192,7 @@ func TestRegistryFinalityPolicyInputs(t *testing.T) {
 func TestRegistryFinalityPolicyAdvertisedThroughProxy(t *testing.T) {
 	r := newPolicyRPC(5)
 	r.code = []byte{0xf4}
-	if p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7, 1); err != nil || p.Legacy || p.SigningClusterSize != 5 {
+	if p, err := ReadRegistryFinalityPolicy(context.Background(), r, r.registry, 7); err != nil || p.SigningClusterSize != 5 {
 		t.Fatalf("valid advertised policy=%+v error=%v", p, err)
 	}
 }
@@ -213,7 +202,7 @@ func TestRegistryFinalityPolicyChecksumMatchesSolidityABI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []uint64{1, 5, 256} {
+	for _, k := range []uint64{1, 2, 5, 7, 64, 256} {
 		payload, err := (abi.Arguments{{Type: typ}}).Pack(k)
 		if err != nil {
 			t.Fatal(err)

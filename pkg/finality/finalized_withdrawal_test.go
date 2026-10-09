@@ -32,9 +32,9 @@ func (s mapValidatorChecker) IsTrustedValidator(pubkey []byte) bool {
 
 func TestFinalizedWithdrawalVerifier_Valid(t *testing.T) {
 	fw, validators := finalizedWithdrawalFixture(t)
-	verifier := &FinalizedWithdrawalVerifier{
-		TrustedValidators:          newMapValidatorChecker(validators),
-		ExpectedSigningClusterSize: 5,
+	verifier, err := NewFinalizedWithdrawalVerifier(newMapValidatorChecker(validators), 5)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	got, err := verifier.Verify(fw)
@@ -143,12 +143,12 @@ func TestFinalizedWithdrawalVerifier_RejectsFinalizedWithdrawalAttestationMismat
 func TestFinalizedWithdrawalVerifier_RejectsUnauthorizedValidator(t *testing.T) {
 	fw, validators := finalizedWithdrawalFixture(t)
 	trusted := newMapValidatorChecker(validators[:len(validators)-1])
-	verifier := &FinalizedWithdrawalVerifier{
-		TrustedValidators:          trusted,
-		ExpectedSigningClusterSize: 5,
+	verifier, err := NewFinalizedWithdrawalVerifier(trusted, 5)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	err := verifierErr(verifier, fw)
+	err = verifierErr(verifier, fw)
 	if err == nil || !strings.Contains(err.Error(), "not authorized") {
 		t.Fatalf("expected unauthorized validator rejection, got %v", err)
 	}
@@ -157,12 +157,12 @@ func TestFinalizedWithdrawalVerifier_RejectsUnauthorizedValidator(t *testing.T) 
 func TestFinalizedWithdrawalVerifier_RejectsDuplicateValidator(t *testing.T) {
 	fw, validators := finalizedWithdrawalFixture(t)
 	fw.Attestation.Validators[3] = append([]byte(nil), fw.Attestation.Validators[0]...)
-	verifier := &FinalizedWithdrawalVerifier{
-		TrustedValidators:          newMapValidatorChecker(validators),
-		ExpectedSigningClusterSize: 5,
+	verifier, err := NewFinalizedWithdrawalVerifier(newMapValidatorChecker(validators), 5)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	err := verifierErr(verifier, fw)
+	err = verifierErr(verifier, fw)
 	if err == nil || !strings.Contains(err.Error(), "duplicate validator") {
 		t.Fatalf("expected duplicate validator rejection, got %v", err)
 	}
@@ -254,9 +254,9 @@ func TestFinalizedWithdrawalVerifier_RejectsFinalizedBeforeSealed(t *testing.T) 
 }
 
 func verifyFixtureFails(fw *core.FinalizedWithdrawal, validators [][]byte) error {
-	verifier := &FinalizedWithdrawalVerifier{
-		TrustedValidators:          newMapValidatorChecker(validators),
-		ExpectedSigningClusterSize: 5,
+	verifier, err := NewFinalizedWithdrawalVerifier(newMapValidatorChecker(validators), 5)
+	if err != nil {
+		return err
 	}
 	return verifierErr(verifier, fw)
 }

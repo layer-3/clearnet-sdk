@@ -7,13 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"strings"
 
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
 
@@ -32,7 +30,6 @@ type RegistryFinalityPolicy struct {
 	ConfigAddress      common.Address
 	ConfirmedBlock     uint64
 	ConfirmedHash      common.Hash
-	Legacy             bool
 }
 
 func RegistryFinalityPolicyChecksum(k uint64) common.Hash {
@@ -42,7 +39,7 @@ func RegistryFinalityPolicyChecksum(k uint64) common.Hash {
 }
 
 // ReadRegistryFinalityPolicy reads the signing cluster size at a confirmed block.
-// When CONFIG() exists, its Config must be Registry-owned with epoch 1 and a
+// CONFIG() is required; its Config must be Registry-owned with epoch 1 and a
 // known v1 checksum. The Registry must prevent later policy writes.
 // This reader does not prove immutability: use a non-upgradeable Registry with a
 // frozen CONFIG address and finality row. Live policy changes are unsupported.
@@ -50,18 +47,11 @@ func RegistryFinalityPolicyChecksum(k uint64) common.Hash {
 // use one block hash; RPC endpoints must support EIP-1898 hash parameters.
 // confirmations=0 explicitly selects unconfirmed state for local development;
 // production callers must use their chain's confirmation policy.
-// legacyK applies only to direct Solidity Registries without CONFIG(); missing
-// contracts, RPC failures, and invalid advertised policy return errors.
-// Legacy fallback requires an empty execution revert, never empty success, and
-// rejects DELEGATECALL/CALLCODE bytecode. It is not proxy implementation discovery.
-// The caller must independently approve the direct legacy deployment and its K;
-// this heuristic is not proof that arbitrary bytecode implements a Registry.
-// Unknown RPC error shapes fail closed; empty reverts require geth-compatible
-// rpc.DataError("0x") and an "execution reverted" message.
-func ReadRegistryFinalityPolicy(ctx context.Context, r RegistryPolicyReader, registry common.Address, confirmations, legacyK uint64) (RegistryFinalityPolicy, error) {
+// Missing contracts, CONFIG() failures, and invalid advertised policy return errors.
+func ReadRegistryFinalityPolicy(ctx context.Context, r RegistryPolicyReader, registry common.Address, confirmations uint64) (RegistryFinalityPolicy, error) {
 	var policy RegistryFinalityPolicy
-	if registry == (common.Address{}) || legacyK == 0 || legacyK > core.MaxClusterSize {
-		return policy, errors.New("clearing policy: invalid registry or legacy quorum")
+	if registry == (common.Address{}) {
+		return policy, errors.New("clearing policy: invalid registry")
 	}
 	head, err := r.HeaderByNumber(ctx, nil)
 	if err != nil {
@@ -90,14 +80,6 @@ func ReadRegistryFinalityPolicy(ctx context.Context, r RegistryPolicyReader, reg
 	}
 	selector := registryABI.Methods["CONFIG"].ID
 	result, err := r.CallContractAtHash(ctx, ethereum.CallMsg{To: &registry, Data: selector}, policy.ConfirmedHash)
-	// Unknown selectors on old Solidity registries revert without data. Require
-	// both that evidence and the selector's absence; do not mask a failing getter.
-	// TODO: Remove this deprecated legacy fallback after existing deployments
-	// migrate to Registry-owned finality policy.
-	if !bytes.Contains(code, selector) && !hasDelegateCall(code) && emptyRevert(err) {
-		policy.SigningClusterSize, policy.Legacy = legacyK, true
-		return policy, checkPolicyAnchor(ctx, r, block, policy.ConfirmedHash)
-	}
 	if err != nil {
 		return policy, fmt.Errorf("clearing policy: CONFIG: %w", err)
 	}
@@ -166,28 +148,9 @@ func checkPolicyAnchor(ctx context.Context, r RegistryPolicyReader, block *big.I
 	return nil
 }
 
-// Walk instructions, not raw bytes: PUSH data can contain any opcode value.
-func hasDelegateCall(code []byte) bool {
-	for pc := 0; pc < len(code); pc++ {
-		op := code[pc]
-		if op == 0xf4 || op == 0xf2 { // DELEGATECALL or CALLCODE
-			return true
-		}
-		if op >= 0x60 && op <= 0x7f {
-			pc += int(op - 0x5f)
-		}
-	}
-	return false
-}
-
 func policyAddress(word []byte) (common.Address, error) {
 	if len(word) != 32 || !bytes.Equal(word[:12], make([]byte, 12)) || common.BytesToAddress(word[12:]) == (common.Address{}) {
 		return common.Address{}, errors.New("invalid address encoding")
 	}
 	return common.BytesToAddress(word[12:]), nil
-}
-
-func emptyRevert(err error) bool {
-	var dataErr rpc.DataError
-	return errors.As(err, &dataErr) && dataErr.ErrorData() == "0x" && strings.HasPrefix(err.Error(), "execution reverted")
 }
