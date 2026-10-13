@@ -57,40 +57,33 @@ const maxAcceptableFeeDrops uint64 = 1_000_000
 // validated value is available.
 type BaseFeeResolver func(ctx context.Context) (uint64, error)
 
-// clientValidatedBaseFee resolves the base fee from server_state's
-// validated_ledger.base_fee (drops) on a live rippled. A response with no
-// validated ledger or a zero base fee is an operational error. The default
-// BaseFeeResolver for the finalizers.
-func clientValidatedBaseFee(client *rpc.Client) BaseFeeResolver {
-	return func(ctx context.Context) (uint64, error) {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		res, err := client.Request(&server.StateRequest{})
-		if err != nil {
-			return 0, fmt.Errorf("xrpl: server_state: %w", err)
-		}
-		var resp server.StateResponse
-		if err := res.GetResult(&resp); err != nil {
-			return 0, fmt.Errorf("xrpl: decode server_state: %w", err)
-		}
-		validated := resp.State.ValidatedLedger
-		if validated.Seq == 0 || validated.BaseFee == 0 {
-			return 0, errors.New("xrpl: server_state has no validated ledger base fee")
-		}
-		return uint64(validated.BaseFee), nil
+// validatedBaseFee reads the base fee from server_state's
+// validated_ledger.base_fee (drops) through call, a context-bound client (see
+// rpcCall). A response with no validated ledger or a zero base fee is an
+// operational error. The default base-fee source for the finalizers.
+func validatedBaseFee(call *rpc.Client) (uint64, error) {
+	res, err := call.Request(&server.StateRequest{})
+	if err != nil {
+		return 0, fmt.Errorf("xrpl: server_state: %w", err)
 	}
+	var resp server.StateResponse
+	if err := res.GetResult(&resp); err != nil {
+		return 0, fmt.Errorf("xrpl: decode server_state: %w", err)
+	}
+	validated := resp.State.ValidatedLedger
+	if validated.Seq == 0 || validated.BaseFee == 0 {
+		return 0, errors.New("xrpl: server_state has no validated ledger base fee")
+	}
+	return uint64(validated.BaseFee), nil
 }
 
 // fetchValidatedSignerQuorum reads the vault's SignerQuorum from its SignerList
-// in the latest validated ledger. An unvalidated response is an operational
-// error. The default quorum source for the fee floor when no threshold
-// resolver is installed.
-func fetchValidatedSignerQuorum(ctx context.Context, client *rpc.Client, vault string) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	resp, err := client.GetAccountInfo(&account.InfoRequest{
+// in the latest validated ledger through call, a context-bound client. An
+// unvalidated response is an operational error. It backs both finalizers'
+// LiveQuorum and is the fee floor's quorum source when no threshold resolver
+// is installed.
+func fetchValidatedSignerQuorum(call *rpc.Client, vault string) (int, error) {
+	resp, err := call.GetAccountInfo(&account.InfoRequest{
 		Account:     types.Address(vault),
 		LedgerIndex: common.Validated,
 		SignerLists: true,
@@ -133,23 +126,26 @@ func multisignFeeFloor(baseFee uint64, quorum int) (uint64, error) {
 // quorum comes from resolveThreshold when set (the caller must bind it to the
 // validated live SignerList), else from a validated account_info read; it is
 // never the static construction-time threshold. The base fee comes from
-// resolveBaseFee when set, else from validated server_state. Any lookup
-// failure is an operational error, distinct from ErrCandidateRejected.
-func resolveFeeFloor(ctx context.Context, client *rpc.Client, vault string, resolveThreshold func(context.Context) (int, error), resolveBaseFee BaseFeeResolver) (uint64, error) {
+// resolveBaseFee when set, else from validated server_state. Default reads go
+// through call, a client bound to ctx. Any lookup failure is an operational
+// error, distinct from ErrCandidateRejected.
+func resolveFeeFloor(ctx context.Context, call *rpc.Client, vault string, resolveThreshold func(context.Context) (int, error), resolveBaseFee BaseFeeResolver) (uint64, error) {
 	var quorum int
 	var err error
 	if resolveThreshold != nil {
 		quorum, err = resolveThreshold(ctx)
 	} else {
-		quorum, err = fetchValidatedSignerQuorum(ctx, client, vault)
+		quorum, err = fetchValidatedSignerQuorum(call, vault)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("xrpl: resolve live quorum for fee floor: %w", err)
 	}
-	if resolveBaseFee == nil {
-		resolveBaseFee = clientValidatedBaseFee(client)
+	var baseFee uint64
+	if resolveBaseFee != nil {
+		baseFee, err = resolveBaseFee(ctx)
+	} else {
+		baseFee, err = validatedBaseFee(call)
 	}
-	baseFee, err := resolveBaseFee(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("xrpl: resolve validated base fee: %w", err)
 	}
@@ -263,19 +259,21 @@ func buildLLS(state LedgerState, validUntil int64) (uint32, error) {
 	return state.ValidatedIndex + budget, nil
 }
 
-// clientLedgerState resolves the current validated LedgerState from a live
-// rippled via the ledger query. The default resolver for the finalizers.
-func clientLedgerState(client *rpc.Client) LedgerStateResolver {
-	return func(_ context.Context) (LedgerState, error) {
-		resp, err := client.GetLedger(&ledger.Request{LedgerIndex: common.Validated})
-		if err != nil {
-			return LedgerState{}, fmt.Errorf("xrpl: get validated ledger: %w", err)
-		}
-		return LedgerState{
-			ValidatedIndex: uint32(resp.LedgerIndex),
-			CloseUnix:      int64(resp.Ledger.CloseTime) + rippleEpochOffset,
-		}, nil
+// validatedLedgerState reads the current validated LedgerState through call, a
+// context-bound client, via the ledger query. A response that is not validated
+// is an operational error. The default ledger source for the finalizers.
+func validatedLedgerState(call *rpc.Client) (LedgerState, error) {
+	resp, err := call.GetLedger(&ledger.Request{LedgerIndex: common.Validated})
+	if err != nil {
+		return LedgerState{}, fmt.Errorf("xrpl: get validated ledger: %w", err)
 	}
+	if !resp.Validated || resp.LedgerIndex == 0 {
+		return LedgerState{}, errors.New("xrpl: validated ledger response is not validated")
+	}
+	return LedgerState{
+		ValidatedIndex: uint32(resp.LedgerIndex),
+		CloseUnix:      int64(resp.Ledger.CloseTime) + rippleEpochOffset,
+	}, nil
 }
 
 // checkField enforces the LastLedgerSequence band on a flatTx field value.
@@ -743,7 +741,8 @@ func CanonicalJSON(flatTx transaction.FlatTransaction) ([]byte, error) {
 // (tefBAD_SIGNATURE), and a stale quorum would under- or over-fill the Signers
 // array; reading the live list keeps both correct across a rotation. Pack
 // autofilled the multi-sign fee for the quorum count, so trimming to exactly
-// liveQuorum keeps the fee right. Shared by the withdrawal and rotation submits.
+// liveQuorum keeps the fee right. Shared by the withdrawal and rotation submits;
+// client is the operation's context-bound client (see rpcCall).
 func combineLive(client *rpc.Client, vault string, signatures [][]byte) (string, error) {
 	blobs := make([]string, 0, len(signatures))
 	for _, s := range signatures {

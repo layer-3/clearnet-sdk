@@ -31,6 +31,9 @@ type TicketProvider interface {
 // node's signer and a TicketProvider; the quorum's blobs are merged off-mesh by
 // the caller. It implements core.VaultWithdrawalFinalizer.
 type WithdrawalFinalizer struct {
+	rpcURL string
+	// client holds the cached NetworkID; each operation's requests go through
+	// a context-bound client from rpc (see rpcCall).
 	client       *rpc.Client
 	vaultAddress string
 	threshold    int
@@ -90,13 +93,22 @@ func (f *WithdrawalFinalizer) SetStandaloneLedgerMode(v bool) {
 	f.standalone = v
 }
 
+// rpc returns a client whose requests run under ctx (see rpcCall).
+func (f *WithdrawalFinalizer) rpc(ctx context.Context) (*rpc.Client, error) {
+	return rpcCall(ctx, f.rpcURL, f.client)
+}
+
 // ledgerState resolves the current validated LedgerState, using the injected
-// resolver or a live-RPC default.
+// resolver or a validated live-RPC default.
 func (f *WithdrawalFinalizer) ledgerState(ctx context.Context) (LedgerState, error) {
 	if f.resolveLedger != nil {
 		return f.resolveLedger(ctx)
 	}
-	return clientLedgerState(f.client)(ctx)
+	call, err := f.rpc(ctx)
+	if err != nil {
+		return LedgerState{}, err
+	}
+	return validatedLedgerState(call)
 }
 
 var _ core.VaultWithdrawalFinalizer = (*WithdrawalFinalizer)(nil)
@@ -116,6 +128,7 @@ func NewWithdrawalFinalizer(rpcURL, vaultAddress string, threshold int, signer s
 		return nil, err
 	}
 	return &WithdrawalFinalizer{
+		rpcURL:       rpcURL,
 		client:       client,
 		vaultAddress: vaultAddress,
 		threshold:    threshold,
@@ -126,13 +139,18 @@ func NewWithdrawalFinalizer(rpcURL, vaultAddress string, threshold int, signer s
 	}, nil
 }
 
-// LiveQuorum returns the vault's current on-chain SignerQuorum. Callers wire it
-// as the ThresholdResolver (and reuse it for the ceremony collect count) so a
-// quorum-raising rotation sizes the fee and quorum against live state rather
-// than the boot-time threshold.
-func (f *WithdrawalFinalizer) LiveQuorum(_ context.Context) (int, error) {
-	_, q, err := fetchLiveSignerList(f.client, f.vaultAddress)
-	return q, err
+// LiveQuorum returns the SignerQuorum of the vault's SignerList in the latest
+// validated ledger. Callers wire it as the ThresholdResolver (and reuse it for
+// the ceremony collect count) so a quorum-raising rotation sizes the fee, the
+// multisign fee floor and the quorum against validated live state rather than
+// the boot-time threshold. A failed or unvalidated read is an error; a rotation
+// that has not yet validated is not reflected.
+func (f *WithdrawalFinalizer) LiveQuorum(ctx context.Context) (int, error) {
+	call, err := f.rpc(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return fetchValidatedSignerQuorum(call, f.vaultAddress)
 }
 
 // feeQuorum returns the SignerQuorum used to size the multi-sign fee: the live
@@ -180,10 +198,14 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 	if err != nil {
 		return nil, err
 	}
-	if _, err := ResolveNetworkIDPolicy(f.client); err != nil {
+	call, err := f.rpc(ctx)
+	if err != nil {
 		return nil, err
 	}
-	if err := f.client.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
+	if _, err := resolveNetworkIDPolicy(f.client, call); err != nil {
+		return nil, err
+	}
+	if err := call.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
 		return nil, fmt.Errorf("xrpl: autofill: %w", err)
 	}
 	flatTx["Sequence"] = uint32(0)
@@ -226,11 +248,15 @@ func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *c
 		}
 		policy.current = state
 	}
-	minFee, err := resolveFeeFloor(ctx, f.client, f.vaultAddress, f.resolveThreshold, f.resolveBaseFee)
+	call, err := f.rpc(ctx)
 	if err != nil {
 		return err
 	}
-	networkPolicy, err := ResolveNetworkIDPolicy(f.client)
+	minFee, err := resolveFeeFloor(ctx, call, f.vaultAddress, f.resolveThreshold, f.resolveBaseFee)
+	if err != nil {
+		return err
+	}
+	networkPolicy, err := resolveNetworkIDPolicy(f.client, call)
 	if err != nil {
 		return err
 	}
@@ -258,12 +284,16 @@ func (f *WithdrawalFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, 
 
 // Submit combines the collected multi-sign blobs (trimmed to the quorum) and
 // broadcasts the result, returning the txID.
-func (f *WithdrawalFinalizer) Submit(_ context.Context, _ []byte, signatures [][]byte) (string, error) {
-	merged, err := combineLive(f.client, f.vaultAddress, signatures)
+func (f *WithdrawalFinalizer) Submit(ctx context.Context, _ []byte, signatures [][]byte) (string, error) {
+	call, err := f.rpc(ctx)
 	if err != nil {
 		return "", err
 	}
-	result, err := f.client.SubmitMultisigned(merged, false)
+	merged, err := combineLive(call, f.vaultAddress, signatures)
+	if err != nil {
+		return "", err
+	}
+	result, err := call.SubmitMultisigned(merged, false)
 	if err != nil {
 		return "", fmt.Errorf("xrpl: submit_multisigned: %w", err)
 	}
@@ -283,9 +313,13 @@ func (f *WithdrawalFinalizer) Submit(_ context.Context, _ []byte, signatures [][
 // InvoiceID equals the withdrawalID, returning its txID + true.
 func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID [32]byte) (string, bool, error) {
 	want := strings.ToUpper(hex.EncodeToString(withdrawalID[:]))
+	call, err := f.rpc(ctx)
+	if err != nil {
+		return "", false, err
+	}
 	var marker any
 	for page := 0; page < executionScanPages; page++ {
-		resp, err := f.client.GetAccountTransactions(&account.TransactionsRequest{
+		resp, err := call.GetAccountTransactions(&account.TransactionsRequest{
 			Account: types.Address(f.vaultAddress),
 			Limit:   100,
 			Marker:  marker,

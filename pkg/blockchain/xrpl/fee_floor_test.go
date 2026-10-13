@@ -133,14 +133,19 @@ func (s *countingSigner) Sign(ctx context.Context, msg []byte) ([]byte, error) {
 	return s.Signer.Sign(ctx, msg)
 }
 
-// fakeRippled answers server_info, server_state and account_info. The
-// validated flags let a test serve unvalidated state.
+// fakeRippled answers server_info, server_state, account_info, ledger and tx.
+// The validated flags let a test serve unvalidated state; tx always answers
+// txnNotFound.
 type fakeRippled struct {
 	baseFee          uint64
 	ledgerValidated  bool
 	quorum           int
 	entries          int
 	signersValidated bool
+	// ledgerUnvalidated makes the ledger query answer validated: false.
+	ledgerUnvalidated bool
+	// signerAccounts, when set, replaces the generated SignerList members.
+	signerAccounts []string
 }
 
 func (f *fakeRippled) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -162,9 +167,15 @@ func (f *fakeRippled) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		result = map[string]any{"state": map[string]any{"validated_ledger": validated}, "status": "success"}
 	case "account_info":
-		entries := make([]any, f.entries)
-		for i := range entries {
-			entries[i] = map[string]any{"SignerEntry": map[string]any{"Account": "rSigner" + strings.Repeat("1", 26) + string(rune('a'+i)), "SignerWeight": 1}}
+		accounts := f.signerAccounts
+		if accounts == nil {
+			for i := 0; i < f.entries; i++ {
+				accounts = append(accounts, "rSigner"+strings.Repeat("1", 26)+string(rune('a'+i)))
+			}
+		}
+		entries := make([]any, len(accounts))
+		for i, a := range accounts {
+			entries[i] = map[string]any{"SignerEntry": map[string]any{"Account": a, "SignerWeight": 1}}
 		}
 		result = map[string]any{
 			"account_data": map[string]any{"Account": floorTestVault},
@@ -172,6 +183,15 @@ func (f *fakeRippled) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"validated":    f.signersValidated,
 			"status":       "success",
 		}
+	case "ledger":
+		result = map[string]any{
+			"ledger":       map[string]any{"close_time": 10_000},
+			"ledger_index": 1000,
+			"validated":    !f.ledgerUnvalidated,
+			"status":       "success",
+		}
+	case "tx":
+		result = map[string]any{"error": "txnNotFound", "status": "error"}
 	default:
 		http.Error(w, "unexpected method "+req.Method, http.StatusBadRequest)
 		return

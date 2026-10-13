@@ -23,6 +23,9 @@ import (
 // Replay defense is the vault account's own Sequence (autofilled into the
 // SignerListSet), so there is no separate nonce: a given Sequence applies once.
 type RotationFinalizer struct {
+	rpcURL string
+	// client holds the cached NetworkID; each operation's requests go through
+	// a context-bound client from rpc (see rpcCall).
 	client       *rpc.Client
 	vaultAddress string
 	threshold    int // current SignerQuorum — sizes the multi-sign fee
@@ -78,21 +81,36 @@ func (f *RotationFinalizer) SetStandaloneLedgerMode(v bool) {
 	f.standalone = v
 }
 
-// ledgerState resolves the current validated LedgerState.
+// rpc returns a client whose requests run under ctx (see rpcCall).
+func (f *RotationFinalizer) rpc(ctx context.Context) (*rpc.Client, error) {
+	return rpcCall(ctx, f.rpcURL, f.client)
+}
+
+// ledgerState resolves the current validated LedgerState, using the injected
+// resolver or a validated live-RPC default.
 func (f *RotationFinalizer) ledgerState(ctx context.Context) (LedgerState, error) {
 	if f.resolveLedger != nil {
 		return f.resolveLedger(ctx)
 	}
-	return clientLedgerState(f.client)(ctx)
+	call, err := f.rpc(ctx)
+	if err != nil {
+		return LedgerState{}, err
+	}
+	return validatedLedgerState(call)
 }
 
-// LiveQuorum returns the vault's current on-chain SignerQuorum. Callers wire it
-// as the ThresholdResolver (and reuse it for the ceremony collect count) so a
-// quorum-raising rotation sizes the fee and quorum against live state rather
-// than the boot-time threshold.
-func (f *RotationFinalizer) LiveQuorum(_ context.Context) (int, error) {
-	_, q, err := fetchLiveSignerList(f.client, f.vaultAddress)
-	return q, err
+// LiveQuorum returns the SignerQuorum of the vault's SignerList in the latest
+// validated ledger. Callers wire it as the ThresholdResolver (and reuse it for
+// the ceremony collect count) so a quorum-raising rotation sizes the fee, the
+// multisign fee floor and the quorum against validated live state rather than
+// the boot-time threshold. A failed or unvalidated read is an error; a rotation
+// that has not yet validated is not reflected.
+func (f *RotationFinalizer) LiveQuorum(ctx context.Context) (int, error) {
+	call, err := f.rpc(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return fetchValidatedSignerQuorum(call, f.vaultAddress)
 }
 
 var _ core.SignerRotationFinalizer = (*RotationFinalizer)(nil)
@@ -110,6 +128,7 @@ func NewRotationFinalizer(rpcURL, vaultAddress string, threshold int, signer sig
 		return nil, err
 	}
 	return &RotationFinalizer{
+		rpcURL:       rpcURL,
 		client:       client,
 		vaultAddress: vaultAddress,
 		threshold:    threshold,
@@ -140,10 +159,14 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 			return nil, fmt.Errorf("xrpl: resolve live quorum: %w", err)
 		}
 	}
-	if _, err := ResolveNetworkIDPolicy(f.client); err != nil {
+	call, err := f.rpc(ctx)
+	if err != nil {
 		return nil, err
 	}
-	if err := f.client.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
+	if _, err := resolveNetworkIDPolicy(f.client, call); err != nil {
+		return nil, err
+	}
+	if err := call.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
 		return nil, fmt.Errorf("xrpl: autofill: %w", err)
 	}
 	// Replace autofill's LastLedgerSequence with a ledger-budget bound (or drop it
@@ -184,11 +207,15 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 		}
 		policy.current = state
 	}
-	minFee, err := resolveFeeFloor(ctx, f.client, f.vaultAddress, f.resolveThreshold, f.resolveBaseFee)
+	call, err := f.rpc(ctx)
 	if err != nil {
 		return err
 	}
-	networkPolicy, err := ResolveNetworkIDPolicy(f.client)
+	minFee, err := resolveFeeFloor(ctx, call, f.vaultAddress, f.resolveThreshold, f.resolveBaseFee)
+	if err != nil {
+		return err
+	}
+	networkPolicy, err := resolveNetworkIDPolicy(f.client, call)
 	if err != nil {
 		return err
 	}
@@ -216,12 +243,16 @@ func (f *RotationFinalizer) Sign(ctx context.Context, packed []byte) ([]byte, er
 
 // Submit combines the collected multi-sign blobs (trimmed to the current quorum)
 // and broadcasts the SignerListSet, returning the txID.
-func (f *RotationFinalizer) Submit(_ context.Context, _ []byte, signatures [][]byte) (string, error) {
-	merged, err := combineLive(f.client, f.vaultAddress, signatures)
+func (f *RotationFinalizer) Submit(ctx context.Context, _ []byte, signatures [][]byte) (string, error) {
+	call, err := f.rpc(ctx)
 	if err != nil {
 		return "", err
 	}
-	result, err := f.client.SubmitMultisigned(merged, false)
+	merged, err := combineLive(call, f.vaultAddress, signatures)
+	if err != nil {
+		return "", err
+	}
+	result, err := call.SubmitMultisigned(merged, false)
 	if err != nil {
 		return "", fmt.Errorf("xrpl: submit_multisigned: %w", err)
 	}
@@ -241,8 +272,12 @@ func (f *RotationFinalizer) Submit(_ context.Context, _ []byte, signatures [][]b
 // holds exactly newSigners with SignerQuorum == newThreshold. Binary: no txID is
 // recoverable from the SignerList object, so an empty txID is returned with
 // done=true.
-func (f *RotationFinalizer) VerifyRotation(_ context.Context, newSigners []string, newThreshold int) (string, bool, error) {
-	resp, err := f.client.GetAccountObjects(&account.ObjectsRequest{
+func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) (string, bool, error) {
+	call, err := f.rpc(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	resp, err := call.GetAccountObjects(&account.ObjectsRequest{
 		Account: types.Address(f.vaultAddress),
 		Type:    account.SignerListObject,
 	})

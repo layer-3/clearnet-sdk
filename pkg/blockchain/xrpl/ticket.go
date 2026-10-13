@@ -6,7 +6,6 @@ import (
 	"sort"
 
 	"github.com/Peersyst/xrpl-go/xrpl/queries/account"
-	"github.com/Peersyst/xrpl-go/xrpl/rpc"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
 )
 
@@ -22,7 +21,7 @@ import (
 // run withdrawals concurrently must layer their own reservation/pool on top —
 // this is the simple single-flight building block.
 type LedgerTicketProvider struct {
-	client  *rpc.Client
+	rpcURL  string
 	account types.Address
 }
 
@@ -31,12 +30,11 @@ var _ TicketProvider = (*LedgerTicketProvider)(nil)
 // NewLedgerTicketProvider builds a provider reading Tickets owned by
 // vaultAddress over the JSON-RPC at rpcURL.
 func NewLedgerTicketProvider(rpcURL, vaultAddress string) (*LedgerTicketProvider, error) {
-	client, err := newRPCClient(rpcURL)
-	if err != nil {
+	if _, err := newRPCClient(rpcURL); err != nil {
 		return nil, err
 	}
 	return &LedgerTicketProvider{
-		client:  client,
+		rpcURL:  rpcURL,
 		account: types.Address(vaultAddress),
 	}, nil
 }
@@ -44,8 +42,12 @@ func NewLedgerTicketProvider(rpcURL, vaultAddress string) (*LedgerTicketProvider
 // TicketFor returns the lowest TicketSequence currently owned by the vault. The
 // withdrawalID is ignored — any of the account's Tickets authorizes any
 // withdrawal. Errors if the account owns no Tickets.
-func (p *LedgerTicketProvider) TicketFor(_ context.Context, _ [32]byte) (uint32, error) {
-	resp, err := p.client.GetAccountObjects(&account.ObjectsRequest{
+func (p *LedgerTicketProvider) TicketFor(ctx context.Context, _ [32]byte) (uint32, error) {
+	call, err := rpcCall(ctx, p.rpcURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := call.GetAccountObjects(&account.ObjectsRequest{
 		Account: p.account,
 		Type:    account.TicketObject,
 	})
