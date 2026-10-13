@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/Peersyst/xrpl-go/xrpl/common"
 	"github.com/Peersyst/xrpl-go/xrpl/queries/server"
@@ -33,25 +35,97 @@ func newRPCClient(rpcURL string) (*rpc.Client, error) {
 // has no earlier deadline.
 var rpcHTTPClient = &http.Client{Timeout: common.DefaultTimeout}
 
+// rpcBusyRetries and rpcBusyBackoff mirror xrpl-go v0.1.18's HTTP 503 retry
+// schedule (3 retries after 1s, 2s and 4s), which contextDoer now runs itself.
+// rpcBusyBackoff is a variable only so tests can shorten it.
+const rpcBusyRetries = 3
+
+var rpcBusyBackoff = time.Second
+
+// errRPCBusy is the error xrpl-go returns once its 503 retries are exhausted.
+var errRPCBusy = &rpc.ClientError{ErrorString: "Server is overloaded, rate limit exceeded"}
+
 // contextDoer is an rpc.HTTPClient that sends each request under ctx.
 // xrpl-go's rpc.Client.Request derives its request context from
 // context.Background, so without this a cancelled caller could not abort an
 // in-flight request.
+//
+// contextDoer also retries HTTP 503 itself, on xrpl-go's schedule but with a
+// ctx-aware backoff, and never hands xrpl-go a 503. xrpl-go's own retry loop
+// sleeps without observing ctx and, when a retried request fails, dereferences
+// a nil response in its deferred Body.Close and panics.
 type contextDoer struct {
 	ctx context.Context
 }
 
 func (d contextDoer) Do(req *http.Request) (*http.Response, error) {
-	return rpcHTTPClient.Do(req.WithContext(d.ctx))
+	req = req.WithContext(d.ctx)
+	resp, err := rpcHTTPClient.Do(req)
+	backoff := rpcBusyBackoff
+	for retry := 0; err == nil && resp.StatusCode == http.StatusServiceUnavailable; retry++ {
+		_ = resp.Body.Close()
+		if retry == rpcBusyRetries {
+			return nil, errRPCBusy
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-d.ctx.Done():
+			timer.Stop()
+			return nil, d.ctx.Err()
+		case <-timer.C:
+		}
+		backoff *= 2
+		if req, err = rewind(req); err != nil {
+			return nil, err
+		}
+		resp, err = rpcHTTPClient.Do(req)
+	}
+	return resp, err
+}
+
+// rewind returns req with a fresh copy of its body for a retry.
+func rewind(req *http.Request) (*http.Request, error) {
+	if req.Body == nil || req.GetBody == nil {
+		return req, nil
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, fmt.Errorf("xrpl: rewind request body: %w", err)
+	}
+	retry := req.Clone(req.Context())
+	retry.Body = body
+	return retry, nil
+}
+
+// networkIDCache is the NetworkID an SDK object learned from server_info,
+// shared by its concurrent operations. Zero means unknown or not required.
+type networkIDCache struct {
+	mu sync.Mutex
+	id uint32
+}
+
+func (c *networkIDCache) load() uint32 {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.id
+}
+
+func (c *networkIDCache) store(id uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.id = id
 }
 
 // rpcCall returns an xrpl-go client for one operation against rpcURL. Every
-// HTTP request it sends, including those inside Autofill and xrpl-go's own
+// HTTP request it sends, including those inside Autofill and HTTP 503
 // retries, runs under ctx, so cancellation and deadlines abort the request in
 // flight. Response decoding and errors stay xrpl-go's own; a cancelled request
-// fails with an error wrapping ctx.Err(). state is the long-lived client whose
-// cached NetworkID the call starts from (see resolveNetworkIDPolicy).
-func rpcCall(ctx context.Context, rpcURL string, state *rpc.Client) (*rpc.Client, error) {
+// fails with an error wrapping ctx.Err(). The call starts from cache's
+// NetworkID (see resolveNetworkIDPolicy); cache may be nil.
+func rpcCall(ctx context.Context, rpcURL string, cache *networkIDCache) (*rpc.Client, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -60,9 +134,7 @@ func rpcCall(ctx context.Context, rpcURL string, state *rpc.Client) (*rpc.Client
 		return nil, fmt.Errorf("xrpl: create rpc config: %w", err)
 	}
 	call := rpc.NewClient(cfg)
-	if state != nil {
-		call.NetworkID = state.NetworkID
-	}
+	call.NetworkID = cache.load()
 	return call, nil
 }
 
@@ -71,40 +143,43 @@ func rpcCall(ctx context.Context, rpcURL string, state *rpc.Client) (*rpc.Client
 // context; the SDK finalizers resolve the policy through a context-bound
 // client instead.
 func ResolveNetworkIDPolicy(client *rpc.Client) (NetworkIDPolicy, error) {
-	return resolveNetworkIDPolicy(client, client)
-}
-
-// resolveNetworkIDPolicy reads server_info through call unless state already
-// caches a NetworkID, and leaves the result cached on both state and call so a
-// later Autofill through call sees it.
-func resolveNetworkIDPolicy(state, call *rpc.Client) (NetworkIDPolicy, error) {
-	policy, err := networkIDPolicy(state, call)
-	call.NetworkID = state.NetworkID
+	policy, id, err := networkIDPolicy(client.NetworkID, client)
+	client.NetworkID = id
 	return policy, err
 }
 
-func networkIDPolicy(state, call *rpc.Client) (NetworkIDPolicy, error) {
-	if state.NetworkID != 0 {
-		if state.NetworkID <= xrplNetworkIDRequiredAbove {
-			state.NetworkID = 0
-			return NetworkIDPolicy{}, nil
+// resolveNetworkIDPolicy reads server_info through call unless cache already
+// holds a NetworkID, and leaves the result on both cache and call so a later
+// Autofill through call sees it. The cache lock is not held across the RPC;
+// concurrent resolvers store the same live value.
+func resolveNetworkIDPolicy(cache *networkIDCache, call *rpc.Client) (NetworkIDPolicy, error) {
+	policy, id, err := networkIDPolicy(cache.load(), call)
+	cache.store(id)
+	call.NetworkID = id
+	return policy, err
+}
+
+// networkIDPolicy derives the policy from cached, reading server_info through
+// call only when cached is zero. It returns the NetworkID to cache.
+func networkIDPolicy(cached uint32, call *rpc.Client) (NetworkIDPolicy, uint32, error) {
+	if cached != 0 {
+		if cached <= xrplNetworkIDRequiredAbove {
+			return NetworkIDPolicy{}, 0, nil
 		}
-		return NetworkIDPolicy{NetworkID: state.NetworkID, Required: true}, nil
+		return NetworkIDPolicy{NetworkID: cached, Required: true}, cached, nil
 	}
 	info, err := call.GetServerInfo(&server.InfoRequest{})
 	if err != nil {
-		return NetworkIDPolicy{}, fmt.Errorf("xrpl: server_info: %w", err)
+		return NetworkIDPolicy{}, cached, fmt.Errorf("xrpl: server_info: %w", err)
 	}
 	networkID := info.Info.NetworkID
 	if networkID <= xrplNetworkIDRequiredAbove {
-		state.NetworkID = 0
-		return NetworkIDPolicy{}, nil
+		return NetworkIDPolicy{}, 0, nil
 	}
 	if networkID > uint(^uint32(0)) {
-		return NetworkIDPolicy{}, fmt.Errorf("xrpl: network_id %d overflows uint32", networkID)
+		return NetworkIDPolicy{}, cached, fmt.Errorf("xrpl: network_id %d overflows uint32", networkID)
 	}
-	state.NetworkID = uint32(networkID)
-	return NetworkIDPolicy{NetworkID: uint32(networkID), Required: true}, nil
+	return NetworkIDPolicy{NetworkID: uint32(networkID), Required: true}, uint32(networkID), nil
 }
 
 func ensureNetworkID(client *rpc.Client) error {

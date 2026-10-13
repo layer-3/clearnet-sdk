@@ -32,9 +32,10 @@ type TicketProvider interface {
 // the caller. It implements core.VaultWithdrawalFinalizer.
 type WithdrawalFinalizer struct {
 	rpcURL string
-	// client holds the cached NetworkID; each operation's requests go through
-	// a context-bound client from rpc (see rpcCall).
-	client       *rpc.Client
+	// networkID caches the live NetworkID across this finalizer's concurrent
+	// operations; each operation's requests go through a context-bound client
+	// from rpc (see rpcCall).
+	networkID    networkIDCache
 	vaultAddress string
 	threshold    int
 	signer       sign.Signer
@@ -95,7 +96,7 @@ func (f *WithdrawalFinalizer) SetStandaloneLedgerMode(v bool) {
 
 // rpc returns a client whose requests run under ctx (see rpcCall).
 func (f *WithdrawalFinalizer) rpc(ctx context.Context) (*rpc.Client, error) {
-	return rpcCall(ctx, f.rpcURL, f.client)
+	return rpcCall(ctx, f.rpcURL, &f.networkID)
 }
 
 // ledgerState resolves the current validated LedgerState, using the injected
@@ -119,8 +120,7 @@ func NewWithdrawalFinalizer(rpcURL, vaultAddress string, threshold int, signer s
 	if assets == nil {
 		return nil, fmt.Errorf("xrpl: asset resolver is required")
 	}
-	client, err := newRPCClient(rpcURL)
-	if err != nil {
+	if _, err := newRPCClient(rpcURL); err != nil {
 		return nil, err
 	}
 	id, err := DeriveIdentity(signer)
@@ -129,7 +129,6 @@ func NewWithdrawalFinalizer(rpcURL, vaultAddress string, threshold int, signer s
 	}
 	return &WithdrawalFinalizer{
 		rpcURL:       rpcURL,
-		client:       client,
 		vaultAddress: vaultAddress,
 		threshold:    threshold,
 		signer:       signer,
@@ -202,7 +201,7 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 	if err != nil {
 		return nil, err
 	}
-	if _, err := resolveNetworkIDPolicy(f.client, call); err != nil {
+	if _, err := resolveNetworkIDPolicy(&f.networkID, call); err != nil {
 		return nil, err
 	}
 	if err := call.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
@@ -256,7 +255,7 @@ func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *c
 	if err != nil {
 		return err
 	}
-	networkPolicy, err := resolveNetworkIDPolicy(f.client, call)
+	networkPolicy, err := resolveNetworkIDPolicy(&f.networkID, call)
 	if err != nil {
 		return err
 	}

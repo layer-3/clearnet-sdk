@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/Peersyst/xrpl-go/xrpl/queries/transactions"
-	"github.com/Peersyst/xrpl-go/xrpl/rpc"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
 
@@ -24,9 +23,9 @@ import (
 // currencies ("CUR.rIssuer") are both supported.
 type Depositor struct {
 	rpcURL string
-	// client holds the cached NetworkID; each operation's requests go through
-	// a context-bound client (see rpcCall).
-	client       *rpc.Client
+	// networkID caches the live NetworkID across concurrent operations; each
+	// operation's requests go through a context-bound client (see rpcCall).
+	networkID    networkIDCache
 	vaultAddress string
 	signer       sign.Signer
 	id           Identity
@@ -40,15 +39,14 @@ func NewDepositor(rpcURL, vaultAddress string, signer sign.Signer, assets blockc
 	if assets == nil {
 		return nil, fmt.Errorf("xrpl: asset resolver is required")
 	}
-	client, err := newRPCClient(rpcURL)
-	if err != nil {
+	if _, err := newRPCClient(rpcURL); err != nil {
 		return nil, err
 	}
 	id, err := DeriveIdentity(signer)
 	if err != nil {
 		return nil, err
 	}
-	return &Depositor{rpcURL: rpcURL, client: client, vaultAddress: vaultAddress, signer: signer, id: id, assets: assets}, nil
+	return &Depositor{rpcURL: rpcURL, vaultAddress: vaultAddress, signer: signer, id: id, assets: assets}, nil
 }
 
 // DepositorAddress returns the depositor's classic r-address.
@@ -100,11 +98,11 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 		Amount:      xrplAmount,
 	}
 	flatTx := payment.Flatten()
-	call, err := rpcCall(ctx, d.rpcURL, d.client)
+	call, err := rpcCall(ctx, d.rpcURL, &d.networkID)
 	if err != nil {
 		return core.SubmitDepositResult{}, err
 	}
-	if _, err := resolveNetworkIDPolicy(d.client, call); err != nil {
+	if _, err := resolveNetworkIDPolicy(&d.networkID, call); err != nil {
 		return core.SubmitDepositResult{}, err
 	}
 	if err := call.Autofill(&flatTx); err != nil {
@@ -166,7 +164,7 @@ func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, depositId st
 	if depositId != DepositID(txHash) {
 		return core.DepositAbsent, fmt.Errorf("xrpl: deposit ID %q is not the lower-cased transaction hash %s", depositId, txHash)
 	}
-	call, err := rpcCall(ctx, d.rpcURL, d.client)
+	call, err := rpcCall(ctx, d.rpcURL, &d.networkID)
 	if err != nil {
 		return core.DepositAbsent, err
 	}

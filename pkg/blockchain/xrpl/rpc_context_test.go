@@ -5,11 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Peersyst/xrpl-go/xrpl/rpc"
 
 	"github.com/layer-3/clearnet-sdk/pkg/core"
 )
@@ -294,4 +299,150 @@ func newTestDepositor(t *testing.T, url string) *Depositor {
 		t.Fatal(err)
 	}
 	return d
+}
+
+// busyRippled answers HTTP 503 to its first busy requests, then serves inner.
+// It records every request it receives.
+type busyRippled struct {
+	inner    http.Handler
+	busy     int
+	requests chan struct{}
+	served   atomic.Int32
+}
+
+func newBusyRippled(t *testing.T, busy int) (*busyRippled, string) {
+	t.Helper()
+	b := &busyRippled{inner: healthyRippled(), busy: busy, requests: make(chan struct{}, 16)}
+	srv := httptest.NewServer(b)
+	t.Cleanup(srv.Close)
+	return b, srv.URL
+}
+
+func (b *busyRippled) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	b.requests <- struct{}{}
+	if int(b.served.Add(1)) <= b.busy {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	b.inner.ServeHTTP(w, r)
+}
+
+func shortenBusyBackoff(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := rpcBusyBackoff
+	rpcBusyBackoff = d
+	t.Cleanup(func() { rpcBusyBackoff = prev })
+}
+
+// TestRPCCallBusyCancellation cancels (or times out) during the backoff after
+// an HTTP 503. The call must return the context error promptly, not panic in
+// xrpl-go's retry cleanup.
+func TestRPCCallBusyCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ctx  func() (context.Context, context.CancelFunc)
+		want error
+	}{
+		{"cancel", func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) }, context.Canceled},
+		{"deadline", func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.Background(), 300*time.Millisecond)
+		}, context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, url := newBusyRippled(t, 100)
+			ctx, cancel := tc.ctx()
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						done <- fmt.Errorf("panic: %v", r)
+					}
+				}()
+				call, err := rpcCall(ctx, url, nil)
+				if err != nil {
+					done <- err
+					return
+				}
+				_, err = validatedBaseFee(call)
+				done <- err
+			}()
+			<-b.requests
+			if tc.want == context.Canceled {
+				time.Sleep(50 * time.Millisecond) // inside the 1s backoff
+				cancel()
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, tc.want) {
+					t.Fatalf("error = %v, want %v", err, tc.want)
+				}
+			case <-time.After(900 * time.Millisecond):
+				t.Fatal("call did not return before the first retry")
+			}
+		})
+	}
+}
+
+// TestRPCCallBusyRetriesKeepSemantics checks the 503 retry still succeeds once
+// rippled recovers, resending the request body, and still fails with
+// xrpl-go's overload error once the retries are exhausted.
+func TestRPCCallBusyRetriesKeepSemantics(t *testing.T) {
+	shortenBusyBackoff(t, 5*time.Millisecond)
+	ctx := context.Background()
+
+	b, url := newBusyRippled(t, 2)
+	call, err := rpcCall(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fee, err := validatedBaseFee(call); err != nil || fee != floorTestBaseFee {
+		t.Fatalf("validatedBaseFee after 503s = %d, %v; want %d", fee, err, floorTestBaseFee)
+	}
+	if b.served.Load() != 3 {
+		t.Fatalf("server saw %d requests, want 3", b.served.Load())
+	}
+
+	b, url = newBusyRippled(t, 100)
+	call, err = rpcCall(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = validatedBaseFee(call)
+	var clientErr *rpc.ClientError
+	if !errors.As(err, &clientErr) || clientErr.ErrorString != "Server is overloaded, rate limit exceeded" {
+		t.Fatalf("exhausted 503 error = %v, want xrpl-go's overload error", err)
+	}
+	if int(b.served.Load()) != 1+rpcBusyRetries {
+		t.Fatalf("server saw %d requests, want %d", b.served.Load(), 1+rpcBusyRetries)
+	}
+}
+
+// TestConcurrentOperationsShareNetworkIDSafely runs quorum reads and
+// validations concurrently on one finalizer of each kind; with -race it
+// covers the shared NetworkID cache.
+func TestConcurrentOperationsShareNetworkIDSafely(t *testing.T) {
+	ctx := context.Background()
+	url := newFakeRippled(t, healthyRippled())
+	w, _ := newFloorWithdrawalFinalizer(t, url)
+	r, _ := newFloorRotationFinalizer(t, url)
+	packed, op, wid := floorWithdrawal(t, floorTestFloor)
+	rotation := floorRotation(t, floorNewSigners, 2, floorTestFloor)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 32)
+	for i := 0; i < 4; i++ {
+		wg.Add(4)
+		go func() { defer wg.Done(); _, err := w.LiveQuorum(ctx); errs <- err }()
+		go func() { defer wg.Done(); errs <- w.Validate(ctx, packed, op, wid, floorTestBounds) }()
+		go func() { defer wg.Done(); _, err := r.LiveQuorum(ctx); errs <- err }()
+		go func() { defer wg.Done(); errs <- r.Validate(ctx, [32]byte{}, rotation, floorNewSigners, 2) }()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent operation failed: %v", err)
+		}
+	}
 }

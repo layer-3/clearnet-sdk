@@ -24,9 +24,10 @@ import (
 // SignerListSet), so there is no separate nonce: a given Sequence applies once.
 type RotationFinalizer struct {
 	rpcURL string
-	// client holds the cached NetworkID; each operation's requests go through
-	// a context-bound client from rpc (see rpcCall).
-	client       *rpc.Client
+	// networkID caches the live NetworkID across this finalizer's concurrent
+	// operations; each operation's requests go through a context-bound client
+	// from rpc (see rpcCall).
+	networkID    networkIDCache
 	vaultAddress string
 	threshold    int // current SignerQuorum — sizes the multi-sign fee
 	signer       sign.Signer
@@ -83,7 +84,7 @@ func (f *RotationFinalizer) SetStandaloneLedgerMode(v bool) {
 
 // rpc returns a client whose requests run under ctx (see rpcCall).
 func (f *RotationFinalizer) rpc(ctx context.Context) (*rpc.Client, error) {
-	return rpcCall(ctx, f.rpcURL, f.client)
+	return rpcCall(ctx, f.rpcURL, &f.networkID)
 }
 
 // ledgerState resolves the current validated LedgerState, using the injected
@@ -119,8 +120,7 @@ var _ core.SignerRotationFinalizer = (*RotationFinalizer)(nil)
 // current SignerQuorum (used to size the multi-sign fee and trim the quorum);
 // signer is one of the current SignerList members.
 func NewRotationFinalizer(rpcURL, vaultAddress string, threshold int, signer sign.Signer) (*RotationFinalizer, error) {
-	client, err := newRPCClient(rpcURL)
-	if err != nil {
+	if _, err := newRPCClient(rpcURL); err != nil {
 		return nil, err
 	}
 	id, err := DeriveIdentity(signer)
@@ -129,7 +129,6 @@ func NewRotationFinalizer(rpcURL, vaultAddress string, threshold int, signer sig
 	}
 	return &RotationFinalizer{
 		rpcURL:       rpcURL,
-		client:       client,
 		vaultAddress: vaultAddress,
 		threshold:    threshold,
 		signer:       signer,
@@ -163,7 +162,7 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 	if err != nil {
 		return nil, err
 	}
-	if _, err := resolveNetworkIDPolicy(f.client, call); err != nil {
+	if _, err := resolveNetworkIDPolicy(&f.networkID, call); err != nil {
 		return nil, err
 	}
 	if err := call.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
@@ -215,7 +214,7 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 	if err != nil {
 		return err
 	}
-	networkPolicy, err := resolveNetworkIDPolicy(f.client, call)
+	networkPolicy, err := resolveNetworkIDPolicy(&f.networkID, call)
 	if err != nil {
 		return err
 	}
