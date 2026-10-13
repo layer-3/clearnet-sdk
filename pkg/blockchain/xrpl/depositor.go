@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/Peersyst/xrpl-go/xrpl/queries/transactions"
-	"github.com/Peersyst/xrpl-go/xrpl/rpc"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
 
@@ -23,7 +22,10 @@ import (
 // reference). It implements core.VaultDepositor. Native XRP and issued
 // currencies ("CUR.rIssuer") are both supported.
 type Depositor struct {
-	client       *rpc.Client
+	rpcURL string
+	// networkID caches the live NetworkID across concurrent operations; each
+	// operation's requests go through a context-bound client (see rpcCall).
+	networkID    networkIDCache
 	vaultAddress string
 	signer       sign.Signer
 	id           Identity
@@ -37,15 +39,14 @@ func NewDepositor(rpcURL, vaultAddress string, signer sign.Signer, assets blockc
 	if assets == nil {
 		return nil, fmt.Errorf("xrpl: asset resolver is required")
 	}
-	client, err := newRPCClient(rpcURL)
-	if err != nil {
+	if _, err := newRPCClient(rpcURL); err != nil {
 		return nil, err
 	}
 	id, err := DeriveIdentity(signer)
 	if err != nil {
 		return nil, err
 	}
-	return &Depositor{client: client, vaultAddress: vaultAddress, signer: signer, id: id, assets: assets}, nil
+	return &Depositor{rpcURL: rpcURL, vaultAddress: vaultAddress, signer: signer, id: id, assets: assets}, nil
 }
 
 // DepositorAddress returns the depositor's classic r-address.
@@ -97,10 +98,14 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 		Amount:      xrplAmount,
 	}
 	flatTx := payment.Flatten()
-	if err := ensureNetworkID(d.client); err != nil {
+	call, err := rpcCall(ctx, d.rpcURL, &d.networkID)
+	if err != nil {
 		return core.SubmitDepositResult{}, err
 	}
-	if err := d.client.Autofill(&flatTx); err != nil {
+	if _, err := resolveNetworkIDPolicy(&d.networkID, call); err != nil {
+		return core.SubmitDepositResult{}, err
+	}
+	if err := call.Autofill(&flatTx); err != nil {
 		return core.SubmitDepositResult{}, fmt.Errorf("xrpl: autofill: %w", err)
 	}
 
@@ -112,7 +117,7 @@ func (d *Depositor) SubmitDeposit(ctx context.Context, assetAddress string, amou
 	if err != nil {
 		return core.SubmitDepositResult{}, err
 	}
-	result, err := d.client.SubmitTxBlob(blob, false)
+	result, err := call.SubmitTxBlob(blob, false)
 	if err != nil {
 		return core.SubmitDepositResult{}, fmt.Errorf("xrpl: submit: %w", err)
 	}
@@ -155,11 +160,15 @@ func accountMemo(dest core.DepositDestination) (types.MemoWrapper, error) {
 // unvalidated one DepositPending. Custody's crediting rules (partial payments,
 // asset support) are not applied, so DepositConfirmed does not guarantee a
 // credit.
-func (d *Depositor) ChainDepositStatus(_ context.Context, txHash, depositId string, _ uint64) (core.DepositStatus, error) {
+func (d *Depositor) ChainDepositStatus(ctx context.Context, txHash, depositId string, _ uint64) (core.DepositStatus, error) {
 	if depositId != DepositID(txHash) {
 		return core.DepositAbsent, fmt.Errorf("xrpl: deposit ID %q is not the lower-cased transaction hash %s", depositId, txHash)
 	}
-	res, err := d.client.Request(&transactions.TxRequest{Transaction: txHash})
+	call, err := rpcCall(ctx, d.rpcURL, &d.networkID)
+	if err != nil {
+		return core.DepositAbsent, err
+	}
+	res, err := call.Request(&transactions.TxRequest{Transaction: txHash})
 	if err != nil {
 		if strings.Contains(err.Error(), "txnNotFound") {
 			return core.DepositAbsent, nil

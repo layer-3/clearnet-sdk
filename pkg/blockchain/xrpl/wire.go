@@ -24,6 +24,7 @@ import (
 	"github.com/Peersyst/xrpl-go/xrpl/queries/account"
 	"github.com/Peersyst/xrpl-go/xrpl/queries/common"
 	"github.com/Peersyst/xrpl-go/xrpl/queries/ledger"
+	"github.com/Peersyst/xrpl-go/xrpl/queries/server"
 	"github.com/Peersyst/xrpl-go/xrpl/rpc"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
@@ -45,8 +46,131 @@ func candidateRejected(err error) error {
 	return fmt.Errorf("%w: %v", ErrCandidateRejected, err)
 }
 
-// maxAcceptableFeeDrops caps the Fee a node will sign on a canonical Payment.
+// maxAcceptableFeeDrops caps the Fee a node will sign on a canonical Payment
+// or SignerListSet. The lower bound is the multisign fee floor (see
+// multisignFeeFloor), so an accepted Fee lies in [floor, maxAcceptableFeeDrops].
 const maxAcceptableFeeDrops uint64 = 1_000_000
+
+// BaseFeeResolver reads the reference base fee, in drops, of the current
+// validated ledger. It feeds the multisign fee floor a follower enforces before
+// signing. An implementation must return an error, never a guess, when no
+// validated value is available.
+type BaseFeeResolver func(ctx context.Context) (uint64, error)
+
+// validatedBaseFee reads the base fee from server_state's
+// validated_ledger.base_fee (drops) through call, a context-bound client (see
+// rpcCall). A response with no validated ledger or a zero base fee is an
+// operational error. The default base-fee source for the finalizers.
+func validatedBaseFee(call *rpc.Client) (uint64, error) {
+	res, err := call.Request(&server.StateRequest{})
+	if err != nil {
+		return 0, fmt.Errorf("xrpl: server_state: %w", err)
+	}
+	var resp server.StateResponse
+	if err := res.GetResult(&resp); err != nil {
+		return 0, fmt.Errorf("xrpl: decode server_state: %w", err)
+	}
+	validated := resp.State.ValidatedLedger
+	if validated.Seq == 0 || validated.BaseFee == 0 {
+		return 0, errors.New("xrpl: server_state has no validated ledger base fee")
+	}
+	return uint64(validated.BaseFee), nil
+}
+
+// fetchValidatedSignerQuorum reads the vault's SignerQuorum from its SignerList
+// in the latest validated ledger through call, a context-bound client. An
+// unvalidated response is an operational error. It backs both finalizers'
+// LiveQuorum and is the fee floor's quorum source when no threshold resolver
+// is installed.
+func fetchValidatedSignerQuorum(call *rpc.Client, vault string) (int, error) {
+	resp, err := call.GetAccountInfo(&account.InfoRequest{
+		Account:     types.Address(vault),
+		LedgerIndex: common.Validated,
+		SignerLists: true,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("xrpl: account_info: %w", err)
+	}
+	if !resp.Validated {
+		return 0, errors.New("xrpl: account_info signer list response is not validated")
+	}
+	if len(resp.SignerLists) != 1 {
+		return 0, fmt.Errorf("xrpl: vault has %d SignerLists, want 1", len(resp.SignerLists))
+	}
+	live := resp.SignerLists[0]
+	quorum := int(live.SignerQuorum)
+	if quorum <= 0 || quorum > len(live.SignerEntries) {
+		return 0, fmt.Errorf("xrpl: live SignerQuorum %d out of range for %d entries", quorum, len(live.SignerEntries))
+	}
+	return quorum, nil
+}
+
+// multisignFeeFloor is the minimum Fee rippled accepts for a multisigned
+// transaction carrying quorum signatures: base_fee × (1 + quorum). Every signer
+// entry has weight 1 and Submit attaches exactly the live quorum of
+// signatures, so quorum is the signature count rippled charges for.
+func multisignFeeFloor(baseFee uint64, quorum int) (uint64, error) {
+	if baseFee == 0 {
+		return 0, errors.New("xrpl: zero base fee for the multisign fee floor")
+	}
+	if quorum <= 0 {
+		return 0, fmt.Errorf("xrpl: invalid live quorum %d for the multisign fee floor", quorum)
+	}
+	if baseFee > math.MaxUint64/uint64(1+quorum) {
+		return 0, fmt.Errorf("xrpl: multisign fee floor overflows: base fee %d, quorum %d", baseFee, quorum)
+	}
+	return baseFee * uint64(1+quorum), nil
+}
+
+// resolveFeeFloor derives the multisign fee floor a follower enforces. The
+// quorum comes from resolveThreshold when set (the caller must bind it to the
+// validated live SignerList), else from a validated account_info read; it is
+// never the static construction-time threshold. The base fee comes from
+// resolveBaseFee when set, else from validated server_state. Default reads go
+// through call, a client bound to ctx. Any lookup failure is an operational
+// error, distinct from ErrCandidateRejected.
+func resolveFeeFloor(ctx context.Context, call *rpc.Client, vault string, resolveThreshold func(context.Context) (int, error), resolveBaseFee BaseFeeResolver) (uint64, error) {
+	var quorum int
+	var err error
+	if resolveThreshold != nil {
+		quorum, err = resolveThreshold(ctx)
+	} else {
+		quorum, err = fetchValidatedSignerQuorum(call, vault)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("xrpl: resolve live quorum for fee floor: %w", err)
+	}
+	var baseFee uint64
+	if resolveBaseFee != nil {
+		baseFee, err = resolveBaseFee(ctx)
+	} else {
+		baseFee, err = validatedBaseFee(call)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("xrpl: resolve validated base fee: %w", err)
+	}
+	return multisignFeeFloor(baseFee, quorum)
+}
+
+// checkFee enforces the inclusive Fee range [minFee, maxAcceptableFeeDrops].
+// minFee is the multisign floor; zero means the floor is unknown and the body
+// is refused rather than accepted on the ceiling alone.
+func checkFee(kind string, raw any, minFee uint64) error {
+	fee, ok := uint32Field(raw)
+	if !ok {
+		return fmt.Errorf("xrpl %s: missing or invalid Fee %v", kind, raw)
+	}
+	if uint64(fee) > maxAcceptableFeeDrops {
+		return fmt.Errorf("xrpl %s: Fee %d drops exceeds ceiling %d", kind, fee, maxAcceptableFeeDrops)
+	}
+	if minFee == 0 {
+		return fmt.Errorf("xrpl %s: multisign fee floor is unknown", kind)
+	}
+	if uint64(fee) < minFee {
+		return fmt.Errorf("xrpl %s: Fee %d drops below the multisign floor %d", kind, fee, minFee)
+	}
+	return nil
+}
 
 // LastLedgerSequence budget. XRPL has no per-tx timestamp expiry, so
 // a signed-but-unbroadcast Payment would live as a standing bearer claim. Every
@@ -135,19 +259,21 @@ func buildLLS(state LedgerState, validUntil int64) (uint32, error) {
 	return state.ValidatedIndex + budget, nil
 }
 
-// clientLedgerState resolves the current validated LedgerState from a live
-// rippled via the ledger query. The default resolver for the finalizers.
-func clientLedgerState(client *rpc.Client) LedgerStateResolver {
-	return func(_ context.Context) (LedgerState, error) {
-		resp, err := client.GetLedger(&ledger.Request{LedgerIndex: common.Validated})
-		if err != nil {
-			return LedgerState{}, fmt.Errorf("xrpl: get validated ledger: %w", err)
-		}
-		return LedgerState{
-			ValidatedIndex: uint32(resp.LedgerIndex),
-			CloseUnix:      int64(resp.Ledger.CloseTime) + rippleEpochOffset,
-		}, nil
+// validatedLedgerState reads the current validated LedgerState through call, a
+// context-bound client, via the ledger query. A response that is not validated
+// is an operational error. The default ledger source for the finalizers.
+func validatedLedgerState(call *rpc.Client) (LedgerState, error) {
+	resp, err := call.GetLedger(&ledger.Request{LedgerIndex: common.Validated})
+	if err != nil {
+		return LedgerState{}, fmt.Errorf("xrpl: get validated ledger: %w", err)
 	}
+	if !resp.Validated || resp.LedgerIndex == 0 {
+		return LedgerState{}, errors.New("xrpl: validated ledger response is not validated")
+	}
+	return LedgerState{
+		ValidatedIndex: uint32(resp.LedgerIndex),
+		CloseUnix:      int64(resp.Ledger.CloseTime) + rippleEpochOffset,
+	}, nil
 }
 
 // checkField enforces the LastLedgerSequence band on a flatTx field value.
@@ -333,9 +459,10 @@ func currencyAmountFromBaseUnits(asset string, baseUnits *big.Int, decimals uint
 	return currencyAmount(asset, blockchain.BaseUnitsToDecimal(baseUnits, decimals))
 }
 
-// ValidateCanonical asserts the canonical flatTx matches the op and that its
-// LastLedgerSequence falls inside the follower's expiry band.
-func ValidateCanonical(ctx context.Context, assets blockchain.AssetResolver, flat transaction.FlatTransaction, op *core.WithdrawalOp, withdrawalID [32]byte, vault string, policy llsPolicy) error {
+// ValidateCanonical asserts the canonical flatTx matches the op, that its Fee
+// lies in [minFee, maxAcceptableFeeDrops] where minFee is the multisign floor,
+// and that its LastLedgerSequence falls inside the follower's expiry band.
+func ValidateCanonical(ctx context.Context, assets blockchain.AssetResolver, flat transaction.FlatTransaction, op *core.WithdrawalOp, withdrawalID [32]byte, vault string, policy llsPolicy, minFee uint64) error {
 	if asString(flat["TransactionType"]) != "Payment" {
 		return fmt.Errorf("xrpl canonical: wrong TransactionType %v", flat["TransactionType"])
 	}
@@ -362,12 +489,8 @@ func ValidateCanonical(ctx context.Context, assets blockchain.AssetResolver, fla
 	if seq, ok := uint32Field(flat["Sequence"]); !ok || seq != 0 {
 		return fmt.Errorf("xrpl canonical: Sequence must be 0 on Tickets path, got %v", flat["Sequence"])
 	}
-	fee, ok := uint32Field(flat["Fee"])
-	if !ok {
-		return fmt.Errorf("xrpl canonical: missing or invalid Fee %v", flat["Fee"])
-	}
-	if uint64(fee) > maxAcceptableFeeDrops {
-		return fmt.Errorf("xrpl canonical: Fee %d drops exceeds ceiling %d", fee, maxAcceptableFeeDrops)
+	if err := checkFee("canonical", flat["Fee"], minFee); err != nil {
+		return err
 	}
 	// Flags is allowlisted (honest bodies omit it) but its value must be
 	// constrained: a non-zero Flags can carry tfPartialPayment, which on an
@@ -430,8 +553,10 @@ var rotationAllowedFields = map[string]struct{}{
 
 // validateCanonicalRotation asserts the canonical SignerListSet flatTx rotates
 // the vault to exactly newSigners / newThreshold (each entry weight 1, quorum ==
-// newThreshold), with a fee within the ceiling and no unexpected fields.
-func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []string, newThreshold int, vault string, policy llsPolicy) error {
+// newThreshold), with a Fee in [minFee, maxAcceptableFeeDrops] and no
+// unexpected fields. minFee is the floor for the CURRENT SignerList's quorum,
+// which signs the SignerListSet; newThreshold does not size it.
+func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []string, newThreshold int, vault string, policy llsPolicy, minFee uint64) error {
 	if asString(flat["TransactionType"]) != "SignerListSet" {
 		return fmt.Errorf("xrpl rotation: wrong TransactionType %v", flat["TransactionType"])
 	}
@@ -458,12 +583,8 @@ func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []st
 			return fmt.Errorf("xrpl rotation: unexpected signer entry %s", a)
 		}
 	}
-	fee, ok := uint32Field(flat["Fee"])
-	if !ok {
-		return fmt.Errorf("xrpl rotation: missing or invalid Fee %v", flat["Fee"])
-	}
-	if uint64(fee) > maxAcceptableFeeDrops {
-		return fmt.Errorf("xrpl rotation: Fee %d drops exceeds ceiling %d", fee, maxAcceptableFeeDrops)
+	if err := checkFee("rotation", flat["Fee"], minFee); err != nil {
+		return err
 	}
 	// Flags is allowlisted but its value must be constrained; reject any present
 	// Flags that is non-zero or non-numeric (ISS-002).
@@ -620,7 +741,8 @@ func CanonicalJSON(flatTx transaction.FlatTransaction) ([]byte, error) {
 // (tefBAD_SIGNATURE), and a stale quorum would under- or over-fill the Signers
 // array; reading the live list keeps both correct across a rotation. Pack
 // autofilled the multi-sign fee for the quorum count, so trimming to exactly
-// liveQuorum keeps the fee right. Shared by the withdrawal and rotation submits.
+// liveQuorum keeps the fee right. Shared by the withdrawal and rotation submits;
+// client is the operation's context-bound client (see rpcCall).
 func combineLive(client *rpc.Client, vault string, signatures [][]byte) (string, error) {
 	blobs := make([]string, 0, len(signatures))
 	for _, s := range signatures {
