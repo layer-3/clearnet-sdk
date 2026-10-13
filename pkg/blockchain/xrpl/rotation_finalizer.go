@@ -30,10 +30,16 @@ type RotationFinalizer struct {
 	id           Identity
 
 	// resolveThreshold, when set, supplies the live SignerQuorum used to size the
-	// multi-sign fee autofill. Lets a quorum-raising rotation pay a fee sized
-	// against the vault's current (outgoing) quorum rather than a boot-time
-	// threshold. nil falls back to threshold.
+	// multi-sign fee autofill in Pack and the multisign fee floor in Validate.
+	// Lets a quorum-raising rotation pay a fee sized against the vault's current
+	// (outgoing) quorum rather than a boot-time threshold. It must read the
+	// validated live SignerList. nil makes Pack fall back to threshold and
+	// Validate read the validated SignerList itself.
 	resolveThreshold func(context.Context) (int, error)
+
+	// resolveBaseFee reads the validated ledger's base fee for the multisign fee
+	// floor in Validate. Defaults to validated server_state over live RPC.
+	resolveBaseFee BaseFeeResolver
 
 	// resolveLedger reads the current validated LedgerState, used to set (Pack) and
 	// bound (Validate) LastLedgerSequence so a signed-but-unbroadcast rotation blob
@@ -47,10 +53,17 @@ type RotationFinalizer struct {
 }
 
 // SetThresholdResolver installs a hook that resolves the live SignerQuorum used
-// to size the fee autofill. Optional; unset uses the static construction-time
-// threshold.
+// to size the fee autofill and the multisign fee floor. It must read the
+// validated live SignerList. Optional; unset uses the static construction-time
+// threshold for autofill and a validated SignerList read for the floor.
 func (f *RotationFinalizer) SetThresholdResolver(fn func(context.Context) (int, error)) {
 	f.resolveThreshold = fn
+}
+
+// SetBaseFeeResolver overrides the validated base-fee read used for the
+// multisign fee floor. Optional; unset reads validated server_state over RPC.
+func (f *RotationFinalizer) SetBaseFeeResolver(fn BaseFeeResolver) {
+	f.resolveBaseFee = fn
 }
 
 // SetLedgerStateResolver overrides the current-ledger resolver used to set and
@@ -152,8 +165,12 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 	return CanonicalJSON(flatTx)
 }
 
-// Validate asserts the packed SignerListSet rotates to exactly the requested set
-// and that its LastLedgerSequence is inside the follower's ledger band.
+// Validate asserts the packed SignerListSet rotates to exactly the requested set,
+// that its LastLedgerSequence is inside the follower's ledger band, and that
+// its Fee is at least the multisign floor. The CURRENT SignerList authorizes a
+// SignerListSet, so the floor uses the current validated live quorum, not
+// newThreshold. A failed floor lookup is an operational error, not
+// ErrCandidateRejected.
 func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []byte, newSigners []string, newThreshold int) error {
 	var flat transaction.FlatTransaction
 	if err := json.Unmarshal(packed, &flat); err != nil {
@@ -167,6 +184,10 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 		}
 		policy.current = state
 	}
+	minFee, err := resolveFeeFloor(ctx, f.client, f.vaultAddress, f.resolveThreshold, f.resolveBaseFee)
+	if err != nil {
+		return err
+	}
 	networkPolicy, err := ResolveNetworkIDPolicy(f.client)
 	if err != nil {
 		return err
@@ -174,7 +195,7 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 	if err := ValidateNetworkID(flat, networkPolicy); err != nil {
 		return candidateRejected(err)
 	}
-	if err := validateCanonicalRotation(flat, newSigners, newThreshold, f.vaultAddress, policy); err != nil {
+	if err := validateCanonicalRotation(flat, newSigners, newThreshold, f.vaultAddress, policy, minFee); err != nil {
 		return candidateRejected(err)
 	}
 	return nil

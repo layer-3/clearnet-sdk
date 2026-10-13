@@ -40,10 +40,16 @@ type WithdrawalFinalizer struct {
 	assets       blockchain.AssetResolver
 
 	// resolveThreshold, when set, supplies the live SignerQuorum used to size the
-	// multi-sign fee autofill in Pack. It lets a quorum-raising rotation take
-	// effect without a fleet restart: the fee is sized against the vault's current
-	// quorum rather than the boot-time threshold. nil falls back to threshold.
+	// multi-sign fee autofill in Pack and the multisign fee floor in Validate. It
+	// lets a quorum-raising rotation take effect without a fleet restart: the fee
+	// is sized against the vault's current quorum rather than the boot-time
+	// threshold. It must read the validated live SignerList. nil makes Pack fall
+	// back to threshold and Validate read the validated SignerList itself.
 	resolveThreshold func(context.Context) (int, error)
+
+	// resolveBaseFee reads the validated ledger's base fee for the multisign fee
+	// floor in Validate. Defaults to validated server_state over live RPC.
+	resolveBaseFee BaseFeeResolver
 
 	// resolveLedger reads the current validated LedgerState, used to set (Pack)
 	// and bound (Validate) the withdrawal's LastLedgerSequence. Defaults
@@ -57,10 +63,18 @@ type WithdrawalFinalizer struct {
 }
 
 // SetThresholdResolver installs a hook that resolves the live SignerQuorum used
-// to size the fee autofill (see resolveThreshold). Optional; callers that leave
-// it unset get the static threshold passed at construction.
+// to size the fee autofill and the multisign fee floor (see resolveThreshold).
+// It must read the validated live SignerList. Optional; callers that leave it
+// unset get the static threshold for autofill and a validated SignerList read
+// for the floor.
 func (f *WithdrawalFinalizer) SetThresholdResolver(fn func(context.Context) (int, error)) {
 	f.resolveThreshold = fn
+}
+
+// SetBaseFeeResolver overrides the validated base-fee read used for the
+// multisign fee floor. Optional; unset reads validated server_state over RPC.
+func (f *WithdrawalFinalizer) SetBaseFeeResolver(fn BaseFeeResolver) {
+	f.resolveBaseFee = fn
 }
 
 // SetLedgerStateResolver overrides the current-ledger resolver used to set and
@@ -193,7 +207,9 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 
 // Validate re-derives the trust-bound shape from the op and asserts the packed
 // flatTx matches, including that LastLedgerSequence is inside this follower's
-// ValidUntil-bound expiry band.
+// ValidUntil-bound expiry band and that Fee is at least the multisign floor
+// for the validated live quorum. A failed floor lookup is an operational error,
+// not ErrCandidateRejected.
 func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *core.WithdrawalOp, withdrawalID [32]byte, bounds core.WithdrawalTimeBounds) error {
 	if err := bounds.Validate(); err != nil {
 		return err
@@ -210,6 +226,10 @@ func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *c
 		}
 		policy.current = state
 	}
+	minFee, err := resolveFeeFloor(ctx, f.client, f.vaultAddress, f.resolveThreshold, f.resolveBaseFee)
+	if err != nil {
+		return err
+	}
 	networkPolicy, err := ResolveNetworkIDPolicy(f.client)
 	if err != nil {
 		return err
@@ -217,7 +237,7 @@ func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *c
 	if err := ValidateNetworkID(flat, networkPolicy); err != nil {
 		return candidateRejected(err)
 	}
-	if err := ValidateCanonical(ctx, f.assets, flat, op, withdrawalID, f.vaultAddress, policy); err != nil {
+	if err := ValidateCanonical(ctx, f.assets, flat, op, withdrawalID, f.vaultAddress, policy, minFee); err != nil {
 		return candidateRejected(err)
 	}
 	return nil
