@@ -1,8 +1,9 @@
-name: Push on master
+name: Push on master or RC
 
 on:
   push:
-    branches: [master]
+    branches: [master, v0.9.0-rc]
+    tags: ['v0.9.0-rc*']
 
 permissions:
   contents: read
