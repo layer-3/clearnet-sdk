@@ -1,0 +1,143 @@
+// Operation journal rules, ported from the Yellow CLI (internal/yellow
+// operation.go and transfer.go). They keep a signed authorization from being
+// lost, or re-signed at a fresh nonce, while its outcome is uncertain.
+//
+// Storage is the caller's job (a file, IndexedDB, ...). The protocol is:
+//   1. sign -> persist as "signed_unsubmitted"
+//   2. persist as "unresolved" with submittedAt BEFORE the POST
+//   3. submitTransfer once -> applySubmission
+//   4. poll operation() -> observeOperation until sealed or rejected
+
+import { SubmissionError } from "./errors.js";
+import type { OperationStatus, Receipt, SignedTransfer, SubmitResult } from "./types.js";
+
+export type OperationState = "signed_unsubmitted" | "pending" | "unresolved" | "sealed" | "rejected";
+
+export interface OperationRecord {
+  id: `0x${string}`;
+  networkId: string;
+  chainId: number;
+  /** Base URL of the gateway the authorization was (or will be) sent to. */
+  gateway: string;
+  sender: `0x${string}`;
+  nonce: number;
+  state: OperationState;
+  /** Unix milliseconds. */
+  createdAt: number;
+  updatedAt: number;
+  submittedAt?: number;
+  receipt?: Receipt;
+  reason?: string;
+  signed: SignedTransfer;
+}
+
+export function isFinalOperationState(state: OperationState): boolean {
+  return state === "sealed" || state === "rejected";
+}
+
+/** Creates the record to persist right after signing and before any submission. */
+export function newOperationRecord(signed: SignedTransfer, gateway: string, now = Date.now()): OperationRecord {
+  return {
+    id: signed.operationId,
+    networkId: signed.intent.networkId,
+    chainId: signed.intent.chainId,
+    gateway,
+    sender: signed.intent.from,
+    nonce: signed.intent.nonce,
+    state: "signed_unsubmitted",
+    createdAt: now,
+    updatedAt: now,
+    signed,
+  };
+}
+
+/** The record to persist immediately BEFORE posting, so a crash can't hide a submission. */
+export function markSubmitting<T extends OperationRecord>(record: T, now = Date.now()): T {
+  return { ...record, state: "unresolved", submittedAt: now, updatedAt: now };
+}
+
+/**
+ * Applies the outcome of one submitTransfer call. `previous` is the record as
+ * it was before markSubmitting, restored when the failure was local preflight.
+ */
+export function applySubmission<T extends OperationRecord>(
+  previous: T,
+  submitting: T,
+  outcome: { result: SubmitResult } | { error: unknown },
+  now = Date.now(),
+): T {
+  if ("result" in outcome) {
+    const next: T = { ...submitting, state: outcome.result.status, updatedAt: now };
+    if (outcome.result.receipt) next.receipt = outcome.result.receipt;
+    return next;
+  }
+  const e = outcome.error;
+  if (e instanceof SubmissionError && !e.submitted) return { ...previous, updatedAt: now };
+  if (e instanceof SubmissionError && e.definiteRejection) {
+    return { ...submitting, state: "rejected", reason: e.definiteRejection.message, updatedAt: now };
+  }
+  return { ...submitting, state: "unresolved", updatedAt: now };
+}
+
+/** Applies a gateway status report. Returns an error when the report isn't trustworthy. */
+export function observeOperation<T extends OperationRecord>(record: T, status: OperationStatus, now = Date.now()): { record: T; error?: string } {
+  const next: T = { ...record, updatedAt: now };
+  switch (status.status) {
+    case "sealed":
+      if (!status.receipt?.blockHash || status.receipt.operationId !== record.id) {
+        return { record, error: "The network reported a seal without a matching receipt, so the outcome is still unknown." };
+      }
+      next.state = "sealed";
+      next.receipt = status.receipt;
+      break;
+    case "rejected":
+      if (!status.reason) return { record, error: "The network reported a rejection without a reason, so the outcome is still unknown." };
+      if (record.state !== "sealed") {
+        next.state = "rejected";
+        next.reason = status.reason;
+      }
+      break;
+    case "pending":
+      if (!isFinalOperationState(record.state)) next.state = "pending";
+      break;
+    case "unknown":
+      if (record.submittedAt !== undefined && !isFinalOperationState(record.state)) next.state = "unresolved";
+      break;
+  }
+  return { record: next };
+}
+
+/**
+ * Whether the exact saved authorization may be replayed. Allowed only if it
+ * was never submitted, or the original gateway reports unknown with an
+ * admission window (pendingUntil) that ended after our submission.
+ */
+export function retryDecision(record: OperationRecord, status: OperationStatus, nowMs = Date.now()): { allowed: boolean; reason: string } {
+  if (isFinalOperationState(record.state)) return { allowed: false, reason: `This transfer is already ${record.state}.` };
+  const nowSec = Math.floor(nowMs / 1000);
+  const neverSubmitted = record.submittedAt === undefined && record.state === "signed_unsubmitted" && status.status === "unknown";
+  const until = status.pendingUntil ?? 0;
+  const windowEnded =
+    status.status === "unknown" &&
+    until > 0 &&
+    until <= nowSec &&
+    record.submittedAt !== undefined &&
+    until >= Math.floor(record.submittedAt / 1000);
+  if (neverSubmitted || windowEnded) return { allowed: true, reason: "" };
+  return {
+    allowed: false,
+    reason: "The network hasn't confirmed that this transfer's window closed without a seal, so sending it again could pay twice.",
+  };
+}
+
+/** An earlier transfer from this sender whose outcome must be settled before signing a new one. */
+export function blockingOperation<T extends OperationRecord>(records: readonly T[], networkId: string, sender: string): T | undefined {
+  return records.find((r) => r.networkId === networkId && r.sender.toLowerCase() === sender.toLowerCase() && !isFinalOperationState(r.state));
+}
+
+/** A sealed transfer whose nonce the gateway's live index hasn't moved past yet. */
+export function staleNonceOperation<T extends OperationRecord>(records: readonly T[], networkId: string, sender: string, nonce: number): T | undefined {
+  return records.find(
+    (r) => r.networkId === networkId && r.sender.toLowerCase() === sender.toLowerCase() && r.state === "sealed" && r.nonce >= nonce,
+  );
+}

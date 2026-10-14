@@ -40,6 +40,10 @@ for (const name of ["EvmVaultDepositor", "BitcoinVaultDepositor", "SolanaVaultDe
   assert.equal(typeof sdk[name], "function", name);
 }
 assert.deepEqual(sdk.splitNonce(sdk.composeNonce(7n, 3n)), { key: 7n, sequence: 3n });
+const gateway = await import("@yellow-org/clearnet-sdk/gateway");
+assert.equal(typeof gateway.GatewayClient, "function");
+assert.equal(sdk.GatewayClient, gateway.GatewayClient);
+assert.equal(gateway.networkChainId("YDEV"), 1497646422);
 const keypair = web3.Keypair.generate();
 const depositor = new sdk.SolanaVaultDepositor({
   rpcUrl: "http://127.0.0.1:8899",
