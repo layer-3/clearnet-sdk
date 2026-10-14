@@ -74,6 +74,10 @@ go get github.com/layer-3/clearnet-sdk
 
 Common entry points:
 
+- `pkg/client`: public gateway HTTP client for network/asset discovery,
+  balances, recent transfer history, deterministic transfer preparation,
+  signing, submission and unknown-outcome status checks. It does not manage
+  private-key files or expose validator/operator plumbing.
 - `pkg/core`: chain-neutral interfaces such as `VaultDepositor`,
   `VaultWithdrawalFinalizer`, `SignerRotationFinalizer`, `TxRef`, and
   `DepositDestination`.
@@ -87,6 +91,51 @@ Common entry points:
   checker reference and K are private; use the constructor, including for K=1.
   Former struct literals setting `TrustedValidators` no longer compile. The
   checker may still track live registry membership; its reference cannot be replaced.
+
+A user client talks to a trusted gateway, not the validator TCP port. The
+application supplies an already-authorized `sign.Signer`; the SDK never reads
+a mnemonic or key file:
+
+```go
+c, err := client.New("https://gateway.example.org", "YTES")
+if err != nil { return err }
+info, err := c.Info(ctx) // verifies network ID, EIP-712 chain and router
+if err != nil { return err }
+_ = info
+balance, err := c.Balance(ctx, accountAddress)
+if err != nil { return err }
+_ = balance
+intent, err := c.PrepareTransfer(ctx, signer, recipient,
+    []client.TransferAmount{{Asset: "YELLOW", Amount: "1.25"}}, "0.01")
+if err != nil { return err }
+// Display/review intent; SignTransfer does not submit it.
+signed, err := c.SignTransfer(ctx, signer, intent)
+if err != nil { return err }
+// Persist this signed authorization safely before submitting; it can spend
+// funds, and retrying with a NEW nonce after a timeout can pay twice.
+result, err := c.SubmitTransfer(ctx, signed)
+if err != nil {
+    var uncertain *client.SubmissionError
+    if errors.As(err, &uncertain) && uncertain.OutcomeUnknown {
+        status, queryErr := c.Operation(ctx, uncertain.OperationID)
+        _ = status; _ = queryErr // do not re-sign or assume unknown means rejected
+    }
+    return err
+}
+_ = result
+page, err := c.Transfers(ctx, accountAddress, client.TransferPageOptions{Limit: 20})
+_ = page; _ = err
+```
+
+`Transfers` is a recent, sender-sealed transfer feed (30-day gateway retention
+by default), not an archive or proof of recipient credit. `Operation` is
+transfer-only and relies on the gateway's locally persisted signed intent;
+another gateway may report `unknown`. `unknown` is not evidence the transfer
+did not execute. An operator may explicitly resubmit the **same** retained
+`SignedTransfer` after its pending window; the SDK never retries a POST or
+obtains a new nonce automatically. The
+Go client intentionally excludes deposits, withdrawals, swaps, WebSocket
+subscriptions, key storage, and a CLI in this phase.
 
 Run the Go checks:
 
