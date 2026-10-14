@@ -48,6 +48,8 @@ mechanical rather than a fresh audit.
 
 | Path | Purpose |
 |---|---|
+| `cmd/yellow`, `internal/yellow` | Public account, balance, transfer and recovery CLI. See [the user guide](cmd/yellow/README.md). |
+| `pkg/wallet` | Public BIP-39/BIP-32 Ethereum index-zero key derivation. |
 | `pkg/core` | Shared Clearnet data types, operations, transaction references, deposit destinations, and adapter interfaces. |
 | `pkg/blockchain/evm` | **Custody-implementation-specific.** Go EVM adapters for vault deposits, withdrawals, signer rotation, registry/faucet/token/fraud interactions, and generated contract bindings. |
 | `pkg/blockchain/sol` | **Custody-implementation-specific.** Go Solana custody adapter code, program bindings, deposits, withdrawals, and signer rotation. |
@@ -63,6 +65,25 @@ mechanical rather than a fresh audit.
 | `scripts` | Artifact validation and release checks. |
 | `testdata` | Shared conformance fixtures, including vectors used by both Go and TypeScript. |
 | `docs` | Release guidance. See `docs/releasing.md`. |
+
+## Yellow CLI
+
+The public [Yellow CLI](cmd/yellow/README.md) provides encrypted local accounts, live
+balances, transfers, recent history, recovery, shell completion, and an interactive
+prompt with live suggestions. Direct commands provide versioned JSON for scripts
+and agents.
+
+Import an existing Ethereum private key with `yellow account import <name>`, or
+reveal a saved account's key with `yellow account export-key [name]` to import it
+into MetaMask. See the [wallet import and export guide](cmd/yellow/README.md#import-an-account-by-private-key).
+
+```sh
+go install github.com/layer-3/clearnet-sdk/cmd/yellow@v0.9.0
+yellow help
+yellow shell
+```
+
+See the [CLI README](cmd/yellow/README.md) for setup, commands, and recovery.
 
 ## Go SDK
 
@@ -135,7 +156,8 @@ did not execute. An operator may explicitly resubmit the **same** retained
 `SignedTransfer` after its pending window; the SDK never retries a POST or
 obtains a new nonce automatically. The
 Go client intentionally excludes deposits, withdrawals, swaps, WebSocket
-subscriptions, key storage, and a CLI in this phase.
+subscriptions and key storage. The standalone [Yellow CLI](cmd/yellow/README.md) owns
+local account storage and safe transfer recovery under `cmd/yellow`.
 
 Run the Go checks:
 

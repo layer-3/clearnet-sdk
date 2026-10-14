@@ -1,0 +1,29 @@
+name: Publish Yellow CLI binaries
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    uses: ./.github/workflows/yellow.yml
+
+  publish:
+    needs: cli
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: yellow-cli
+          path: dist/yellow
+      - name: Attach binaries to the published SDK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          YELLOW_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$YELLOW_TAG" dist/yellow/*

@@ -1,7 +1,8 @@
 # Releasing the SDK
 
 This guide is for release maintainers. SDK consumers should start with the
-[main SDK README](../README.md) or the [TypeScript guide](../sdk/ts/README.md).
+[main SDK README](../README.md), the [CLI README](../cmd/yellow/README.md),
+or the [TypeScript guide](../sdk/ts/README.md).
 
 ## GitHub / Go release
 
@@ -69,3 +70,41 @@ when publishing the package, and keep the public `solana` namespace compatible
 with the transactions returned by the SDK.
 
 A maintainer with npm publishing access can then publish the verified package.
+
+## Yellow CLI release
+
+Yellow is included in SDK releases starting with `v0.9.0`. Publish CLI binaries
+from the verified SDK release tag and keep released tags immutable.
+
+The `Yellow CLI` workflow runs public HTTP-fixture, encryption, wallet and recovery
+tests, checks that `cmd/yellow` imports no private Clearnet, custody, blockchain
+adapter or node p2p packages, and cross-compiles Linux/macOS/Windows amd64 and arm64
+archives with SHA-256 checksums. PR and branch checks retain these as the
+`yellow-cli` Actions artifact. Publishing the SDK release builds the exact tag and
+attaches archives and `SHA256SUMS` to that release. Release publication must follow
+normal SDK validation; this workflow does not tag or move tags.
+
+Before publishing, review `yellow help`, `yellow transfer send --help`,
+`yellow operation retry --help`, `yellow shell --help`, and the [CLI README](../cmd/yellow/README.md). Confirm help has
+only accounts, networks, balances, transfers, recent history, operation recovery
+and CLI tooling. Build the CLI from the public module without private repository
+access. Run the CLI checks from the repository root:
+
+```sh
+go test -race ./cmd/yellow ./internal/yellow ./pkg/wallet ./pkg/client
+python3 scripts/test-yellow-terminal.py
+./scripts/build-yellow.sh v0.9.0 /tmp/yellow-release
+```
+
+Test interactive prompts and platform binaries on their target operating systems,
+including live suggestions, resizing, history, scrollback, secure input handoff and
+Ctrl+C/Ctrl+D restoration. Confirm direct JSON commands remain suitable for scripts.
+Verify private-key export requires unlock and confirmation, and keeps the revealed
+key out of redirected stdout, stderr and JSON. Check private-key import preserves
+the signing address and stores the key encrypted.
+Each release archive includes the CLI README and license.
+
+Previously submitted operation replay requires the original gateway's optional
+`pendingUntil` status evidence. Gateways without it can still handle account,
+balance, transfer, history and status commands, and sealed receipt reconciliation;
+the CLI safely refuses replay of submitted uncertain authorizations.

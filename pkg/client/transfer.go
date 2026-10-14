@@ -209,18 +209,18 @@ func (c *Client) SubmitTransfer(ctx context.Context, signed *SignedTransfer) (*S
 				unknown = false
 			}
 		}
-		return nil, &SubmissionError{OperationID: id, OutcomeUnknown: unknown, Err: err}
+		return nil, &SubmissionError{Submitted: true, OperationID: id, OutcomeUnknown: unknown, Err: err}
 	}
 	if status == http.StatusAccepted {
 		var pending OperationStatus
 		if err := json.Unmarshal(raw, &pending); err != nil || pending.OperationID != id || pending.Status != "pending" {
-			return nil, &SubmissionError{OperationID: id, OutcomeUnknown: true, Err: fmt.Errorf("invalid pending transfer response")}
+			return nil, &SubmissionError{Submitted: true, OperationID: id, OutcomeUnknown: true, Err: fmt.Errorf("invalid pending transfer response")}
 		}
 		return &SubmitResult{OperationID: id, Status: "pending"}, nil
 	}
 	var receipt Receipt
 	if err := json.Unmarshal(raw, &receipt); err != nil || receipt.OperationID != id || receipt.BlockHash == "" {
-		return nil, &SubmissionError{OperationID: id, OutcomeUnknown: true, Err: fmt.Errorf("invalid verified transfer receipt")}
+		return nil, &SubmissionError{Submitted: true, OperationID: id, OutcomeUnknown: true, Err: fmt.Errorf("invalid verified transfer receipt")}
 	}
 	return &SubmitResult{OperationID: id, Status: "sealed", Receipt: &receipt}, nil
 }

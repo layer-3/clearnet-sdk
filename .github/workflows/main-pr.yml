@@ -27,3 +27,7 @@ jobs:
   artifacts:
     name: Artifacts
     uses: ./.github/workflows/check-release-artifacts.yml
+
+  cli:
+    name: Yellow CLI
+    uses: ./.github/workflows/yellow.yml

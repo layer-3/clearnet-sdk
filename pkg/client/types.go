@@ -108,11 +108,14 @@ type Receipt struct {
 }
 
 type OperationStatus struct {
-	OperationID string   `json:"operationId"`
-	Kind        string   `json:"kind"`
-	Status      string   `json:"status"`
-	Reason      string   `json:"reason,omitempty"`
-	Receipt     *Receipt `json:"receipt,omitempty"`
+	OperationID string `json:"operationId"`
+	Kind        string `json:"kind"`
+	Status      string `json:"status"`
+	Reason      string `json:"reason,omitempty"`
+	// PendingUntil is the original gateway admission window end, in Unix seconds.
+	// Zero means the gateway has not supplied evidence that replay is safe.
+	PendingUntil int64    `json:"pendingUntil,omitempty"`
+	Receipt      *Receipt `json:"receipt,omitempty"`
 }
 
 type SubmitResult struct {
@@ -163,6 +166,9 @@ func (e *APIError) Error() string {
 // SubmissionError always carries the precomputed operation ID. An unknown
 // outcome is NOT retryable merely because it arose from a network timeout.
 type SubmissionError struct {
+	// Submitted records whether the POST was attempted. False establishes that
+	// this call failed during preflight; it says nothing about earlier submissions.
+	Submitted      bool
 	OperationID    string
 	OutcomeUnknown bool
 	Err            error

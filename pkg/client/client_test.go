@@ -91,7 +91,7 @@ func TestUserClientPrepareSignSubmitPreservesUnknownOutcome(t *testing.T) {
 		t.Fatal("expected an unknown-outcome error")
 	}
 	var subErr *client.SubmissionError
-	if !errors.As(submitErr, &subErr) || !subErr.OutcomeUnknown || subErr.OperationID != signed.OperationID {
+	if !errors.As(submitErr, &subErr) || !subErr.Submitted || !subErr.OutcomeUnknown || subErr.OperationID != signed.OperationID {
 		t.Fatalf("submission error = %v", submitErr)
 	}
 	if posts != 1 || posted.MaxFee != "10000000000000000" || posted.Nonce != 7 || posted.To != to || posted.Assets[0].Amount != "1250000000000000000" {
@@ -135,7 +135,7 @@ func TestSignedTransferMutationIsRejectedBeforePOST(t *testing.T) {
 		t.Fatal("mutated signed body accepted")
 	} else {
 		var subErr *client.SubmissionError
-		if !errors.As(err, &subErr) || subErr.OutcomeUnknown {
+		if !errors.As(err, &subErr) || subErr.Submitted || subErr.OutcomeUnknown {
 			t.Fatalf("preflight mutation should be a definite local error: %v", err)
 		}
 	}
