@@ -5,7 +5,8 @@ on:
   workflow_call:
   workflow_dispatch:
   push:
-    tags: ['v*']
+    # RC tags already include this check through main-push.yml.
+    tags: ['v*', '!v0.9.0-rc*']
 
 permissions:
   contents: read

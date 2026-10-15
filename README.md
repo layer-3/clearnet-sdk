@@ -255,6 +255,11 @@ provisioning behavior, and environment overrides.
 
 ## Development Notes
 
+Use the [PR template](.github/pull_request_template.md) when creating or updating
+pull requests, including those written by agents. Lead with the user benefit,
+then explain the changes, relevant behavior, scope and validation. Keep small
+changes brief and label upcoming work separately from the current diff.
+
 - Use `make test` for the Go race-enabled test suite.
 - Use `npm --prefix sdk/ts test` to discover all TypeScript unit and example
   tests. Integration tests run separately through the `test:integration:*` scripts.

@@ -1,8 +1,9 @@
-name: Push on master or RC
+name: Push on master or RC tag
 
 on:
   push:
-    branches: [master, v0.9.0-rc]
+    # RC branch changes are checked by main-pr.yml through their pull request.
+    branches: [master]
     tags: ['v0.9.0-rc*']
 
 permissions:
