@@ -29,11 +29,15 @@ func exportedBaseFee(ctx context.Context, url string) (uint64, error) {
 	return uint64(resp.State.ValidatedLedger.BaseFee), nil
 }
 
-// noPanic runs call and turns a panic into an error.
+// errPanicked marks an error noPanic made from a recovered panic.
+var errPanicked = errors.New("panic")
+
+// noPanic runs call and turns a panic into an error wrapping errPanicked, so
+// a test can reject it.
 func noPanic(call func() error) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic: %v", r)
+			err = fmt.Errorf("%w: %v", errPanicked, r)
 		}
 	}()
 	return call()
@@ -158,6 +162,9 @@ func TestExportedRPCBusyThenTransportError(t *testing.T) {
 			srv := httptest.NewServer(b)
 			t.Cleanup(srv.Close)
 			err := noPanic(func() error { return tc.call(context.Background(), srv.URL) })
+			if errors.Is(err, errPanicked) {
+				t.Fatalf("call panicked: %v", err)
+			}
 			if err == nil {
 				t.Fatal("call succeeded against a dropped connection")
 			}
