@@ -207,6 +207,11 @@ func (f *WithdrawalFinalizer) Pack(ctx context.Context, op *core.WithdrawalOp, w
 	if err := call.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
 		return nil, fmt.Errorf("xrpl: autofill: %w", err)
 	}
+	// xrpl-go permits up to 2 XRP by default, while every follower refuses
+	// a canonical fee above our 1 XRP ceiling. Never emit an unsignable body.
+	if err := checkFee("packed payment", flatTx["Fee"], 1); err != nil {
+		return nil, err
+	}
 	flatTx["Sequence"] = uint32(0)
 	// Autofill sets its own LastLedgerSequence; replace it with our ValidUntil-bound
 	// budget (or drop it entirely in standalone mode).
@@ -238,6 +243,9 @@ func (f *WithdrawalFinalizer) Validate(ctx context.Context, packed []byte, op *c
 	var flat transaction.FlatTransaction
 	if err := json.Unmarshal(packed, &flat); err != nil {
 		return candidateRejected(fmt.Errorf("xrpl: decode packed: %w", err))
+	}
+	if err := validatePaymentShape(flat, op, withdrawalID, f.vaultAddress); err != nil {
+		return candidateRejected(err)
 	}
 	policy := llsPolicy{standalone: f.standalone, validUntil: bounds.ValidUntil}
 	if !f.standalone {
@@ -308,8 +316,11 @@ func (f *WithdrawalFinalizer) Submit(ctx context.Context, _ []byte, signatures [
 	}
 }
 
-// VerifyExecution scans the vault's recent account_tx for a Payment whose
-// InvoiceID equals the withdrawalID, returning its txID + true.
+// VerifyExecution scans the vault's recent account_tx for a validated,
+// successful outgoing Payment whose InvoiceID equals the withdrawalID. An
+// InvoiceID on a tec-failed Payment is not proof of recipient credit. Custody
+// uses its own watcher-ledger verifier; this bounded scan is for SDK consumers
+// and returns an error if its horizon is exhausted instead of claiming absence.
 func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID [32]byte) (string, bool, error) {
 	want := strings.ToUpper(hex.EncodeToString(withdrawalID[:]))
 	call, err := f.rpc(ctx)
@@ -327,18 +338,22 @@ func (f *WithdrawalFinalizer) VerifyExecution(ctx context.Context, withdrawalID 
 			return "", false, fmt.Errorf("xrpl verify: account_tx: %w", err)
 		}
 		for _, tx := range resp.Transactions {
-			if strings.EqualFold(asString(tx.Tx["InvoiceID"]), want) {
-				txID := strings.ToUpper(string(tx.Hash))
-				if _, err := hex.DecodeString(txID); err != nil || len(txID) != 64 {
-					return "", true, nil // executed; txID unparseable
-				}
-				return txID, true, nil
+			if !strings.EqualFold(asString(tx.Tx["InvoiceID"]), want) ||
+				!tx.Validated || tx.Meta.TransactionResult != "tesSUCCESS" ||
+				asString(tx.Tx["TransactionType"]) != "Payment" ||
+				asString(tx.Tx["Account"]) != f.vaultAddress {
+				continue
 			}
+			txID := strings.ToUpper(string(tx.Hash))
+			if _, err := hex.DecodeString(txID); err != nil || len(txID) != 64 {
+				return "", false, fmt.Errorf("xrpl verify: validated Payment has invalid transaction hash %q", tx.Hash)
+			}
+			return txID, true, nil
 		}
 		if resp.Marker == nil {
-			break
+			return "", false, nil // Full validated account history was searched.
 		}
 		marker = resp.Marker
 	}
-	return "", false, nil
+	return "", false, fmt.Errorf("xrpl verify: account_tx scan exceeded %d pages; execution outcome is unknown", executionScanPages)
 }
