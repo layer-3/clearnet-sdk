@@ -21,13 +21,9 @@ they do not prove compilation from private custody sources.
 
 ## CI triggers
 
-Pull requests targeting `master` or `v0.9.0-rc` run the full SDK checks. Keep an
-open PR for RC branch work: pushes to that branch rely on the PR workflow and do
-not start a second copy of the suite. New commits cancel older runs of that PR.
-Pushes to `master` and tags matching `v0.9.0-rc*` also run the full suite.
-
-RC tags include artifact validation through that suite. Other `v*` tags run the
-standalone artifact workflow, so each tag runs artifact validation once.
+Pull requests targeting `master` and pushes to `master` run the full SDK checks.
+New commits to a pull request cancel its older runs. `v*` tags run the
+standalone artifact workflow.
 
 ## Artifact maintenance
 

@@ -1,8 +1,8 @@
-name: PR on master or RC
+name: PR on master
 
 on:
   pull_request:
-    branches: [master, v0.9.0-rc]
+    branches: [master]
 
 permissions:
   contents: read
