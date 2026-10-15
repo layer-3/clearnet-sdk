@@ -23,8 +23,9 @@ const maxResponseBytes = 2 << 20
 
 type Option func(*Client)
 
-// WithHTTPClient installs a caller-owned transport; nil keeps the default
-// bounded transport. The SDK never writes private keys to this transport.
+// WithHTTPClient installs a caller-owned HTTP client; nil keeps the default.
+// A caller-supplied client owns its redirect policy: a followed redirect can
+// replay a signed POST to another host.
 func WithHTTPClient(h *http.Client) Option {
 	return func(c *Client) {
 		if h != nil {
@@ -48,9 +49,14 @@ type Client struct {
 // No I/O is performed until Info or another method is called.
 func New(baseURL, expectedNetworkID string, options ...Option) (*Client, error) {
 	if len(expectedNetworkID) != 4 || eip712.NetworkChainID(expectedNetworkID).Sign() == 0 {
-		return nil, fmt.Errorf("expected four-byte Clearnet network ID is required")
+		return nil, fmt.Errorf("a four-character Clearnet network ID is required")
 	}
-	c := &Client{expectedNet: expectedNetworkID, http: &http.Client{Timeout: 15 * time.Second}}
+	c := &Client{expectedNet: expectedNetworkID, http: &http.Client{
+		Timeout: 15 * time.Second,
+		// A signed submission must never be replayed to another host by a
+		// redirect: report the 3xx instead of following it.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 	for _, option := range options {
 		if option != nil {
 			option(c)
@@ -201,7 +207,7 @@ func (c *Client) Transfers(ctx context.Context, account string, options Transfer
 		return nil, fmt.Errorf("gateway does not support recent account transfers")
 	}
 	if options.Limit < 0 || options.Limit > 100 {
-		return nil, fmt.Errorf("transfer page limit must be between 1 and 100")
+		return nil, fmt.Errorf("transfer page limit must be between 1 and 100 (0 uses the gateway default)")
 	}
 	query := url.Values{}
 	if options.Limit > 0 {

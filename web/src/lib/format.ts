@@ -20,12 +20,6 @@ export function formatUnits(raw: bigint | string, decimals: number, maxFraction 
   return p.fraction ? `${p.whole}.${p.fraction}` : p.whole;
 }
 
-/** Compact amount for large totals: 12.4K, 3.1M. */
-export function compactUnits(raw: bigint, decimals: number): string {
-  const whole = Number(fromBaseUnits(raw, decimals));
-  if (!Number.isFinite(whole)) return formatUnits(raw, decimals, 2);
-  return new Intl.NumberFormat("en", { notation: whole >= 100_000 ? "compact" : "standard", maximumFractionDigits: whole >= 100 ? 1 : 4 }).format(whole);
-}
 
 const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
 

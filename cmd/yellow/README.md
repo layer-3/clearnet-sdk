@@ -244,7 +244,8 @@ yellow operation retry <operation-id>
 Status and replay always use the original gateway URL. A previously submitted
 operation can only replay when the **original gateway** reports `unknown` and
 provides `pendingUntil`, the original admission window's end in Unix seconds,
-already in the past. Yellow refuses replay when the gateway does not provide
+already in the past and no earlier than the recorded submission time. Yellow
+refuses replay when the gateway does not provide
 this information, when the query fails, or while the operation is pending. A sealed or rejected operation is
 never replayed. Replay requires unlock and explicit confirmation and sends exactly
 the retained nonce, recipient, assets, fee and signature.
@@ -305,7 +306,8 @@ yellow help
 Global options: `--network`, `--account`, `--json`, `--timeout` (per gateway request,
 default `15s`), `--no-color`. `NO_COLOR` also disables color. Colors are disabled
 when output is redirected. Names may contain letters, digits, dashes and
-underscores and are at most 48 characters. No mnemonic, private key, unlock
+underscores, must start with a letter or digit, and are at most 48 characters.
+No mnemonic, private key, unlock
 passphrase or nonce option exists, in arguments or environment variables.
 
 Use `--network` and `--account` for one invocation; `network use` and `account use`
@@ -355,8 +357,9 @@ account with only what the agent may use, and move the rest back when you are do
 yellow transfer send <agent-address> --asset USDC=100 --max-fee 1
 ```
 
-An agent account never becomes your default account; agents select it with
-`--account`. Your personal accounts keep their passphrase and approval prompts,
+An agent account is never selected as the default when it is created; agents are
+used by passing `--account` (or explicitly with `account use`). Your personal
+accounts keep their passphrase and approval prompts,
 and no agent can unlock them. `account backup` of an agent account asks you for a
 new passphrase and writes an ordinary encrypted backup, which restores as a
 personal account. `account export-key` works as for any account.

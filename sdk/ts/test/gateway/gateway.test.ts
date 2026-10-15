@@ -185,7 +185,7 @@ describe("GatewayClient", () => {
     const outcomes: Array<[number, unknown, (e: SubmissionError) => void]> = [
       [422, { error: { code: -32003, message: "insufficient balance" } }, (e) => expect(e.definiteRejection).toBeInstanceOf(APIError)],
       [504, { error: { code: -32006, message: "outcome unknown" } }, (e) => expect(e.outcomeUnknown).toBe(true)],
-      [409, { error: { code: -32009, message: "conflict" } }, (e) => expect(e.outcomeUnknown).toBe(true)],
+      [409, { error: { code: -32009, message: "conflict" } }, (e) => expect(e.definiteRejection).toBeInstanceOf(APIError)],
       [400, "not json", (e) => expect(e.definiteRejection).toBeUndefined()],
     ];
     for (const [status, body, check] of outcomes) {
@@ -230,5 +230,53 @@ describe("GatewayClient", () => {
     const intent = await c.prepareTransfer({ from: "0x00000000000000000000000000000000000000aa", recipient: account.address, assets: [{ asset: "ETH", amount: "1" }], maxFee: "0" });
     const sig = await account.signTypedData(transferTypedData(intent));
     await expect(c.finalizeSignature(intent, sig)).rejects.toThrow(/different account/);
+  });
+
+  it("treats a cancelled submission as unsent", async () => {
+    let posts = 0;
+    const c = new GatewayClient({
+      baseUrl: "https://gw.test",
+      networkId: "YDEV",
+      fetch: fakeFetch((url) => {
+        if (url.includes("/balances")) return { status: 200, body: { nonce: 0, balances: [] } };
+        posts++;
+        return { status: 200, body: {} };
+      }),
+    });
+    const signed = await signedFor(c);
+    const controller = new AbortController();
+    controller.abort();
+    const err = await c.submitTransfer(signed, controller.signal).catch((e) => e);
+    expect(err).toBeInstanceOf(SubmissionError);
+    expect(err.submitted).toBe(false);
+    expect(err.outcomeUnknown).toBe(false);
+    expect(posts).toBe(0);
+  });
+
+  it("refuses authority-relative gateway URLs", () => {
+    for (const baseUrl of ["//evil.test", "/\\evil.test"]) {
+      expect(() => new GatewayClient({ baseUrl, networkId: "YDEV" })).toThrow(GatewayError);
+    }
+    expect(() => new GatewayClient({ baseUrl: "/api/gw/testnet", networkId: "YDEV" })).not.toThrow();
+  });
+
+  it("refuses an unsupported decimal count from the gateway", async () => {
+    const bad = { ...INFO, assets: [{ symbol: "YELLOW", decimals: 1000000000, chainId: 1, address: "", native: false }] };
+    const c = new GatewayClient({
+      baseUrl: "https://gw.test",
+      networkId: "YDEV",
+      fetch: (async () => new Response(JSON.stringify(bad), { status: 200 })) as typeof fetch,
+    });
+    await expect(c.info()).rejects.toThrow(/unsupported decimal count/);
+  });
+
+  it("refuses an oversized gateway response", async () => {
+    const huge = "x".repeat(2 << 20);
+    const c = new GatewayClient({
+      baseUrl: "https://gw.test",
+      networkId: "YDEV",
+      fetch: (async () => new Response(JSON.stringify({ ...INFO, version: huge }), { status: 200 })) as typeof fetch,
+    });
+    await expect(c.info()).rejects.toThrow(/too large/);
   });
 });

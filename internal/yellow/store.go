@@ -20,6 +20,10 @@ import (
 
 const formatVersion = 1
 
+// lockWait bounds how long a command waits for the local journal lock. It is
+// deliberately independent of --timeout, which limits gateway requests only.
+const lockWait = 30 * time.Second
+
 var namePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$`)
 
 type profile struct {
@@ -122,7 +126,11 @@ func (s store) lock(ctx context.Context) (func(), error) {
 	f.Close()
 	l := flock.New(path)
 	ok, err := l.TryLockContext(ctx, 50*time.Millisecond)
-	if err != nil || !ok {
+	switch {
+	case err == nil && ok:
+	case err != nil && !errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+		return nil, fmt.Errorf("cannot lock local storage: %w", err)
+	default:
 		return nil, fmt.Errorf("local storage is busy; another yellow command may be waiting for approval")
 	}
 	return func() { _ = l.Close() }, nil
@@ -367,7 +375,29 @@ func atomicWriteNew(path string, raw []byte) error {
 		return err
 	}
 	if err := os.Link(f.Name(), path); err != nil {
-		return err
+		if errors.Is(err, os.ErrExist) {
+			return err
+		}
+		// Filesystems without hard links (exFAT/FAT32, some SMB and NFS
+		// mounts) fall back to an exclusive create of the already-synced
+		// bytes; the destination still cannot be overwritten.
+		if fallbackErr := writeNewFile(path, raw); fallbackErr != nil {
+			return fmt.Errorf("%w (exclusive-create fallback: %v)", err, fallbackErr)
+		}
 	}
 	return syncDir(filepath.Dir(path))
+}
+
+// writeNewFile creates path exclusively and syncs raw into it. It is the
+// no-hard-link fallback for atomicWriteNew.
+func writeNewFile(path string, raw []byte) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write(raw); err != nil {
+		return err
+	}
+	return f.Sync()
 }

@@ -287,11 +287,6 @@ func (a *app) transferCommands() *cobra.Command {
 				return a.operationResult(op)
 			}
 		}
-		for _, op := range ac.Operations {
-			if op.Profile.NetworkID == p.NetworkID && op.State != "sealed" && op.State != "rejected" {
-				return fail(ExitUnknown, "operation %s is %s; reconcile it with yellow operation show %s before sending again", op.ID, op.State, op.ID)
-			}
-		}
 		c, err := a.gateway(p, true)
 		if err != nil {
 			return err
@@ -299,8 +294,15 @@ func (a *app) transferCommands() *cobra.Command {
 		if _, err := c.Info(ctx); err != nil {
 			return netError(err)
 		}
+		// A preview signs nothing, so it must not be blocked by an unrelated
+		// unresolved operation on this account and network.
 		if dryRun {
 			return a.preview(ctx, c, p, name, ac, recipient, baseLegs, fee)
+		}
+		for _, op := range ac.Operations {
+			if op.Profile.NetworkID == p.NetworkID && op.State != "sealed" && op.State != "rejected" {
+				return fail(ExitUnknown, "operation %s is %s; reconcile it with yellow operation show %s before sending again", op.ID, op.State, op.ID)
+			}
 		}
 		signer, key, close, err := a.unlock(ac)
 		if err != nil {
@@ -453,7 +455,10 @@ func (a *app) submit(ctx context.Context, c *client.Client, name string, ac *acc
 		if errors.As(err, &se) && !se.Submitted {
 			op.State = priorState
 			op.Submitted = priorSubmitted
-		} else if errors.As(err, &se) && !se.OutcomeUnknown && errors.As(err, &api) && api.Code != 0 && api.Message != "unrecognized gateway error" {
+		} else if priorSubmitted == nil && errors.As(err, &se) && !se.OutcomeUnknown && errors.As(err, &api) && api.Code != 0 && api.Message != "unrecognized gateway error" {
+			// Only a first submission can be a definite rejection. A refused
+			// replay of an authorization that was already sent proves nothing
+			// about the original outcome, so it must stay unresolved.
 			op.State = "rejected"
 		}
 	} else {

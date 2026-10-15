@@ -35,13 +35,16 @@ type poolSummary struct {
 	SpotPrice string `json:"spotPrice"`
 }
 
+// pools returns the static valuation fixtures. Pool IDs are the canonical
+// lowercase base asset (core.PoolURI), as on the gateway — the pair is carried
+// by tokenA/tokenB.
 func pools() any {
 	return struct {
 		Items []poolSummary `json:"items"`
 		Total int           `json:"total"`
 	}{[]poolSummary{
-		{"ETH/YELLOW", "ETH", "YELLOW", "100000000000000000000", "2485000000000000000000000", "24850"},
-		{"USDC/YELLOW", "USDC", "YELLOW", "1000000000000", "10000000000000000000000000", "10"},
+		{"eth", "ETH", "YELLOW", "100000000000000000000", "2485000000000000000000000", "24850"},
+		{"usdc", "USDC", "YELLOW", "1000000000000", "10000000000000000000000000", "10"},
 	}, 2}
 }
 

@@ -114,19 +114,25 @@ export function useSendTransfer() {
             error = e;
             final = applySubmission(record, submitting, { error: e });
           }
-          await journal.put(final).catch(() => undefined);
+          let saveFailed = false;
+          try {
+            await journal.put(final);
+          } catch {
+            saveFailed = true;
+          }
           refresh();
+          const unsaved = saveFailed ? " The outcome couldn't be saved on this device; check Activity before sending again." : "";
 
           if (final.state === "signed_unsubmitted") {
             setProgress({ stage: "unsent", record: final, message: error instanceof Error ? error.message : undefined });
             return { ok: true };
           }
           if (final.state === "rejected") {
-            setProgress({ stage: "rejected", record: final, message: submissionRejection(error) ?? rejectionMessage(final.reason) });
+            setProgress({ stage: "rejected", record: final, message: (submissionRejection(error) ?? rejectionMessage(final.reason)) + unsaved });
             return { ok: true };
           }
           if (final.state === "unresolved" || final.state === "sealed") {
-            setProgress({ stage: final.state, record: final });
+            setProgress({ stage: final.state, record: final, ...(unsaved && { message: unsaved.trim() }) });
             return { ok: true };
           }
 
@@ -148,6 +154,9 @@ export function useSendTransfer() {
             }
           }
           refresh();
+          // "Send another"/"Edit" clears the progress screen; a finished poll
+          // must not bring it back.
+          if (cancelled.current) return { ok: true };
           setProgress({
             stage: current.state === "sealed" ? "sealed" : current.state === "rejected" ? "rejected" : current.state === "unresolved" ? "unresolved" : "pending",
             record: current,

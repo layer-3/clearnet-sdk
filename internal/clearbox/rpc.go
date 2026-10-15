@@ -120,9 +120,12 @@ func (s *Server) rpc(method string, params []json.RawMessage) (any, *rpcError) {
 		if json.Unmarshal(params[0], &raw) != nil || json.Unmarshal(params[1], &tag) != nil {
 			return bad("expected an address and block tag")
 		}
-		address, err := userAddress(raw)
-		if err != nil || (tag != "latest" && tag != "pending") {
-			return bad("expected a nonzero address and latest/pending block tag; historical state is not simulated")
+		if tag != "latest" && tag != "pending" {
+			return bad("expected a latest/pending block tag; historical state is not simulated")
+		}
+		address, err := readAddress(raw)
+		if err != nil {
+			return bad(err.Error())
 		}
 		a := s.account(address)
 		switch method {
@@ -138,9 +141,11 @@ func (s *Server) rpc(method string, params []json.RawMessage) (any, *rpcError) {
 			return bad("expected [account, block tag, optional full-transactions boolean]")
 		}
 		var raw, tag string
-		var full bool
-		if json.Unmarshal(params[0], &raw) != nil || json.Unmarshal(params[1], &tag) != nil || (len(params) == 3 && json.Unmarshal(params[2], &full) != nil) {
-			return bad("invalid account, block tag or full-transactions boolean")
+		// As on the gateway, the optional full-transactions flag is accepted and
+		// ignored: blocks always carry the SDK entry projection
+		// (type/account/nonce/payload/index), never EVM transactions.
+		if json.Unmarshal(params[0], &raw) != nil || json.Unmarshal(params[1], &tag) != nil {
+			return bad("expected an account and a block tag")
 		}
 		address, err := userAddress(raw)
 		if err != nil {

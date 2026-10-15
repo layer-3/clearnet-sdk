@@ -318,7 +318,10 @@ func (a *app) action(fn func(context.Context, *cobra.Command, []string) error) f
 		if a.timeout <= 0 {
 			return fail(ExitInput, "--timeout must be positive")
 		}
-		lockctx, cancel := context.WithTimeout(cmd.Context(), a.timeout)
+		// The lock wait is a local budget, independent of the gateway request
+		// timeout: a short --timeout must not turn a busy journal into an
+		// unrelated storage error.
+		lockctx, cancel := context.WithTimeout(cmd.Context(), lockWait)
 		defer cancel()
 		unlock, err := a.store.lock(lockctx)
 		if err != nil {

@@ -59,6 +59,9 @@ export function markSubmitting<T extends OperationRecord>(record: T, now = Date.
 /**
  * Applies the outcome of one submitTransfer call. `previous` is the record as
  * it was before markSubmitting, restored when the failure was local preflight.
+ * A definite rejection only ends a *first* submission: a refused replay of an
+ * authorization that was already sent proves nothing about the original
+ * outcome, so it must stay unresolved.
  */
 export function applySubmission<T extends OperationRecord>(
   previous: T,
@@ -73,7 +76,7 @@ export function applySubmission<T extends OperationRecord>(
   }
   const e = outcome.error;
   if (e instanceof SubmissionError && !e.submitted) return { ...previous, updatedAt: now };
-  if (e instanceof SubmissionError && e.definiteRejection) {
+  if (e instanceof SubmissionError && e.definiteRejection && previous.submittedAt === undefined) {
     return { ...submitting, state: "rejected", reason: e.definiteRejection.message, updatedAt: now };
   }
   return { ...submitting, state: "unresolved", updatedAt: now };

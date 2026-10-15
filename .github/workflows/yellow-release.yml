@@ -11,8 +11,16 @@ jobs:
   cli:
     uses: ./.github/workflows/yellow.yml
 
+  # docs/releasing.md requires normal SDK validation before publication, so the
+  # release attaches binaries only when the tagged commit passes both suites.
+  unit:
+    uses: ./.github/workflows/test-go.yml
+
+  typescript:
+    uses: ./.github/workflows/test-ts.yml
+
   publish:
-    needs: cli
+    needs: [cli, unit, typescript]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -26,4 +34,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           YELLOW_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$YELLOW_TAG" dist/yellow/*
+        # --clobber keeps a re-run after a partial upload idempotent; the assets
+        # are deterministic builds of an immutable tag.
+        run: gh release upload "$YELLOW_TAG" dist/yellow/* --clobber

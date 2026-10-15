@@ -28,3 +28,24 @@ jobs:
         with:
           name: yellow-cli
           path: dist/yellow/*
+
+  # Cross-language contract test: the TypeScript SDK and the CLI both drive the
+  # same clearbox gateway, so their wire, EIP-712 and recovery rules must agree.
+  clearbox-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdk/ts/package-lock.json
+      - name: Install SDK dependencies
+        run: npm ci
+        working-directory: sdk/ts
+      - name: Go simulator, CLI recovery and TS client against one gateway
+        run: make test-clearbox

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"syscall"
 
 	"github.com/layer-3/clearnet-sdk/internal/yellow"
 )
@@ -23,7 +24,10 @@ func installedVersion() string {
 }
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// SIGTERM must unwind the same way as Ctrl+C: the interactive shell and the
+	// hidden prompts restore the terminal from a deferred handler, and an
+	// in-flight journal step must not be skipped.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := yellow.Execute(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, "", installedVersion())
 	stop()
 	os.Exit(code)

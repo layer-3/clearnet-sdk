@@ -62,8 +62,11 @@ func (c *Client) PrepareTransfer(ctx context.Context, signer sign.Signer, recipi
 		}
 		seen[input.Asset] = true
 		units, err := AmountInBaseUnits(input.Amount, asset.Decimals)
-		if err != nil || units.Sign() <= 0 {
-			return nil, fmt.Errorf("invalid transfer amount for %s: %v", input.Asset, err)
+		if err != nil {
+			return nil, fmt.Errorf("invalid transfer amount for %s: %w", input.Asset, err)
+		}
+		if units.Sign() <= 0 {
+			return nil, fmt.Errorf("transfer amount for %s must be greater than zero", input.Asset)
 		}
 		legs[i] = TransferAsset{Asset: input.Asset, Amount: units.String()}
 	}
@@ -78,32 +81,35 @@ func (c *Client) PrepareTransfer(ctx context.Context, signer sign.Signer, recipi
 	}, nil
 }
 
-func transferFields(intent TransferIntent) ([]eip712.TransferAsset, *big.Int, error) {
-	if _, err := eip712.TransferRecipientAddress(intent.To); err != nil {
-		return nil, nil, err
+// transferFields validates a signed intent and returns its EIP-712 recipient
+// address slot, asset legs and fee ceiling.
+func transferFields(intent TransferIntent) (common.Address, []eip712.TransferAsset, *big.Int, error) {
+	to, err := eip712.TransferRecipientAddress(intent.To)
+	if err != nil {
+		return common.Address{}, nil, nil, err
 	}
 	if !common.IsHexAddress(intent.From) || common.HexToAddress(intent.From) == (common.Address{}) {
-		return nil, nil, fmt.Errorf("invalid transfer sender")
+		return common.Address{}, nil, nil, fmt.Errorf("invalid transfer sender")
 	}
 	fee, err := parseBaseUnitInteger(intent.MaxFee)
 	if err != nil {
-		return nil, nil, fmt.Errorf("invalid transfer maxFee: %w", err)
+		return common.Address{}, nil, nil, fmt.Errorf("invalid transfer maxFee: %w", err)
 	}
 	if len(intent.Assets) == 0 {
-		return nil, nil, fmt.Errorf("transfer assets required")
+		return common.Address{}, nil, nil, fmt.Errorf("transfer assets required")
 	}
 	assets := make([]eip712.TransferAsset, len(intent.Assets))
 	for i, leg := range intent.Assets {
 		if i > 0 && intent.Assets[i-1].Asset >= leg.Asset {
-			return nil, nil, fmt.Errorf("transfer assets must be sorted and unique")
+			return common.Address{}, nil, nil, fmt.Errorf("transfer assets must be sorted and unique")
 		}
 		amount, err := parseBaseUnitInteger(leg.Amount)
 		if err != nil || amount.Sign() <= 0 || leg.Asset == "" {
-			return nil, nil, fmt.Errorf("invalid transfer asset %d amount", i)
+			return common.Address{}, nil, nil, fmt.Errorf("invalid transfer asset %d amount", i)
 		}
 		assets[i] = eip712.TransferAsset{Asset: leg.Asset, Amount: amount}
 	}
-	return assets, fee, nil
+	return to, assets, fee, nil
 }
 
 func parseBaseUnitInteger(raw string) (*big.Int, error) {
@@ -145,7 +151,7 @@ func (c *Client) SignTransfer(ctx context.Context, signer sign.Signer, prepared 
 	}
 	intent := *prepared
 	intent.Assets = append([]TransferAsset(nil), prepared.Assets...)
-	assets, fee, err := transferFields(intent)
+	_, assets, fee, err := transferFields(intent)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +176,7 @@ func (c *Client) SubmitTransfer(ctx context.Context, signed *SignedTransfer) (*S
 	if !info.HasCapability(CapabilityTransferStatus) || signed.Intent.NetworkID != info.NetworkID || signed.Intent.ChainID != info.ChainID {
 		return nil, &SubmissionError{OperationID: id, Err: fmt.Errorf("gateway network or transfer status capability changed")}
 	}
-	assets, fee, err := transferFields(signed.Intent)
+	to, assets, fee, err := transferFields(signed.Intent)
 	if err != nil {
 		return nil, &SubmissionError{OperationID: id, Err: err}
 	}
@@ -181,7 +187,6 @@ func (c *Client) SubmitTransfer(ctx context.Context, signed *SignedTransfer) (*S
 	if err != nil {
 		return nil, &SubmissionError{OperationID: id, Err: err}
 	}
-	to, _ := eip712.TransferRecipientAddress(signed.Intent.To)
 	chainID := new(big.Int).SetUint64(info.ChainID)
 	computed, err := eip712.TransferOperationID(chainID, common.HexToAddress(signed.Intent.From), signed.Intent.To, assets, fee, signed.Intent.Nonce)
 	if err != nil || computed != id {
@@ -205,7 +210,12 @@ func (c *Client) SubmitTransfer(ctx context.Context, signed *SignedTransfer) (*S
 		var apiErr *APIError
 		if errors.As(err, &apiErr) {
 			switch apiErr.HTTPStatus {
-			case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity, http.StatusTooManyRequests:
+			// The gateway answers a conflicting signed intent (code -32009) and
+			// a stale nonce (code -32002) with 409 before admitting anything, so
+			// the submission is a definite rejection rather than an unknown
+			// outcome. Callers must not treat the operation as possibly executed.
+			case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+				http.StatusConflict, http.StatusUnprocessableEntity, http.StatusTooManyRequests:
 				unknown = false
 			}
 		}

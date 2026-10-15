@@ -831,3 +831,86 @@ func TestSubmissionPreflightFailureIsUnsubmitted(t *testing.T) {
 		t.Fatal("replay omitted changed asset precision or current amount")
 	}
 }
+
+// A refused replay must stay unresolved: the original submission may have
+// executed, and recording "rejected" would lift the unresolved-send guard.
+func TestRefusedReplayStaysUnresolved(t *testing.T) {
+	g := newGateway(t)
+	dir, key := setup(t, g)
+	a, _, _ := newTestApp(dir, &scriptedPrompt{approve: true})
+	a.timeout = time.Second
+	a.cfg, _ = a.store.config()
+	p, _ := a.selectedNetwork()
+	c, _ := a.gateway(p, true)
+	ac, err := a.store.account("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, _, close, err := a.unlock(ac)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer close()
+	intent, err := c.PrepareTransfer(context.Background(), signer, recipient,
+		[]client.TransferAmount{{Asset: "YELLOW", Amount: "1.25"}}, "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := c.SignTransfer(context.Background(), signer, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submitted := time.Now().Add(-time.Minute).UTC()
+	op := operation{ID: signed.OperationID, Account: "alice", Sender: ac.Address, Nonce: intent.Nonce, Profile: p,
+		Created: submitted, Updated: submitted, State: "unresolved", Submitted: &submitted}
+	raw, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Payload, err = seal(key, raw, opAAD(op)); err != nil {
+		t.Fatal(err)
+	}
+	ac.Operations = append(ac.Operations, op)
+	if err := a.store.saveAccount("alice", ac); err != nil {
+		t.Fatal(err)
+	}
+	// The original gateway reports an ended admission window with no seal, so
+	// the replay is permitted; the gateway then refuses it definitively.
+	g.status = client.OperationStatus{Status: "unknown", PendingUntil: time.Now().Add(-30 * time.Second).Unix()}
+	g.postCode = 400
+	a, out, _ := newTestApp(dir, &scriptedPrompt{approve: true})
+	if code := a.execute(context.Background(), []string{"--json", "operation", "retry", signed.OperationID}); code != ExitUnknown {
+		t.Fatalf("refused replay exit = %d, want %d (%s)", code, ExitUnknown, out)
+	}
+	if len(g.posted) != 1 {
+		t.Fatalf("replay POSTs = %d, want 1", len(g.posted))
+	}
+	persisted, err := a.store.account("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Operations[0].State != "unresolved" {
+		t.Fatalf("refused replay recorded %q, want unresolved", persisted.Operations[0].State)
+	}
+}
+
+// --dry-run signs nothing, so an unrelated unresolved operation must not block it.
+func TestDryRunIgnoresUnresolvedGuard(t *testing.T) {
+	g := newGateway(t)
+	g.postCode = 504
+	dir, _ := setup(t, g)
+	a, out, _ := newTestApp(dir, &scriptedPrompt{approve: true})
+	if code := a.execute(context.Background(), sendArgs()); code != ExitUnknown {
+		t.Fatalf("first send exit = %d (%s)", code, out)
+	}
+	a, out, _ = newTestApp(dir, &scriptedPrompt{approve: true})
+	if code := a.execute(context.Background(), sendArgs("--dry-run")); code != 0 {
+		t.Fatalf("dry run exit = %d (%s)", code, out)
+	}
+	if !strings.Contains(out.String(), `"dryRun":true`) {
+		t.Fatalf("dry run output = %s", out)
+	}
+	if len(g.posted) != 1 {
+		t.Fatalf("dry run POSTs = %d, want 1 (the first send only)", len(g.posted))
+	}
+}

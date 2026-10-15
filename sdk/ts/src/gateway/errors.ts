@@ -72,7 +72,7 @@ export class SubmissionError extends Error {
   }
 }
 
-/** JSON-RPC-compatible codes shared by REST and /rpc (gateway errors.go). */
+/** JSON-RPC-compatible codes shared by REST and /rpc (the gateway's errors.go). */
 export const GATEWAY_ERROR_CODES = {
   invalidRequest: -32600,
   invalidParams: -32602,

@@ -1,6 +1,6 @@
 "use client";
 
-import { fromBaseUnits, normalizeAmountInput, toBaseUnits, type AssetInfo, type PoolSummary } from "@yellow-org/clearnet-sdk/gateway";
+import { fromBaseUnits, normalizeAmountInput, toBaseUnits, type AssetInfo } from "@yellow-org/clearnet-sdk/gateway";
 import { clsx } from "clsx";
 import { useId, useState } from "react";
 import { AssetIcon } from "@/components/ui/asset-icon";
@@ -18,7 +18,6 @@ interface Props {
   result: ComposeResult;
   portfolio: Portfolio;
   assets: AssetInfo[];
-  pools: PoolSummary[] | undefined;
   showErrors: boolean;
 }
 

@@ -147,7 +147,17 @@ func uint256(raw string) (*big.Int, error) {
 	return v, nil
 }
 
-func userAddress(raw string) (string, error) {
+// userAddress parses an address or canonical user URI for requests that need a
+// real account, such as transfers and account-scoped block queries.
+func userAddress(raw string) (string, error) { return parseUserAddress(raw, false) }
+
+// readAddress parses an address for account-state reads. Wallet clients probe
+// the zero address before a call — an implicit empty `from` makes cast and other
+// EVM tooling send eth_getTransactionCount/eth_getBalance/eth_getCode for
+// 0x000…000 first — so it resolves to an empty account instead of an error.
+func readAddress(raw string) (string, error) { return parseUserAddress(raw, true) }
+
+func parseUserAddress(raw string, allowZero bool) (string, error) {
 	if core.IsURI(raw) {
 		if err := core.ValidateURI(raw); err != nil {
 			return "", err
@@ -158,10 +168,14 @@ func userAddress(raw string) (string, error) {
 		}
 		raw = path
 	}
-	if !common.IsHexAddress(raw) || common.HexToAddress(raw) == (common.Address{}) {
+	if !common.IsHexAddress(raw) {
+		return "", fmt.Errorf("account must be a 20-byte Ethereum address")
+	}
+	address := common.HexToAddress(raw)
+	if address == (common.Address{}) && !allowZero {
 		return "", fmt.Errorf("account must be a nonzero 20-byte Ethereum address")
 	}
-	return common.HexToAddress(raw).Hex(), nil
+	return address.Hex(), nil
 }
 
 // LoopbackListen rejects wildcard/nonlocal binds even if the command is
@@ -350,11 +364,24 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// zeroAddress is how the gateway projects an unconfigured contract address.
+const zeroAddress = "0x0000000000000000000000000000000000000000"
+
 func (s *Server) info(rpcURL string) client.NetworkInfo {
 	return client.NetworkInfo{
 		ChainID: eip712.NetworkChainID(NetworkID).Uint64(), NetworkID: NetworkID, RPCURL: rpcURL,
 		L1ChainID: 31337, Confirmations: 1, Version: "clearbox-1",
-		Contracts: client.GatewayContracts{Token: catalog[2].Address}, Assets: catalog,
+		// Contract addresses and the virtual router are deployment metadata:
+		// wallet clients fingerprint the gateway with them. Clearbox serves no
+		// contract call surface, and unset addresses use the gateway's zero
+		// address rather than an empty string.
+		Contracts: client.GatewayContracts{
+			Custody:  zeroAddress,
+			Registry: zeroAddress,
+			Token:    catalog[2].Address,
+			Faucet:   zeroAddress,
+		},
+		Assets:        catalog,
 		VirtualRouter: eip712.RouterHex,
 		Capabilities:  []string{client.CapabilityTransferStatus, client.CapabilityRecentTransfers},
 	}

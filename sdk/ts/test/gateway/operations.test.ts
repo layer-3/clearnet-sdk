@@ -82,4 +82,11 @@ describe("journal rules", () => {
     expect(applySubmission(base, sending, { error: unknown }).state).toBe("unresolved");
     expect(applySubmission(base, sending, { result: { operationId: ID, status: "pending" } }).state).toBe("pending");
   });
+
+  it("keeps a refused replay unresolved instead of rejecting it", () => {
+    const sent = { ...base, state: "unresolved" as const, submittedAt: 9_000 };
+    const sending = markSubmitting(sent, 10_000);
+    const rejected = new SubmissionError({ submitted: true, operationId: ID, outcomeUnknown: false, cause: new APIError({ httpStatus: 409, code: -32009, message: "conflict" }) });
+    expect(applySubmission(sent, sending, { error: rejected })).toMatchObject({ state: "unresolved" });
+  });
 });

@@ -40,7 +40,9 @@ import {
 
 const MAX_RESPONSE_BYTES = 2 << 20;
 const INFO_TTL_MS = 20_000;
-const DEFINITE_REJECTION_STATUSES = new Set([400, 401, 403, 422, 429]);
+// 409 is a pre-admission conflict (-32009/-32002): the gateway refused the
+// intent before changing any state, so the outcome is definite, not unknown.
+const DEFINITE_REJECTION_STATUSES = new Set([400, 401, 403, 409, 422, 429]);
 
 export interface GatewayClientOptions {
   /** Absolute HTTPS (or loopback HTTP) base URL, or a same-origin path such as "/api/gw/testnet". */
@@ -97,7 +99,9 @@ export class GatewayClient {
       if (u.protocol === "http:" && !isLoopback(u.hostname)) {
         throw new GatewayError("input", "Remote gateways must use HTTPS.");
       }
-    } else if (!base.startsWith("/")) {
+    } else if (!base.startsWith("/") || base.startsWith("//") || base.startsWith("/\\")) {
+      // "//host" and "/\host" are authority-relative: the browser would resolve
+      // them to another origin and post a signed transfer there.
       throw new GatewayError("input", "Gateway URL must be an absolute HTTP(S) URL or a same-origin path.");
     }
     this.baseUrl = base;
@@ -124,8 +128,14 @@ export class GatewayClient {
       if (signal?.aborted) throw cause;
       throw new GatewayError("network", timeout.aborted ? "The network didn't respond in time." : "Couldn't reach the Yellow Network gateway.", cause);
     }
-    const raw = await res.text();
-    if (raw.length > MAX_RESPONSE_BYTES) throw new GatewayError("network", "Gateway response was too large.");
+    let raw: string;
+    try {
+      raw = await readCapped(res, MAX_RESPONSE_BYTES);
+    } catch (cause) {
+      if (cause instanceof GatewayError) throw cause;
+      if (signal?.aborted) throw cause;
+      throw new GatewayError("network", timeout.aborted ? "The network didn't respond in time." : "Couldn't read the gateway response.", cause);
+    }
     if (res.status < 200 || res.status >= 300) {
       let wire: { error?: { code?: number; message?: string; field?: string; data?: unknown } } | undefined;
       try {
@@ -155,12 +165,19 @@ export class GatewayClient {
   /** Self-described network metadata, rejected unless it is the expected deployment. */
   info(options: { fresh?: boolean; signal?: AbortSignal } = {}): Promise<NetworkInfo> {
     const now = Date.now();
-    if (!options.fresh && this.infoCache && now - this.infoCache.at < INFO_TTL_MS) return this.infoCache.value;
+    // Only signal-less reads are cached: a cached promise bound to one caller's
+    // signal would let that caller's abort cancel everyone else's read.
+    const cacheable = !options.signal;
+    if (!options.fresh && cacheable && this.infoCache && now - this.infoCache.at < INFO_TTL_MS) {
+      return this.infoCache.value;
+    }
     const value = this.fetchInfo(options.signal);
-    this.infoCache = { at: now, value };
-    value.catch(() => {
-      if (this.infoCache?.value === value) this.infoCache = undefined;
-    });
+    if (cacheable) {
+      this.infoCache = { at: now, value };
+      value.catch(() => {
+        if (this.infoCache?.value === value) this.infoCache = undefined;
+      });
+    }
     return value;
   }
 
@@ -176,6 +193,11 @@ export class GatewayClient {
     const seen = new Set<string>();
     for (const a of assets) {
       if (!a.symbol || seen.has(a.symbol)) throw new GatewayError("identity", "The gateway's asset list has an empty or duplicated symbol.");
+      // Amounts are converted with 10 ** decimals; an out-of-range value from a
+      // hostile gateway would hang or overflow the conversion.
+      if (!Number.isInteger(a.decimals) || a.decimals < 0 || a.decimals > 77) {
+        throw new GatewayError("identity", `The gateway reports an unsupported decimal count for ${a.symbol}.`);
+      }
       seen.add(a.symbol);
     }
     info.assets = [...assets].sort((a, b) => compare(a.symbol, b.symbol));
@@ -233,11 +255,15 @@ export class GatewayClient {
 
   /** Best-effort AMM pool list (every pool is priced against YELLOW). Empty when unavailable. */
   async pools(signal?: AbortSignal): Promise<PoolSummary[]> {
+    // Pool prices feed valuation and fee estimates, so the gateway identity is
+    // checked first even though the list itself is best-effort.
+    await this.info(signal ? { signal } : {});
     try {
       const { data } = await this.request<{ items?: PoolSummary[] }>("GET", "/v1/pools", undefined, signal);
       return Array.isArray(data?.items) ? data.items : [];
-    } catch {
-      return [];
+    } catch (cause) {
+      if (cause instanceof GatewayError && cause.kind === "network") return [];
+      throw cause;
     }
   }
 
@@ -329,6 +355,9 @@ export class GatewayClient {
       nonce: signed.intent.nonce,
       signature: signed.signature,
     };
+    // A cancelled request that never left this device is not an unknown
+    // outcome: reporting it as one would block recovery forever.
+    if (signal?.aborted) throw preflightError(new Error("Submission was cancelled before it was sent."));
     let response: { status: number; data: unknown };
     try {
       response = await this.request("POST", "/v1/transfers", body, signal);
@@ -350,6 +379,45 @@ export class GatewayClient {
 
 function compare(a: string, b: string) {
   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Reads a response body, refusing anything larger than maxBytes while it
+ * streams, so a hostile gateway cannot exhaust memory before the check.
+ */
+async function readCapped(res: Response, maxBytes: number): Promise<string> {
+  const declared = Number(res.headers.get("Content-Length") ?? "");
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new GatewayError("network", "Gateway response was too large.");
+  }
+  if (!res.body) {
+    const text = await res.text();
+    if (new TextEncoder().encode(text).length > maxBytes) {
+      throw new GatewayError("network", "Gateway response was too large.");
+    }
+    return text;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new GatewayError("network", "Gateway response was too large.");
+    }
+    chunks.push(value);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(merged);
 }
 
 function freeze(intent: TransferIntent): TransferIntent {

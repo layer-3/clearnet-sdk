@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AssetInfo, Balance } from "@yellow-org/clearnet-sdk/gateway";
 import { validate, newLeg, maxSendable } from "@/features/send/model";
-import { buildPortfolio, estimateFee } from "./portfolio";
+import { buildPortfolio, estimateFee, priceMap, toYellow } from "./portfolio";
 
 const assets: AssetInfo[] = [
   { symbol: "ETH", chainId: 1, address: "", decimals: 18, native: true },
@@ -46,6 +46,34 @@ describe("portfolio", () => {
 
   it("applies the fee floor separately to every asset leg", () => {
     expect(estimateFee([{ asset: "ETH", amount: "1" }, { asset: "YELLOW", amount: "1" }], assets, pools).fee).toBe(2n * 10n ** 14n);
+  });
+
+  it("suggests a two-significant-digit cap without dropping trailing zeros", () => {
+    const capFor = (yellow: string) => estimateFee([{ asset: "YELLOW", amount: yellow }], assets, []).suggestedCap;
+    const at = (n: number) => (BigInt(n) * E18).toString();
+    expect(capFor(at(1_000))).toBe("1.5"); // fee 1 YELLOW
+    expect(capFor(at(20_000))).toBe("30"); // fee 20 YELLOW (regression: was "3")
+    expect(capFor(at(100_000))).toBe("150"); // fee 100 YELLOW (was "15")
+    expect(capFor(at(1_250_000))).toBe("1900"); // fee 1250 YELLOW (was "19")
+  });
+
+  it("keeps an enormous suggested cap in plain decimal notation", () => {
+    // 7e41 base units is far beyond Number.MAX_SAFE_INTEGER and beyond 1e21,
+    // where toFixed would switch to exponential notation.
+    const cap = estimateFee([{ asset: "YELLOW", amount: (7n * 10n ** 41n).toString() }], assets, []).suggestedCap;
+    expect(cap).toBe((11n * 10n ** 20n).toString());
+    expect(cap).toMatch(/^\d+(\.\d+)?$/);
+  });
+
+  it("ignores implausibly scaled pool prices", () => {
+    const scaled = [{ poolId: "eth", tokenA: "ETH", tokenB: "YELLOW", spotPrice: "24850000000000000000000" }];
+    expect(buildPortfolio(assets, balance, scaled).holdings.find((h) => h.asset.symbol === "ETH")?.yellowValue).toBeNull();
+    expect(estimateFee([{ asset: "ETH", amount: "1" }], assets, scaled).fee).toBeNull();
+  });
+
+  it("inverts YELLOW-quoted pool prices exactly", () => {
+    const quoted = [{ poolId: "yellow-usdc", tokenA: "YELLOW", tokenB: "USDC", spotPrice: "0.25" }];
+    expect(toYellow(1_000_000n, assets[1]!, 18, priceMap(quoted))).toBe(4n * E18);
   });
 });
 

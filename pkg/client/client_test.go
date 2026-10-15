@@ -214,3 +214,91 @@ func TestNetworkAndTransportFailClosed(t *testing.T) {
 		t.Fatal("gateway with the wrong network must be rejected before signing")
 	}
 }
+
+// preparedSignedTransfer prepares and signs one transfer against c.
+func preparedSignedTransfer(t *testing.T, c *client.Client) *client.SignedTransfer {
+	t.Helper()
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := sign.NewKeySignerFromECDSA(key)
+	t.Cleanup(func() { _ = signer.Close() })
+	intent, err := c.PrepareTransfer(context.Background(), signer, "0x00000000000000000000000000000000000000bb",
+		[]client.TransferAmount{{Asset: "YELLOW", Amount: "1"}}, "0.01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := c.SignTransfer(context.Background(), signer, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
+
+// A conflicting intent is refused before admission, so it is a definite
+// rejection: callers must not keep the operation in an unknown-outcome state.
+func TestSubmitTransferTreatsConflictAsDefiniteRejection(t *testing.T) {
+	server := sdkTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprint(w, `{"error":{"code":-32009,"message":"transfer operation conflicts with another signed intent"}}`)
+	})
+	defer server.Close()
+	c, err := client.New(server.URL, "YDEV")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.SubmitTransfer(context.Background(), preparedSignedTransfer(t, c))
+	var subErr *client.SubmissionError
+	if !errors.As(err, &subErr) || !subErr.Submitted || subErr.OutcomeUnknown {
+		t.Fatalf("409 conflict = %v, want a definite rejection", err)
+	}
+}
+
+// A redirect must never replay a signed POST: the default client reports the
+// 3xx as an unknown outcome instead of following it to another host.
+func TestDefaultClientDoesNotFollowRedirects(t *testing.T) {
+	targetHits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		fmt.Fprint(w, `{"operationId":"0x00","blockHash":"0x00","entryIndex":0,"sealedAt":1,"stateRoot":"0x00"}`)
+	}))
+	defer target.Close()
+	server := sdkTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL+"/v1/transfers")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	})
+	defer server.Close()
+	c, err := client.New(server.URL, "YDEV")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.SubmitTransfer(context.Background(), preparedSignedTransfer(t, c))
+	var subErr *client.SubmissionError
+	if !errors.As(err, &subErr) || !subErr.Submitted || !subErr.OutcomeUnknown {
+		t.Fatalf("redirected submission = %v, want an unknown outcome", err)
+	}
+	if targetHits != 0 {
+		t.Fatalf("signed transfer was replayed to the redirect target %d times", targetHits)
+	}
+}
+
+func TestPrepareTransferRejectsZeroAmountWithClearError(t *testing.T) {
+	server := sdkTestServer(t, func(w http.ResponseWriter, r *http.Request) { t.Fatal("unexpected POST") })
+	defer server.Close()
+	c, err := client.New(server.URL, "YDEV")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := sign.NewKeySignerFromECDSA(key)
+	defer signer.Close()
+	_, err = c.PrepareTransfer(context.Background(), signer, "0x00000000000000000000000000000000000000bb",
+		[]client.TransferAmount{{Asset: "YELLOW", Amount: "0"}}, "0.01")
+	if err == nil || !strings.Contains(err.Error(), "greater than zero") {
+		t.Fatalf("zero amount error = %v, want a clear rejection", err)
+	}
+}

@@ -14,7 +14,13 @@ import (
 	"github.com/tyler-smith/go-bip39"
 )
 
+// DerivationPath is the BIP-44 path DeriveKey follows: the first Ethereum
+// account, m/44'/60'/0'/0/0.
 const DerivationPath = "m/44'/60'/0'/0/0"
+
+// derivationIndexes is DerivationPath as BIP-32 child indexes; DeriveKey uses
+// it so the documented path and the derived key cannot drift apart.
+var derivationIndexes = [...]uint32{44 | hdkeychain.HardenedKeyStart, 60 | hdkeychain.HardenedKeyStart, hdkeychain.HardenedKeyStart, 0, 0}
 
 // NewMnemonic returns 24 recovery words generated from OS randomness.
 func NewMnemonic() (string, error) {
@@ -40,7 +46,7 @@ func DeriveKey(mnemonic string) (*ecdsa.PrivateKey, error) {
 	}
 	defer master.Zero()
 	k := master
-	for _, index := range []uint32{hdkeychain.HardenedKeyStart + 44, hdkeychain.HardenedKeyStart + 60, hdkeychain.HardenedKeyStart, 0, 0} {
+	for _, index := range derivationIndexes {
 		child, err := k.Derive(index)
 		if k != master {
 			k.Zero()

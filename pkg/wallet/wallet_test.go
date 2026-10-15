@@ -1,12 +1,37 @@
 package wallet
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/tyler-smith/go-bip39"
 )
+
+// TestDerivationPathMatchesIndexes keeps the documented path and the indexes
+// DeriveKey actually walks in step.
+func TestDerivationPathMatchesIndexes(t *testing.T) {
+	segments := strings.Split(strings.TrimPrefix(DerivationPath, "m/"), "/")
+	if len(segments) != len(derivationIndexes) {
+		t.Fatalf("path %q has %d segments, %d indexes", DerivationPath, len(segments), len(derivationIndexes))
+	}
+	for i, segment := range segments {
+		hardened := strings.HasSuffix(segment, "'")
+		number, err := strconv.ParseUint(strings.TrimSuffix(segment, "'"), 10, 32)
+		if err != nil {
+			t.Fatalf("segment %q: %v", segment, err)
+		}
+		index := uint32(number)
+		if hardened {
+			index |= hdkeychain.HardenedKeyStart
+		}
+		if index != derivationIndexes[i] {
+			t.Fatalf("segment %d = %d, DeriveKey walks %d", i, index, derivationIndexes[i])
+		}
+	}
+}
 
 func TestDerivationGoldens(t *testing.T) {
 	for _, tt := range []struct{ words, address string }{

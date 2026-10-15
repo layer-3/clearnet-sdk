@@ -29,17 +29,53 @@ function parseDecimal(value: string): { int: bigint; scale: bigint } | null {
   return { int: BigInt(w! + f), scale: 10n ** BigInt(f.length) };
 }
 
+/**
+ * Largest price treated as plausible, in YELLOW per whole token. A gateway that
+ * reports a differently scaled price (for example an 18-decimal fixed-point
+ * integer) would otherwise poison every valuation and fee estimate, so such a
+ * pool is ignored and the asset counts as unpriced.
+ */
+const MAX_PLAUSIBLE_PRICE = 10n ** 12n;
+
 /** Prices as YELLOW-per-whole-token, keyed by symbol. YELLOW itself is 1. */
 export function priceMap(pools: PoolSummary[] | undefined): Map<string, string> {
   const m = new Map<string, string>([[YELLOW, "1"]]);
   for (const p of pools ?? []) {
-    if (p.tokenB === YELLOW && p.spotPrice) m.set(p.tokenA, p.spotPrice);
-    else if (p.tokenA === YELLOW && p.spotPrice) {
-      const d = parseDecimal(p.spotPrice);
-      if (d && d.int > 0n) m.set(p.tokenB, (Number(d.scale) / Number(d.int)).toPrecision(12));
+    if (!p.spotPrice) continue;
+    if (p.tokenB === YELLOW) {
+      const price = plausiblePrice(p.spotPrice);
+      if (price) m.set(p.tokenA, price);
+    } else if (p.tokenA === YELLOW) {
+      const inverse = invertDecimal(p.spotPrice);
+      const price = inverse && plausiblePrice(inverse);
+      if (price) m.set(p.tokenB, price);
     }
   }
   return m;
+}
+
+/** Returns value when it is a positive, plausibly scaled price, else null. */
+function plausiblePrice(value: string): string | null {
+  const d = parseDecimal(value);
+  if (!d || d.int <= 0n || d.int > MAX_PLAUSIBLE_PRICE * d.scale) return null;
+  return value;
+}
+
+/** Exact decimal inverse (scale/int), truncated to `digits` fractional digits. */
+function invertDecimal(value: string, digits = 18): string | null {
+  const d = parseDecimal(value);
+  if (!d || d.int <= 0n) return null;
+  const whole = d.scale / d.int;
+  let rem = d.scale % d.int;
+  if (rem === 0n) return whole.toString();
+  let fraction = "";
+  for (let i = 0; i < digits && rem !== 0n; i++) {
+    rem *= 10n;
+    fraction += (rem / d.int).toString();
+    rem %= d.int;
+  }
+  fraction = fraction.replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole.toString();
 }
 
 export function toYellow(amount: bigint, asset: AssetInfo, yellowDecimals: number, prices: Map<string, string>): bigint | null {
@@ -117,11 +153,26 @@ export function estimateFee(legs: TransferAsset[], assets: AssetInfo[], pools: P
   return { fee, suggestedCap: niceCeil(fromBaseUnits((fee * 3n + 1n) / 2n, yellowDecimals)) };
 }
 
+/** Rounds an exact decimal string up to two significant digits, without floats. */
 function niceCeil(exact: string): string {
-  const n = Number(exact);
-  if (!Number.isFinite(n) || n <= 0) return "0.0001";
-  const mag = 10 ** (Math.floor(Math.log10(n)) - 1);
-  const v = Math.ceil(n / mag) * mag;
-  const digits = Math.max(0, -Math.floor(Math.log10(mag)));
-  return v.toFixed(Math.min(digits, 18)).replace(/\.?0+$/, "") || "0.0001";
+  const d = parseDecimal(exact);
+  if (!d || d.int <= 0n) return "0.0001";
+  const fractionDigits = (d.scale.toString().length - 1) as number;
+  // Decimal exponent of the value: floor(log10(int / scale)).
+  const exponent = d.int.toString().length - fractionDigits - 1;
+  // Round up to a multiple of 10^(exponent - 1) in scaled units, never finer
+  // than the value's own precision.
+  const stepExponent = exponent - 1 + fractionDigits;
+  const step = stepExponent > 0 ? 10n ** BigInt(stepExponent) : 1n;
+  const rounded = ((d.int + step - 1n) / step) * step;
+  return scaledToDecimal(rounded, fractionDigits) || "0.0001";
+}
+
+/** Formats a scaled integer as a decimal string, trimming fractional zeros only. */
+function scaledToDecimal(value: bigint, fractionDigits: number): string {
+  if (fractionDigits === 0) return value.toString();
+  const digits = value.toString().padStart(fractionDigits + 1, "0");
+  const whole = digits.slice(0, digits.length - fractionDigits);
+  const fraction = digits.slice(digits.length - fractionDigits).replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
 }

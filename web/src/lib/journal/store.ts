@@ -4,6 +4,7 @@
 // awaited before the next protocol step (sign -> save -> mark -> POST).
 
 import { createStore, del, entries as idbEntries, get, set, type UseStore } from "idb-keyval";
+import { isFinalOperationState } from "@yellow-org/clearnet-sdk/gateway";
 import type { JournalEntry } from "./copy";
 
 let store: UseStore | undefined;
@@ -16,6 +17,7 @@ type Listener = () => void;
 const listeners = new Set<Listener>();
 let snapshot: JournalEntry[] = [];
 let loaded = false;
+let loadError: string | undefined;
 let channel: BroadcastChannel | undefined;
 
 function emit() {
@@ -23,10 +25,18 @@ function emit() {
 }
 
 async function reload() {
-  const rows = await idbEntries<string, JournalEntry>(db());
-  snapshot = rows.map(([, v]) => v).sort((a, b) => b.createdAt - a.createdAt);
-  loaded = true;
-  emit();
+  try {
+    const rows = await idbEntries<string, JournalEntry>(db());
+    snapshot = rows.map(([, v]) => v).sort((a, b) => b.createdAt - a.createdAt);
+    loadError = undefined;
+  } catch (cause) {
+    // Storage can be unavailable (private mode, blocked third-party storage).
+    // Report it instead of leaving the UI on a skeleton forever.
+    loadError = cause instanceof Error ? cause.message : "Local storage is unavailable.";
+  } finally {
+    loaded = true;
+    emit();
+  }
 }
 
 function ensureChannel() {
@@ -51,6 +61,10 @@ export const journal = {
   isLoaded() {
     return loaded;
   },
+  /** Set when local storage could not be read; cleared on the next success. */
+  loadError() {
+    return loadError;
+  },
   async all(): Promise<JournalEntry[]> {
     await reload();
     return snapshot;
@@ -58,14 +72,21 @@ export const journal = {
   async get(id: string): Promise<JournalEntry | undefined> {
     return get<JournalEntry>(id, db());
   },
-  /** Durably writes an entry. Throws if the browser refused the write. */
+  /**
+   * Durably writes an entry. Throws if the browser refused the write. A record
+   * that is already final is never downgraded: a stale poll must not turn a
+   * sealed transfer back into a pending or unknown one.
+   */
   async put(entry: JournalEntry): Promise<void> {
+    const stored = await get<JournalEntry>(entry.id, db());
+    if (stored && isFinalOperationState(stored.state) && !isFinalOperationState(entry.state)) return;
     await set(entry.id, entry, db());
     const check = await get<JournalEntry>(entry.id, db());
     if (!check || check.state !== entry.state) throw new Error("This browser didn't save the transfer record.");
     await reload();
     channel?.postMessage("changed");
   },
+  /** Drops a saved record. Only safe for an authorization that was never sent. */
   async remove(id: string): Promise<void> {
     await del(id, db());
     await reload();

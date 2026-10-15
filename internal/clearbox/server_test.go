@@ -20,6 +20,22 @@ import (
 
 const bobKey = "0000000000000000000000000000000000000000000000000000000000000002"
 
+// getJSON fetches a gateway REST resource and decodes it into out.
+func getJSON(t *testing.T, url string, out any) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("%s status %d", url, resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func fixture(t *testing.T, cfg Config) (*Server, *httptest.Server, *client.Client) {
 	t.Helper()
 	s, err := New(cfg)
@@ -311,6 +327,41 @@ func TestRESTAndRPCBoundaries(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 204 {
 		t.Fatal("notification received a response")
+	}
+}
+
+// The gateway metadata payload must match the gateway's own projection: pool
+// IDs are the canonical lowercase base asset, and unset contract addresses are
+// the zero address rather than an empty string.
+func TestGatewayMetadataPayloads(t *testing.T) {
+	_, server, _ := fixture(t, Config{})
+	var info struct {
+		VirtualRouter string            `json:"virtualRouter"`
+		Contracts     map[string]string `json:"contracts"`
+	}
+	getJSON(t, server.URL+"/v1/gateway/info", &info)
+	if info.VirtualRouter != eip712.RouterHex {
+		t.Fatalf("virtual router %q is not the EIP-712 verifying contract", info.VirtualRouter)
+	}
+	for field, want := range map[string]string{
+		"custody": zeroAddress, "registry": zeroAddress, "faucet": zeroAddress,
+		"token": catalog[2].Address,
+	} {
+		if got := info.Contracts[field]; got != want {
+			t.Fatalf("contracts.%s = %q, want %q", field, got, want)
+		}
+	}
+	var pools struct {
+		Items []struct{ PoolID, TokenA, TokenB string }
+	}
+	getJSON(t, server.URL+"/v1/pools", &pools)
+	if len(pools.Items) != 2 {
+		t.Fatalf("pool fixtures: %+v", pools.Items)
+	}
+	for _, pool := range pools.Items {
+		if pool.PoolID != strings.ToLower(pool.TokenA) || pool.TokenB != "YELLOW" {
+			t.Fatalf("pool %q is not the canonical base-asset ID for %s/%s", pool.PoolID, pool.TokenA, pool.TokenB)
+		}
 	}
 }
 

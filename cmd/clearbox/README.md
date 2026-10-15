@@ -139,6 +139,31 @@ automatically reset or reseeded.
 request limits and returns `503` after a storage failure. Every response includes
 `X-Clearbox-Simulated: true`.
 
+## Running it for others
+
+Clearbox has **no authentication** and does not terminate TLS. Treat any
+non-loopback deployment as a public developer sandbox behind your own TLS proxy,
+and never put real funds or a real key on it.
+
+`-public-url` is what switches the server out of loopback-only mode, so a
+container must be started with both a routable listen address and that origin:
+
+```sh
+docker build -f cmd/clearbox/Dockerfile -t clearbox .
+docker run --rm -p 8080:8080 -v clearbox-data:/data clearbox \
+  -listen 0.0.0.0:8080 -public-url https://sandbox.example.org
+```
+
+Without `-public-url` the default `-listen 127.0.0.1:8080` binds the container's
+own loopback and `-p 8080:8080` is unreachable. The published key in the startup
+log is for development only; on a shared sandbox it is effectively public.
+
+One scaling caveat when developing against the real gateway: Clearnet serves
+`spotPrice` as an 18-decimal fixed-point integer, while its OpenAPI schema and
+this simulator describe a pre-formatted decimal (`24850`, not
+`24850000000000000000000`). Wallet code that reads pool prices should treat an
+implausibly large value as "no price" rather than computing with it.
+
 ## Interface coverage
 
 The complete gateway surface currently used by CLI/web account and transfer
@@ -149,7 +174,7 @@ flows is implemented with the public gateway's wire schemas and error envelope:
 | `GET /v1/gateway/info` | YDEV identity, router, assets/decimals, capabilities and wallet RPC URL |
 | `GET /v1/accounts/{address}/balances` | Base-unit balances, nonce and account-code projections |
 | `GET /v1/accounts/{address}/transfers` | Stable history, limit 1–100, account-bound opaque cursors, 30-day retention |
-| `GET /v1/pools` | Static ETH/YELLOW and USDC/YELLOW valuation fixtures |
+| `GET /v1/pools` | Static ETH–YELLOW and USDC–YELLOW valuation fixtures under canonical `eth`/`usdc` pool IDs |
 | `POST /v1/transfers` | Real EIP-712 recovery, asset/uint256 validation, fee cap, nonce ownership and balance checks |
 | `GET /v1/operations/{id}` | Pending/sealed status and stable receipt, or unknown |
 | `POST /rpc` | Wallet chain discovery and balance/nonce/block reads; batches, errors and notifications |
@@ -192,10 +217,18 @@ Wallet RPC supports `eth_chainId`, `net_version`, `web3_clientVersion`,
 `eth_getBlockByHash`.
 Account-state reads support `latest` and `pending`. As in Clearnet, block numbers
 are **account-scoped**: `eth_blockNumber` takes `[account]`, and
-`eth_getBlockByNumber` takes `[account, tag, fullTransactions]`. Accounts may be
-addresses or canonical user URIs. Sequences start at 1; an account with no sealed
-blocks returns count 0 and a `null` block. Block responses carry the actual SDK
-entries, and `eth_getBlockByHash` resolves the same sealed block.
+`eth_getBlockByNumber` takes `[account, tag, fullTransactions]`; the
+full-transactions flag is accepted for wallet compatibility and ignored, because
+blocks always carry the SDK entry projection rather than EVM transactions.
+Accounts may be addresses or canonical user URIs. Sequences start at 1; an account
+with no sealed blocks returns count 0 and a `null` block. Block responses carry the
+actual SDK entries, and `eth_getBlockByHash` resolves the same sealed block.
+
+`GET /v1/gateway/info` reports the deployment metadata wallet clients use to
+fingerprint a gateway: the EIP-712 verifying contract (`virtualRouter`), the
+contract addresses and the asset catalogue. Clearbox serves no contract call
+surface, so these addresses are metadata, not call targets, and an unconfigured
+address is the zero address.
 
 TCP clients, WebSocket subscriptions, virtual-router `eth_call`, transaction/log
 queries and Registry/L1 forwarding are outside this simulator's interface.

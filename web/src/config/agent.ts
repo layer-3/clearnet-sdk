@@ -18,5 +18,3 @@ export function skillInstall(dir: string) {
     `  | tar -xz -C ${dir} --strip-components=2 ${archiveRoot}/skills/yellow-network`,
   ].join("\n");
 }
-
-export const INSTALL_PROMPT = `Install the Yellow Network agent skill from ${SKILL_URL} into your skills folder, keeping the whole yellow-network folder. Then check that the yellow command works by running "yellow version".`;

@@ -3,6 +3,7 @@
 import { isFinalOperationState, observeOperation } from "@yellow-org/clearnet-sdk/gateway";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { findNetwork } from "@/config/networks";
 import { journal } from "@/lib/journal/store";
 import { clientFor } from "@/lib/network-context";
 import { useJournalEntries } from "./gateway";
@@ -20,20 +21,29 @@ export function useOperationPoller() {
   useEffect(() => {
     if (!key) return;
     let stopped = false;
+    let running = false;
     const tick = async () => {
-      for (const entry of await journal.all()) {
-        if (stopped || isFinalOperationState(entry.state) || entry.submittedAt === undefined) continue;
-        try {
-          const status = await clientFor(entry.gateway, entry.networkId).operation(entry.id);
-          const { record, error } = observeOperation(entry, status);
-          if (!error && (record.state !== entry.state || record.receipt !== entry.receipt)) {
-            await journal.put(record);
-            if (record.state === "sealed") void queryClient.invalidateQueries({ queryKey: ["balance"] });
-            if (record.state === "sealed") void queryClient.invalidateQueries({ queryKey: ["transfers"] });
+      // A slow gateway must not stack ticks on top of each other.
+      if (running) return;
+      running = true;
+      try {
+        for (const entry of await journal.all()) {
+          if (stopped || isFinalOperationState(entry.state) || entry.submittedAt === undefined) continue;
+          try {
+            const fingerprint = findNetwork(entry.networkSlug)?.fingerprint;
+            const status = await clientFor(entry.gateway, entry.networkId, fingerprint).operation(entry.id);
+            const { record, error } = observeOperation(entry, status);
+            if (!error && (record.state !== entry.state || record.receipt !== entry.receipt)) {
+              await journal.put(record);
+              if (record.state === "sealed") void queryClient.invalidateQueries({ queryKey: ["balance"] });
+              if (record.state === "sealed") void queryClient.invalidateQueries({ queryKey: ["transfers"] });
+            }
+          } catch {
+            // Unreachable gateway: keep the saved state and try again next tick.
           }
-        } catch {
-          // Unreachable gateway: keep the saved state and try again next tick.
         }
+      } finally {
+        running = false;
       }
     };
     void tick();

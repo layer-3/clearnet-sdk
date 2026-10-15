@@ -13,7 +13,7 @@ test:
 clearbox:
 	go run ./cmd/clearbox
 
-test-clearbox:
+test-clearbox: ts-deps
 	go test -race ./internal/clearbox ./cmd/clearbox
 	go test -race ./internal/yellow -run '^TestCLIWithClearbox$$'
 	npm --prefix sdk/ts run test:clearbox

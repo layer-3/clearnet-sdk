@@ -148,7 +148,7 @@ function Send({ address, portfolio, assets, pools }: { address: `0x${string}`; p
 
         <div className="sheet mt-6 p-5 sm:p-7">
           {step === "compose" ? (
-            <Compose state={state} onChange={setState} result={result} portfolio={portfolio} assets={assets} pools={pools} showErrors={showErrors} />
+            <Compose state={state} onChange={setState} result={result} portfolio={portfolio} assets={assets} showErrors={showErrors} />
           ) : (
             intent && <Review intent={intent} assets={assets} network={network} />
           )}

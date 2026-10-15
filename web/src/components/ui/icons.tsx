@@ -25,11 +25,6 @@ export const IconPlus = (p: P) => (
     <path d="M12 5v14M5 12h14" />
   </Svg>
 );
-export const IconMinus = (p: P) => (
-  <Svg {...p}>
-    <path d="M5 12h14" />
-  </Svg>
-);
 export const IconWithdraw = (p: P) => (
   <Svg {...p}>
     <path d="M12 3v12M7 10l5 5 5-5M4 21h16" />
@@ -147,12 +142,6 @@ export const IconAgent = (p: P) => (
   <Svg {...p}>
     <path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-7l-4.5 3.5V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z" />
     <path d="M8.5 10.5h.01M12 10.5h.01M15.5 10.5h.01" strokeWidth={2.6} />
-  </Svg>
-);
-export const IconTerminal = (p: P) => (
-  <Svg {...p}>
-    <rect x="3" y="4.5" width="18" height="15" rx="1.5" />
-    <path d="m7 9.5 3 2.5-3 2.5M12.5 15H17" />
   </Svg>
 );
 export const IconShield = (p: P) => (

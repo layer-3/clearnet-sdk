@@ -27,6 +27,15 @@ import { rejectionMessage, submissionRejection } from "@/features/send/errors";
 export function OperationView({ id }: { id: string }) {
   const entries = useJournalEntries();
   const entry = entries.find((e) => e.id === id);
+  if (journal.loadError()) {
+    return (
+      <div className="pt-4 lg:pt-10">
+        <BackLink />
+        <h1 className="type-h1">Local storage is unavailable</h1>
+        <p className="lede mt-3">Transfers are saved in this browser, but it refused to read them. Allow site storage for this page, then reload.</p>
+      </div>
+    );
+  }
   if (!journal.isLoaded() && !entry) return <div className="skeleton mt-10 h-64 !rounded-sheet" />;
   if (!entry) {
     return (
@@ -103,7 +112,11 @@ function Operation({ entry }: { entry: JournalEntry }) {
       const rejection = submissionRejection(e);
       setNote(rejection ?? (e instanceof Error ? e.message : null));
     }
-    await journal.put(final).catch(() => undefined);
+    try {
+      await journal.put(final);
+    } catch {
+      setNote("The outcome couldn't be saved on this device. Check Activity before sending again.");
+    }
     setRetryAllowed(false);
     setSending(false);
     void queryClient.invalidateQueries({ queryKey: ["balance"] });

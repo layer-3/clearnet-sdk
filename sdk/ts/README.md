@@ -44,7 +44,7 @@ import { GatewayClient, toBaseUnits } from "@yellow-org/clearnet-sdk/gateway";
 const gateway = new GatewayClient({
   baseUrl: "https://gateway.example.org",
   networkId: "YTES",          // the gateway must serve this network
-  fingerprint: undefined,      // optional: pin the identity `yellow network show` prints
+  // fingerprint: "…",        // optional: pin the identity `yellow network show` prints
 });
 
 const balance = await gateway.balance(address);              // live, includes the nonce
