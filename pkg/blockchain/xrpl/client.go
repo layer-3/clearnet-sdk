@@ -2,6 +2,7 @@ package xrpl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -136,6 +137,34 @@ func rpcCall(ctx context.Context, rpcURL string, cache *networkIDCache) (*rpc.Cl
 	call := rpc.NewClient(cfg)
 	call.NetworkID = cache.load()
 	return call, nil
+}
+
+// NewContextClient returns an xrpl-go client for one operation against rpcURL
+// on the SDK's protected transport, the one the SDK's own calls use. Every
+// HTTP request it sends runs under ctx, so cancellation and deadlines abort a
+// request in flight and a cancelled request fails with an error wrapping
+// ctx.Err(). HTTP 503 is retried on xrpl-go's schedule with a backoff that
+// observes ctx, exhausted retries fail with xrpl-go's overload ClientError,
+// and each attempt is capped by xrpl-go's default request timeout. xrpl-go
+// never sees a 503, so its own retry loop, which panics when a retried request
+// fails, never runs. Response decoding and other errors stay xrpl-go's own.
+//
+// The client is bound to ctx: create one per operation and do not keep it
+// past ctx. ctx is required; an already-ended ctx returns its error.
+func NewContextClient(ctx context.Context, rpcURL string) (*rpc.Client, error) {
+	if ctx == nil {
+		return nil, errors.New("xrpl: context is required")
+	}
+	return rpcCall(ctx, rpcURL, nil)
+}
+
+// Request sends one JSON-RPC request to rpcURL through NewContextClient.
+func Request(ctx context.Context, rpcURL string, req rpc.XRPLRequest) (rpc.XRPLResponse, error) {
+	call, err := NewContextClient(ctx, rpcURL)
+	if err != nil {
+		return nil, err
+	}
+	return call.Request(req)
 }
 
 // ResolveNetworkIDPolicy reads the live network-domain policy through client
