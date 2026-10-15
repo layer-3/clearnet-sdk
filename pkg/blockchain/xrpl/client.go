@@ -2,6 +2,7 @@ package xrpl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -138,10 +139,31 @@ func rpcCall(ctx context.Context, rpcURL string, cache *networkIDCache) (*rpc.Cl
 	return call, nil
 }
 
+// NewContextClient returns an xrpl-go client for rpcURL whose every HTTP
+// request runs under ctx: cancellation or a deadline aborts it with an error
+// wrapping ctx.Err().Exhausted retries return xrpl-go's overload ClientError.
+// Use one client per operation, within ctx's lifetime. ctx must be non-nil;
+// an already-ended ctx returns its error.
+func NewContextClient(ctx context.Context, rpcURL string) (*rpc.Client, error) {
+	if ctx == nil {
+		return nil, errors.New("xrpl: context is required")
+	}
+	return rpcCall(ctx, rpcURL, nil)
+}
+
+// Request sends one JSON-RPC request to rpcURL through NewContextClient.
+func Request(ctx context.Context, rpcURL string, req rpc.XRPLRequest) (rpc.XRPLResponse, error) {
+	call, err := NewContextClient(ctx, rpcURL)
+	if err != nil {
+		return nil, err
+	}
+	return call.Request(req)
+}
+
 // ResolveNetworkIDPolicy reads the live network-domain policy through client
-// and caches the NetworkID on it. Its request does not observe a caller
-// context; the SDK finalizers resolve the policy through a context-bound
-// client instead.
+// and caches the NetworkID on it. Its request observes a caller context only
+// if client does: pass a client from NewContextClient for a context-bound,
+// 503-safe read, as the SDK finalizers use their own context-bound client.
 func ResolveNetworkIDPolicy(client *rpc.Client) (NetworkIDPolicy, error) {
 	policy, id, err := networkIDPolicy(client.NetworkID, client)
 	client.NetworkID = id
