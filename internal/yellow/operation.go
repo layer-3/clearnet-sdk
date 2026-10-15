@@ -25,11 +25,12 @@ type operationView struct {
 	Updated     time.Time       `json:"updatedAt"`
 	Submitted   *time.Time      `json:"submittedAt,omitempty"`
 	Receipt     *client.Receipt `json:"receipt,omitempty"`
+	Idempotency string          `json:"idempotencyKey,omitempty"`
 	Message     string          `json:"message,omitempty"`
 }
 
 func viewOperation(op operation) operationView {
-	v := operationView{ID: op.ID, Account: op.Account, Network: op.Profile.Name, NetworkID: op.Profile.NetworkID, Gateway: op.Profile.Gateway, Fingerprint: op.Profile.Fingerprint, Sender: op.Sender, Nonce: op.Nonce, State: op.State, Created: op.Created, Updated: op.Updated, Submitted: op.Submitted, Receipt: op.Receipt}
+	v := operationView{ID: op.ID, Account: op.Account, Network: op.Profile.Name, NetworkID: op.Profile.NetworkID, Gateway: op.Profile.Gateway, Fingerprint: op.Profile.Fingerprint, Sender: op.Sender, Nonce: op.Nonce, State: op.State, Created: op.Created, Updated: op.Updated, Submitted: op.Submitted, Receipt: op.Receipt, Idempotency: op.IdempotencyKey}
 	switch op.State {
 	case "signed_unsubmitted":
 		v.Message = "Saved safely; not submitted. Use operation retry to submit the saved authorization."
@@ -274,7 +275,7 @@ func (a *app) operationCommands() *cobra.Command {
 		}
 		a.reviewTransfer(current, name, &signed.Intent)
 		fmt.Fprintf(a.diag, "  Operation  %s\nReplaying the original signed bytes; this transfer may already have executed.\n", op.ID)
-		if err := a.prompt.confirm("Submit this exact saved authorization"); err != nil {
+		if err := a.approve(ac, "Submit this exact saved authorization"); err != nil {
 			return err
 		}
 		return a.submit(ctx, c, name, ac, index, signed, 0)

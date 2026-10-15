@@ -26,10 +26,12 @@ for yellow_platform in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows
     -ldflags "-s -w -X main.version=$yellow_version" \
     -o "$yellow_work/$yellow_name/$yellow_binary" ./cmd/yellow
   cp LICENSE cmd/yellow/README.md "$yellow_work/$yellow_name/"
+  mkdir -p "$yellow_work/$yellow_name/skills"
+  cp -R skills/yellow-network "$yellow_work/$yellow_name/skills/"
   if [ "$yellow_os" = windows ]; then
-    (cd "$yellow_work/$yellow_name" && zip -q "$yellow_output/$yellow_name.zip" "$yellow_binary" LICENSE README.md)
+    (cd "$yellow_work/$yellow_name" && zip -qr "$yellow_output/$yellow_name.zip" "$yellow_binary" LICENSE README.md skills)
   else
-    tar -czf "$yellow_output/$yellow_name.tar.gz" -C "$yellow_work/$yellow_name" "$yellow_binary" LICENSE README.md
+    tar -czf "$yellow_output/$yellow_name.tar.gz" -C "$yellow_work/$yellow_name" "$yellow_binary" LICENSE README.md skills
   fi
   echo "Built $yellow_name"
 done

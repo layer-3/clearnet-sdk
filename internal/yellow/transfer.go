@@ -2,10 +2,14 @@ package yellow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -150,15 +154,77 @@ func parseAssets(raw []string, metadata []client.AssetInfo) ([]client.TransferAm
 	return assets, nil
 }
 func (a *app) reviewTransfer(p profile, name string, intent *client.TransferIntent) {
-	fmt.Fprintf(a.diag, "\nReview transfer\n  Network    %s (%s)\n  Gateway    %s\n  Sender     %s · %s\n  Recipient  %s\n  Nonce      %d\n", p.Name, p.NetworkID, clean(p.Gateway), name, intent.From, intent.To, intent.Nonce)
+	writeReview(a.diag, "Review transfer", p, name, intent)
+}
+func writeReview(w io.Writer, title string, p profile, name string, intent *client.TransferIntent) {
+	fmt.Fprintf(w, "\n%s\n  Network    %s (%s)\n  Gateway    %s\n  Sender     %s · %s\n  Recipient  %s\n  Nonce      %d\n", title, p.Name, p.NetworkID, clean(p.Gateway), name, intent.From, intent.To, intent.Nonce)
+	decimals := assetDecimals(p)
+	for _, asset := range intent.Assets {
+		fmt.Fprintf(w, "  %-10s %s · %s base units\n", asset.Asset, displayUnits(asset.Amount, decimals[asset.Asset]), asset.Amount)
+	}
+	fmt.Fprintf(w, "  Fee cap    %s YELLOW · %s base units\n", displayUnits(intent.MaxFee, decimals["YELLOW"]), intent.MaxFee)
+}
+func assetDecimals(p profile) map[string]uint8 {
 	decimals := map[string]uint8{}
 	for _, asset := range p.Identity.Assets {
 		decimals[asset.Symbol] = asset.Decimals
 	}
-	for _, asset := range intent.Assets {
-		fmt.Fprintf(a.diag, "  %-10s %s · %s base units\n", asset.Asset, displayUnits(asset.Amount, decimals[asset.Asset]), asset.Amount)
+	return decimals
+}
+
+// baseUnitLegs converts validated amounts to sorted base-unit legs and fee.
+func baseUnitLegs(p profile, assets []client.TransferAmount, maxFee string) ([]client.TransferAsset, string, error) {
+	decimals := assetDecimals(p)
+	legs := make([]client.TransferAsset, 0, len(assets))
+	for _, v := range assets {
+		units, err := client.AmountInBaseUnits(v.Amount, decimals[v.Asset])
+		if err != nil {
+			return nil, "", fail(ExitInput, "%s: %s", v.Asset, err)
+		}
+		legs = append(legs, client.TransferAsset{Asset: v.Asset, Amount: units.String()})
 	}
-	fmt.Fprintf(a.diag, "  Fee cap    %s YELLOW · %s base units\n", displayUnits(intent.MaxFee, decimals["YELLOW"]), intent.MaxFee)
+	sort.Slice(legs, func(i, j int) bool { return legs[i].Asset < legs[j].Asset })
+	fee, err := client.AmountInBaseUnits(maxFee, decimals["YELLOW"])
+	if err != nil {
+		return nil, "", fail(ExitInput, "--max-fee: %s", err)
+	}
+	return legs, fee.String(), nil
+}
+
+var idempotencyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+
+// requestHash identifies what a transfer asks for, so an idempotency key can
+// only ever refer to one transfer.
+func requestHash(p profile, to string, legs []client.TransferAsset, fee string) string {
+	raw, _ := json.Marshal(struct {
+		NetworkID, To string
+		Assets        []client.TransferAsset
+		MaxFee        string
+	}{p.NetworkID, to, legs, fee})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// preview reports exactly what a send would sign, without unlocking,
+// signing, saving or submitting anything.
+func (a *app) preview(ctx context.Context, c *client.Client, p profile, name string, ac *accountFile, to string, legs []client.TransferAsset, fee string) error {
+	balance, err := c.Balance(ctx, ac.Address)
+	if err != nil {
+		return netError(err)
+	}
+	decimals := assetDecimals(p)
+	assets := []map[string]string{}
+	for _, leg := range legs {
+		assets = append(assets, map[string]string{"asset": leg.Asset, "amount": displayUnits(leg.Amount, decimals[leg.Asset]), "baseUnits": leg.Amount})
+	}
+	intent := &client.TransferIntent{NetworkID: p.NetworkID, ChainID: p.Identity.ChainID, From: ac.Address, To: to, Assets: legs, MaxFee: fee, Nonce: balance.Nonce}
+	return a.emit(map[string]any{
+		"dryRun": true, "network": p.Name, "networkId": p.NetworkID, "gateway": p.Gateway,
+		"account": name, "agent": ac.Agent, "from": ac.Address, "to": to, "nonce": balance.Nonce,
+		"assets": assets, "maxFee": map[string]string{"asset": "YELLOW", "amount": displayUnits(fee, decimals["YELLOW"]), "baseUnits": fee},
+	}, func() {
+		writeReview(a.out, a.color("1;33", "Transfer preview · nothing sent"), p, name, intent)
+	})
 }
 func opAAD(op operation) string {
 	raw, _ := json.Marshal(struct {
@@ -172,8 +238,9 @@ func opAAD(op operation) string {
 func (a *app) transferCommands() *cobra.Command {
 	parent := group("transfer", "Send a reviewed transfer or view recent activity")
 	var legs []string
-	var maxFee, from string
+	var maxFee, from, idempotencyKey string
 	var wait time.Duration
+	var dryRun bool
 	send := a.cmd("send <recipient>", "Review, sign and submit one transfer", cobra.ExactArgs(1), func(ctx context.Context, _ *cobra.Command, args []string) error {
 		recipient, err := userAddress(args[0])
 		if err != nil {
@@ -186,6 +253,9 @@ func (a *app) transferCommands() *cobra.Command {
 		if wait < 0 {
 			return fail(ExitInput, "--wait cannot be negative")
 		}
+		if idempotencyKey != "" && !idempotencyPattern.MatchString(idempotencyKey) {
+			return fail(ExitInput, "--idempotency-key must be 1–128 letters, digits, dots, colons, dashes or underscores, starting with a letter or digit")
+		}
 		if from != "" && a.account != "" && from != a.account {
 			return fail(ExitInput, "--from and --account must select the same account")
 		}
@@ -193,27 +263,34 @@ func (a *app) transferCommands() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		for _, op := range ac.Operations {
-			if op.Profile.NetworkID == p.NetworkID && op.State != "sealed" && op.State != "rejected" {
-				return fail(ExitUnknown, "operation %s is %s; reconcile it with yellow operation show %s before sending again", op.ID, op.State, op.ID)
-			}
-		}
 		assets, err := parseAssets(legs, p.Identity.Assets)
 		if err != nil {
 			return err
 		}
-		yellowDecimals, found := uint8(0), false
-		for _, asset := range p.Identity.Assets {
-			if asset.Symbol == "YELLOW" {
-				yellowDecimals = asset.Decimals
-				found = true
-			}
-		}
-		if !found {
+		if _, found := assetDecimals(p)["YELLOW"]; !found {
 			return fail(ExitNetwork, "reviewed catalogue has no YELLOW asset for the fee cap")
 		}
-		if _, err := client.AmountInBaseUnits(maxFee, yellowDecimals); err != nil {
-			return fail(ExitInput, "--max-fee: %s", err)
+		baseLegs, fee, err := baseUnitLegs(p, assets, maxFee)
+		if err != nil {
+			return err
+		}
+		hash := requestHash(p, recipient, baseLegs, fee)
+		if idempotencyKey != "" {
+			for _, op := range ac.Operations {
+				if op.IdempotencyKey != idempotencyKey || op.Profile.NetworkID != p.NetworkID {
+					continue
+				}
+				if op.RequestHash != hash {
+					return fail(ExitInput, "idempotency key %s was already used for a different transfer (operation %s)", idempotencyKey, op.ID)
+				}
+				fmt.Fprintf(a.diag, "Idempotency key %s matches saved operation %s; nothing new was signed or sent\n", idempotencyKey, op.ID)
+				return a.operationResult(op)
+			}
+		}
+		for _, op := range ac.Operations {
+			if op.Profile.NetworkID == p.NetworkID && op.State != "sealed" && op.State != "rejected" {
+				return fail(ExitUnknown, "operation %s is %s; reconcile it with yellow operation show %s before sending again", op.ID, op.State, op.ID)
+			}
 		}
 		c, err := a.gateway(p, true)
 		if err != nil {
@@ -221,6 +298,9 @@ func (a *app) transferCommands() *cobra.Command {
 		}
 		if _, err := c.Info(ctx); err != nil {
 			return netError(err)
+		}
+		if dryRun {
+			return a.preview(ctx, c, p, name, ac, recipient, baseLegs, fee)
 		}
 		signer, key, close, err := a.unlock(ac)
 		if err != nil {
@@ -237,7 +317,7 @@ func (a *app) transferCommands() *cobra.Command {
 			}
 		}
 		a.reviewTransfer(p, name, intent)
-		if err := a.prompt.confirm("Sign and send this transfer"); err != nil {
+		if err := a.approve(ac, "Sign and send this transfer"); err != nil {
 			return err
 		}
 		signed, err := c.SignTransfer(ctx, signer, intent)
@@ -245,7 +325,7 @@ func (a *app) transferCommands() *cobra.Command {
 			return netError(err)
 		}
 		now := time.Now().UTC()
-		op := operation{ID: signed.OperationID, Account: name, Sender: intent.From, Nonce: intent.Nonce, Profile: p, Created: now, Updated: now, State: "signed_unsubmitted"}
+		op := operation{ID: signed.OperationID, Account: name, Sender: intent.From, Nonce: intent.Nonce, Profile: p, Created: now, Updated: now, State: "signed_unsubmitted", IdempotencyKey: idempotencyKey, RequestHash: hash}
 		raw, err := json.Marshal(signed)
 		if err != nil {
 			return err
@@ -263,11 +343,14 @@ func (a *app) transferCommands() *cobra.Command {
 		}
 		return a.submit(ctx, c, name, ac, len(ac.Operations)-1, signed, wait)
 	})
-	send.Example = "  yellow transfer send 0x00000000000000000000000000000000000000bb --asset YELLOW=1.25 --max-fee 0.01\n  yellow transfer send <address> --asset ETH=0.1 --asset YELLOW=5 --max-fee 0 --wait 20s"
+	send.Example = "  yellow transfer send 0x00000000000000000000000000000000000000bb --asset YELLOW=1.25 --max-fee 0.01\n  yellow transfer send <address> --asset ETH=0.1 --asset YELLOW=5 --max-fee 0 --wait 20s\n  yellow --json --account assistant transfer send <address> --asset USDC=50 --max-fee 1 --idempotency-key invoice-42 --wait 20s"
+	send.Long = "Review, sign and submit one transfer. Personal accounts ask for the passphrase and a confirmation at the terminal; agent accounts (account create --agent) sign without prompts.\n\n--dry-run returns the exact transfer that would be signed, with the live nonce, and sends nothing. --idempotency-key makes a repeated command safe: if this account already saved a transfer with the same key on this network, Yellow returns that operation instead of signing again."
 	send.Flags().StringArrayVar(&legs, "asset", nil, "Exact amount, SYMBOL=AMOUNT (repeat for different assets)")
 	send.Flags().StringVar(&maxFee, "max-fee", "", "Required YELLOW fee cap; 0 authorizes zero fees")
 	send.Flags().StringVar(&from, "from", "", "Local account to sign with")
 	send.Flags().DurationVar(&wait, "wait", 0, "Optionally poll for a seal for this long")
+	send.Flags().BoolVar(&dryRun, "dry-run", false, "Show the exact transfer without unlocking, signing or sending")
+	send.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "Your unique key for this payment; repeating it never sends twice")
 	_ = send.MarkFlagRequired("max-fee")
 	_ = send.MarkFlagRequired("asset")
 	_ = send.RegisterFlagCompletionFunc("from", a.completeAccounts)

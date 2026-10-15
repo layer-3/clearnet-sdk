@@ -211,8 +211,9 @@ recipient, sorted assets, base units, live nonce and fee cap for approval. It si
 once, encrypts and durably saves the exact authorization, then sends one POST.
 There are no automatic submission retries or redirects. `--wait` polls status; it
 never resubmits. Human results go to stdout, while prompts and diagnostics go to
-stderr. Secret input and approval require an interactive terminal, including
-with `--json`.
+stderr. For personal accounts, secret input and approval require an interactive
+terminal, including with `--json`. Agent accounts sign without prompts; see
+[Scripts and agents](#scripts-and-agents).
 
 ## Understand the result
 
@@ -270,12 +271,12 @@ index is unavailable or backfilling, never “no transfers.”
 ## Commands and options
 
 ```text
-yellow network add <name> --gateway <url> --network-id <id>
+yellow network add <name> --gateway <url> --network-id <id> [--fingerprint <fp>]
 yellow network list
 yellow network show [name]
 yellow network use <name>
-yellow network trust-update <name>
-yellow account create <name>
+yellow network trust-update <name> [--fingerprint <fp>]
+yellow account create <name> [--agent]
 yellow account import <name>
 yellow account list
 yellow account address [name]
@@ -285,12 +286,14 @@ yellow account export-key [name]
 yellow balance [address]
 yellow transfer send <recipient> --asset SYMBOL=AMOUNT --max-fee <YELLOW-amount>
                      [--asset ...] [--from <name>] [--wait <duration>]
+                     [--dry-run] [--idempotency-key <key>]
 yellow transfer history [address] [--limit <n>] [--cursor <cursor>]
 yellow operation list
 yellow operation show <operation-id>
 yellow operation retry <operation-id>
 yellow completion bash|zsh|fish|powershell
 yellow shell
+yellow schema
 yellow version
 yellow help
 ```
@@ -316,7 +319,8 @@ Successful command results have this envelope:
 Failures use `{"version":1,"error":"…","exitCode":2}`. Every executed data command
 returns one JSON object; help and generated completion scripts remain text.
 Keys, recovery words, passphrases and signed payloads are never emitted as JSON. Prompts
-remain on stderr. Approval cannot be bypassed by `--json` or piped input.
+remain on stderr. A personal account's approval cannot be bypassed by `--json` or
+piped input. `yellow --json schema` describes every command and option.
 
 | Exit | Meaning |
 | --- | --- |
@@ -330,16 +334,81 @@ remain on stderr. Approval cannot be bypassed by `--json` or piped input.
 
 ## Scripts and agents
 
-Use direct commands with `--json` for scripts and AI agents:
+AI agents and scripts can use Yellow on their own. Give them an **agent
+account**, a separate account that signs without prompts:
 
 ```sh
-yellow --json network list
-yellow --json account list
-yellow --json balance <address>
-yellow --json transfer history <address> --limit 20
-yellow --json operation list
-yellow --json operation show <operation-id>
+yellow --json account create assistant --agent
 ```
+
+It has no recovery words and no passphrase prompt. Yellow encrypts its key with a
+generated passphrase saved next to it (`accounts/assistant.unlock`, mode 0600), so
+anyone, or any program, that can read your Yellow folder can spend its balance.
+**Its balance is the limit of what it can spend.** Fund it from your personal
+account with only what the agent may use, and move the rest back when you are done:
+
+```sh
+yellow transfer send <agent-address> --asset USDC=100 --max-fee 1
+```
+
+An agent account never becomes your default account; agents select it with
+`--account`. Your personal accounts keep their passphrase and approval prompts,
+and no agent can unlock them. `account backup` of an agent account asks you for a
+new passphrase and writes an ordinary encrypted backup, which restores as a
+personal account. `account export-key` works as for any account.
+
+Everything an agent needs runs without a terminal:
+
+```sh
+yellow --json schema                       # every command, option and exit code
+yellow --json network add testnet --gateway <url> --network-id YTES --fingerprint <fp>
+yellow --json account create assistant --agent
+yellow --json --account assistant balance
+yellow --json --account assistant transfer send <recipient> \
+  --asset USDC=50 --max-fee 1 --dry-run   # exact preview; nothing signed
+yellow --json --account assistant transfer send <recipient> \
+  --asset USDC=50 --max-fee 1 --idempotency-key invoice-42 --wait 20s
+yellow --json operation show <operation-id>
+yellow --json operation retry <operation-id>
+```
+
+- `--fingerprint` pins the gateway fingerprint your operator gave you, instead of
+  the interactive review. A different fingerprint saves nothing. Without it, a
+  noninteractive `network add` fails and reports the gateway's fingerprint, so you
+  can confirm it with the operator.
+- `--dry-run` returns the exact transfer with the live nonce, without unlocking,
+  signing, saving or sending. It works for personal accounts too.
+- `--idempotency-key` makes a repeated command safe. If the account already saved
+  a transfer with that key on this network, Yellow returns that operation and
+  signs nothing. Reusing a key for a different transfer is refused. Use one key
+  per intended payment, for example after a tool timeout.
+- The unresolved-operation guard applies to agent accounts as well: an unknown
+  outcome blocks new sends until it is reconciled.
+
+The [Yellow Network skill](https://github.com/layer-3/clearnet-sdk/tree/v0.9.0/skills/yellow-network) teaches agents
+which commands to use, how to interpret JSON and operation states, and how to
+recover uncertain transfers without paying twice. It uses direct commands and
+loads task-specific references only when needed.
+
+Each CLI release archive includes `skills/yellow-network`. From the extracted
+archive or the SDK repository root, install the skill for Codex on macOS/Linux:
+
+```sh
+mkdir -p "$HOME/.agents/skills"
+cp -R skills/yellow-network "$HOME/.agents/skills/"
+```
+
+On Windows, copy the entire `skills/yellow-network` folder into
+`%USERPROFILE%\.agents\skills`. If a previous copy exists, replace that skill
+folder with the new copy. Codex detects skills automatically; restart it if the
+skill does not appear. See the [official skill documentation](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills).
+For other agents supporting `SKILL.md`, install the same folder in their skill
+directory, preserving `references` and `agents`.
+The skill uses the installed `yellow` executable on PATH.
+
+Try “Use $yellow-network to show my Clearnet balances” or “Use $yellow-network
+to send 5 USDC to 0x… from my agent account.” With an agent account, the agent
+sends, waits and reconciles on its own.
 
 Direct commands do not open the interactive shell. Data results and errors use the
 versioned JSON envelopes described above; diagnostics stay on stderr. Check both
@@ -347,11 +416,10 @@ the exit code and operation state. Exit 3 means pending and exit 4 means an unkn
 outcome; neither is a sealed transfer. Preserve the operation ID and inspect it
 before attempting another transfer.
 
-`yellow shell --json` and `yellow account export-key --json` are refused.
-Account creation, import, backup, transfer
-sending and replay require a terminal for secrets and explicit approval, including
-when their results use JSON. Automation cannot bypass approval or supply a key or
-passphrase through command arguments or environment variables.
+`yellow shell --json` and `yellow account export-key --json` are refused. For
+personal accounts, creation, import, backup, sending and replay require a terminal
+for secrets and explicit approval, including when their results use JSON. No key
+or passphrase is accepted through command arguments or environment variables.
 
 ## Local data and recovery
 

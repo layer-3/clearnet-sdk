@@ -3,6 +3,7 @@ package yellow
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -57,8 +58,27 @@ func (a *app) newPassphrase() ([]byte, error) {
 	}
 	return pass, nil
 }
+
+// unlockPassphrase prompts a person for a personal account. Agent accounts use
+// their generated passphrase and never prompt.
+func (a *app) unlockPassphrase(ac *accountFile) ([]byte, error) {
+	if ac.Agent {
+		return a.store.agentPass(ac.name)
+	}
+	return a.prompt.secret("Unlock account")
+}
+
+// approve asks a person to confirm a signing action. Agent accounts sign
+// without a prompt; their balance is the limit of what they can spend.
+func (a *app) approve(ac *accountFile, label string) error {
+	if ac.Agent {
+		fmt.Fprintf(a.diag, "Agent account %s · signing without a prompt\n", clean(ac.name))
+		return nil
+	}
+	return a.prompt.confirm(label)
+}
 func (a *app) unlockKey(ac *accountFile) (*ecdsa.PrivateKey, []byte, func(), error) {
-	pass, err := a.prompt.secret("Unlock account")
+	pass, err := a.unlockPassphrase(ac)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -107,6 +127,9 @@ type restoredOperation struct {
 }
 
 func (a *app) saveNewAccount(name string, sec secret, restored []restoredOperation) error {
+	return a.saveAccountSecret(name, sec, restored, false)
+}
+func (a *app) saveAccountSecret(name string, sec secret, restored []restoredOperation, agent bool) error {
 	private, err := secretKey(sec)
 	if err != nil {
 		return err
@@ -126,7 +149,16 @@ func (a *app) saveNewAccount(name string, sec secret, restored []restoredOperati
 			return fail(ExitInput, "this address is already saved as %s; use yellow account use %s", n, n)
 		}
 	}
-	pass, err := a.newPassphrase()
+	var pass []byte
+	if agent {
+		pass, err = newAgentPass()
+		if err == nil {
+			// Saved first: an account file never exists without its unlock file.
+			err = a.store.saveAgentPass(name, pass)
+		}
+	} else {
+		pass, err = a.newPassphrase()
+	}
 	if err != nil {
 		return err
 	}
@@ -136,7 +168,7 @@ func (a *app) saveNewAccount(name string, sec secret, restored []restoredOperati
 		return err
 	}
 	defer clear(key)
-	ac := &accountFile{Version: 1, Address: address, Secret: encrypted, Operations: []operation{}}
+	ac := &accountFile{Version: 1, Address: address, Agent: agent, Secret: encrypted, Operations: []operation{}}
 	for _, saved := range restored {
 		op := saved.op
 		op.Account = name
@@ -158,23 +190,98 @@ func (a *app) saveNewAccount(name string, sec secret, restored []restoredOperati
 	if err := a.store.saveAccount(name, ac); err != nil {
 		return err
 	}
-	if a.cfg.Account == "" {
+	// An agent account never becomes the default, so a person's plain
+	// commands never sign from it by accident.
+	if a.cfg.Account == "" && !agent {
 		a.cfg.Account = name
 		if err := a.store.saveConfig(a.cfg); err != nil {
 			return err
 		}
 	}
-	return a.emit(map[string]string{"account": name, "address": address}, func() {
+	if agent {
+		return a.emit(map[string]any{"account": name, "address": address, "agent": true}, func() {
+			a.title("Agent account ready · " + name)
+			fmt.Fprintln(a.out, address)
+			fmt.Fprintln(a.out, "It signs transfers without a prompt. Fund it only with what an agent may spend:")
+			fmt.Fprintln(a.out, "anyone who can read your Yellow folder can use this balance.")
+			fmt.Fprintf(a.out, "Send with: yellow --account %s transfer send <recipient> --asset SYMBOL=AMOUNT --max-fee <YELLOW>\n", name)
+		})
+	}
+	return a.emit(map[string]any{"account": name, "address": address, "agent": false}, func() {
 		a.title("Account ready · " + name)
 		fmt.Fprintln(a.out, address)
 		fmt.Fprintf(a.out, "Next: yellow account backup %s --out %s.backup.json\n", name, name)
 	})
 }
+
+// newAgentPass returns 256 random bits, encoded as text for the unlock file.
+func newAgentPass() ([]byte, error) {
+	raw := make([]byte, 32)
+	defer clear(raw)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, err
+	}
+	pass := make([]byte, hex.EncodedLen(len(raw)))
+	hex.Encode(pass, raw)
+	return pass, nil
+}
+
+// backupAgent re-encrypts an agent account and its journal under a passphrase
+// chosen by a person, producing an ordinary encrypted backup.
+func (a *app) backupAgent(ac *accountFile) (*accountFile, error) {
+	pass, err := a.store.agentPass(ac.name)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(pass)
+	sec, oldKey, err := decryptSecret(pass, ac)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(oldKey)
+	defer func() { sec.Value = "" }()
+	newPass, err := a.newPassphrase()
+	if err != nil {
+		return nil, err
+	}
+	defer clear(newPass)
+	encrypted, newKey, err := encryptSecret(newPass, ac.Address, sec)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(newKey)
+	out := &accountFile{Version: ac.Version, Address: ac.Address, Secret: encrypted, Operations: []operation{}}
+	for _, op := range ac.Operations {
+		raw, err := openCipher(oldKey, op.Payload, opAAD(op))
+		if err != nil {
+			return nil, err
+		}
+		op.Payload, err = seal(newKey, raw, opAAD(op))
+		clear(raw)
+		if err != nil {
+			return nil, err
+		}
+		out.Operations = append(out.Operations, op)
+	}
+	return out, nil
+}
 func (a *app) accountCommands() *cobra.Command {
 	parent := group("account", "Create, import and back up encrypted local accounts")
-	create := a.cmd("create <name>", "Create an account with 24 recovery words", cobra.ExactArgs(1), func(_ context.Context, _ *cobra.Command, args []string) error {
+	var agent bool
+	create := a.cmd("create <name>", "Create an account with 24 recovery words, or an agent account", cobra.ExactArgs(1), func(_ context.Context, _ *cobra.Command, args []string) error {
 		if err := a.ensureNewAccount(args[0]); err != nil {
 			return err
+		}
+		if agent {
+			private, err := crypto.GenerateKey()
+			if err != nil {
+				return err
+			}
+			raw := crypto.FromECDSA(private)
+			closeKey(private)
+			value := hex.EncodeToString(raw)
+			clear(raw)
+			return a.saveAccountSecret(args[0], secret{"key", value}, nil, true)
 		}
 		words, err := wallet.NewMnemonic()
 		if err != nil {
@@ -185,6 +292,9 @@ func (a *app) accountCommands() *cobra.Command {
 		}
 		return a.saveNewAccount(args[0], secret{"mnemonic", words}, nil)
 	})
+	create.Long = "Create a personal account with 24 recovery words and an encryption passphrase, entered at your terminal.\n\nWith --agent, create a separate account that an AI agent or script can use on its own: no recovery words, no passphrase prompt and no approval prompt. Its key is encrypted with a generated passphrase stored next to it, so anyone who can read your Yellow folder can spend its balance. Fund it only with what the agent may spend."
+	create.Example = "  yellow account create personal\n  yellow --json account create assistant --agent"
+	create.Flags().BoolVar(&agent, "agent", false, "Create an account that signs without prompts, for AI agents and scripts")
 	imp := a.cmd("import <name>", "Import recovery words, a private key or an encrypted backup interactively", cobra.ExactArgs(1), func(_ context.Context, _ *cobra.Command, args []string) error {
 		if err := a.ensureNewAccount(args[0]); err != nil {
 			return err
@@ -246,26 +356,30 @@ func (a *app) accountCommands() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		results := []map[string]string{}
+		results := []map[string]any{}
 		rows := [][]string{}
 		for _, name := range names {
 			ac, err := a.store.account(name)
 			if err != nil {
 				return err
 			}
-			results = append(results, map[string]string{"account": name, "address": ac.Address})
+			results = append(results, map[string]any{"account": name, "address": ac.Address, "agent": ac.Agent, "active": name == a.cfg.Account})
 			mark := ""
 			if name == a.cfg.Account {
 				mark = "active"
 			}
-			rows = append(rows, []string{name, mark, ac.Address})
+			kind := "personal"
+			if ac.Agent {
+				kind = "agent"
+			}
+			rows = append(rows, []string{name, mark, kind, ac.Address})
 		}
 		return a.emit(results, func() {
 			a.title("Your accounts")
 			if len(rows) == 0 {
 				fmt.Fprintln(a.out, "No accounts yet. Run yellow account create personal.")
 			} else {
-				a.table([]string{"NAME", "", "ADDRESS"}, rows)
+				a.table([]string{"NAME", "", "TYPE", "ADDRESS"}, rows)
 			}
 		})
 	})
@@ -297,19 +411,28 @@ func (a *app) accountCommands() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		signer, _, close, err := a.unlock(ac)
-		if err != nil {
-			return err
-		}
-		defer close()
-		_ = signer
-		// Backups retain encrypted operation authorizations for crash recovery.
 		if _, err := os.Lstat(outPath); err == nil {
 			return fail(ExitInput, "backup path already exists; choose a new --out path")
 		} else if !os.IsNotExist(err) {
 			return err
 		}
-		raw, err := json.MarshalIndent(ac, "", "  ")
+		backup := ac
+		if ac.Agent {
+			// A person chooses the backup passphrase; the result restores as a
+			// personal account with the agent's journal.
+			if backup, err = a.backupAgent(ac); err != nil {
+				return err
+			}
+		} else {
+			signer, _, close, err := a.unlock(ac)
+			if err != nil {
+				return err
+			}
+			defer close()
+			_ = signer
+		}
+		// Backups retain encrypted operation authorizations for crash recovery.
+		raw, err := json.MarshalIndent(backup, "", "  ")
 		if err != nil {
 			return err
 		}

@@ -303,7 +303,9 @@ func (a *app) table(headers []string, rows [][]string) {
 }
 func (a *app) emit(data any, human func()) error {
 	if a.json {
-		return json.NewEncoder(a.out).Encode(struct {
+		enc := json.NewEncoder(a.out)
+		enc.SetEscapeHTML(false)
+		return enc.Encode(struct {
 			Version int `json:"version"`
 			Result  any `json:"result"`
 		}{1, data})
@@ -367,7 +369,10 @@ func (a *app) command() *cobra.Command {
 	root.SetCompletionCommandGroupID("tools")
 	shell := a.shellCommand()
 	shell.GroupID = "tools"
-	root.AddCommand(network, account, balance, transfer, operation, version, shell)
+	schema := a.schemaCommand()
+	schema.GroupID = "tools"
+	root.AddCommand(network, account, balance, transfer, operation, version, schema, shell)
+	annotateTerminal(root)
 	_ = root.RegisterFlagCompletionFunc("network", a.completeNetworks)
 	_ = root.RegisterFlagCompletionFunc("account", a.completeAccounts)
 	return root

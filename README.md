@@ -49,6 +49,7 @@ mechanical rather than a fresh audit.
 | Path | Purpose |
 |---|---|
 | `cmd/yellow`, `internal/yellow` | Public account, balance, transfer and recovery CLI. See [the user guide](cmd/yellow/README.md). |
+| `skills/yellow-network` | Agent skill for efficient CLI queries, human-approved payments and safe operation recovery. See [installation and use](cmd/yellow/README.md#scripts-and-agents). |
 | `pkg/wallet` | Public BIP-39/BIP-32 Ethereum index-zero key derivation. |
 | `pkg/core` | Shared Clearnet data types, operations, transaction references, deposit destinations, and adapter interfaces. |
 | `pkg/blockchain/evm` | **Custody-implementation-specific.** Go EVM adapters for vault deposits, withdrawals, signer rotation, registry/faucet/token/fraud interactions, and generated contract bindings. |
@@ -83,7 +84,8 @@ yellow help
 yellow shell
 ```
 
-See the [CLI README](cmd/yellow/README.md) for setup, commands, and recovery.
+See the [CLI README](cmd/yellow/README.md) for setup, commands, and recovery,
+including [the AI agent skill](cmd/yellow/README.md#scripts-and-agents).
 
 ## Go SDK
 

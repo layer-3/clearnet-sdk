@@ -102,7 +102,11 @@ Ctrl+C/Ctrl+D restoration. Confirm direct JSON commands remain suitable for scri
 Verify private-key export requires unlock and confirmation, and keeps the revealed
 key out of redirected stdout, stderr and JSON. Check private-key import preserves
 the signing address and stores the key encrypted.
-Each release archive includes the CLI README and license.
+Each release archive includes the CLI README, license and the complete
+`skills/yellow-network` agent skill. Review the skill's commands, JSON fields,
+terminal handoffs and recovery rules against the release CLI when those contracts
+change. Verify both archive formats retain `SKILL.md`, `agents/openai.yaml` and
+the linked references. See [skill installation](../cmd/yellow/README.md#scripts-and-agents).
 
 Previously submitted operation replay requires the original gateway's optional
 `pendingUntil` status evidence. Gateways without it can still handle account,

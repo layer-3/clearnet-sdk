@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -156,9 +157,27 @@ func identityDiff(old, new identity) []string {
 	}
 	return changes
 }
+
+// trust accepts reviewed gateway metadata. A pinned fingerprint, obtained from
+// the operator, replaces the interactive confirmation; a mismatch never saves.
+func (a *app) trust(pinned, actual, label string) error {
+	if pinned != "" {
+		if strings.TrimPrefix(strings.ToLower(pinned), "0x") != actual {
+			return fail(ExitNetwork, "gateway fingerprint is %s, not the expected %s; nothing was saved", actual, pinned)
+		}
+		fmt.Fprintln(a.diag, "Fingerprint matches the pinned value.")
+		return nil
+	}
+	err := a.prompt.confirm(label)
+	var f *failure
+	if errors.As(err, &f) && f.code == ExitInput {
+		return fail(ExitInput, "reviewing a gateway needs an interactive terminal, or --fingerprint %s once you have confirmed this fingerprint with the network operator", actual)
+	}
+	return err
+}
 func (a *app) networkCommands() *cobra.Command {
 	parent := group("network", "Set up and review trusted gateway profiles")
-	var gatewayURL, networkID string
+	var gatewayURL, networkID, fingerprint string
 	add := a.cmd("add <name>", "Review and save a gateway", cobra.ExactArgs(1), func(ctx context.Context, _ *cobra.Command, args []string) error {
 		name := args[0]
 		if err := validName(name); err != nil {
@@ -181,7 +200,7 @@ func (a *app) networkCommands() *cobra.Command {
 			return netError(err)
 		}
 		a.profileReview(p)
-		if err := a.prompt.confirm("Trust and save this network"); err != nil {
+		if err := a.trust(fingerprint, p.Fingerprint, "Trust and save this network"); err != nil {
 			return err
 		}
 		a.cfg.Networks[name] = p
@@ -198,8 +217,10 @@ func (a *app) networkCommands() *cobra.Command {
 	})
 	add.Flags().StringVar(&gatewayURL, "gateway", "", "HTTPS gateway URL; HTTP is allowed only for a loopback development profile")
 	add.Flags().StringVar(&networkID, "network-id", "", "Expected four-byte Clearnet network ID (for example YTES)")
+	add.Flags().StringVar(&fingerprint, "fingerprint", "", "Expected gateway fingerprint from the operator; accepts it without a prompt")
 	_ = add.MarkFlagRequired("gateway")
 	_ = add.MarkFlagRequired("network-id")
+	add.Example = "  yellow network add testnet --gateway https://gateway.example.org --network-id YTES\n  yellow --json network add testnet --gateway https://gateway.example.org --network-id YTES --fingerprint <operator-fingerprint>"
 	list := a.cmd("list", "View saved networks", cobra.NoArgs, func(context.Context, *cobra.Command, []string) error {
 		var names []string
 		for n := range a.cfg.Networks {
@@ -271,6 +292,9 @@ func (a *app) networkCommands() *cobra.Command {
 		}
 		changes := identityDiff(p.Identity, id)
 		if len(changes) == 0 {
+			if fingerprint != "" && strings.TrimPrefix(strings.ToLower(fingerprint), "0x") != fp {
+				return fail(ExitNetwork, "gateway fingerprint is %s, not the expected %s", fp, fingerprint)
+			}
 			return a.emit(p, func() { fmt.Fprintln(a.out, "Trust profile is current:", p.Name) })
 		}
 		fmt.Fprintln(a.diag, "\nGateway changes:")
@@ -280,7 +304,7 @@ func (a *app) networkCommands() *cobra.Command {
 		p.Identity = id
 		p.Fingerprint = fp
 		a.profileReview(p)
-		if err := a.prompt.confirm("Accept these changes"); err != nil {
+		if err := a.trust(fingerprint, fp, "Accept these changes"); err != nil {
 			return err
 		}
 		a.cfg.Networks[p.Name] = p
@@ -289,6 +313,7 @@ func (a *app) networkCommands() *cobra.Command {
 		}
 		return a.emit(p, func() { fmt.Fprintln(a.out, "Trust updated:", p.Name) })
 	})
+	update.Flags().StringVar(&fingerprint, "fingerprint", "", "Expected new fingerprint from the operator; accepts it without a prompt")
 	for _, c := range []*cobra.Command{show, use, update} {
 		c.ValidArgsFunction = oneArgument(a.completeNetworks)
 	}

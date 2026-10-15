@@ -50,23 +50,29 @@ type secret struct {
 	Value string `json:"value"`
 }
 type operation struct {
-	ID        string          `json:"operationId"`
-	Account   string          `json:"account"`
-	Sender    string          `json:"sender"`
-	Nonce     uint64          `json:"nonce"`
-	Profile   profile         `json:"profile"`
-	Created   time.Time       `json:"createdAt"`
-	Updated   time.Time       `json:"updatedAt"`
-	Submitted *time.Time      `json:"submittedAt,omitempty"`
-	State     string          `json:"state"`
-	Receipt   *client.Receipt `json:"receipt,omitempty"`
-	Payload   ciphertext      `json:"payload"`
+	ID             string          `json:"operationId"`
+	Account        string          `json:"account"`
+	Sender         string          `json:"sender"`
+	Nonce          uint64          `json:"nonce"`
+	Profile        profile         `json:"profile"`
+	Created        time.Time       `json:"createdAt"`
+	Updated        time.Time       `json:"updatedAt"`
+	Submitted      *time.Time      `json:"submittedAt,omitempty"`
+	State          string          `json:"state"`
+	Receipt        *client.Receipt `json:"receipt,omitempty"`
+	IdempotencyKey string          `json:"idempotencyKey,omitempty"`
+	RequestHash    string          `json:"requestHash,omitempty"`
+	Payload        ciphertext      `json:"payload"`
 }
 type accountFile struct {
-	Version    int         `json:"version"`
-	Address    string      `json:"address"`
+	Version int    `json:"version"`
+	Address string `json:"address"`
+	// Agent accounts unlock with a generated passphrase saved beside the
+	// account file, so they sign without a person at a terminal.
+	Agent      bool        `json:"agent,omitempty"`
 	Secret     envelope    `json:"secret"`
 	Operations []operation `json:"operations"`
+	name       string
 }
 type store struct{ dir string }
 
@@ -166,7 +172,35 @@ func (s store) account(name string) (*accountFile, error) {
 	if a.Version != formatVersion {
 		return nil, fmt.Errorf("unsupported account format")
 	}
+	a.name = name
 	return &a, nil
+}
+
+// agentPassPath holds an agent account's generated unlock passphrase. Names
+// cannot contain dots, so this never collides with an account file.
+func (s store) agentPassPath(name string) (string, error) {
+	if err := validName(name); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.dir, "accounts", name+".unlock"), nil
+}
+func (s store) agentPass(name string) ([]byte, error) {
+	path, err := s.agentPassPath(name)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("agent account %q is missing its unlock file", name)
+	}
+	return raw, nil
+}
+func (s store) saveAgentPass(name string, pass []byte) error {
+	path, err := s.agentPassPath(name)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(path, pass)
 }
 func (s store) saveAccount(name string, a *accountFile) error {
 	path, err := s.accountPath(name)
