@@ -202,8 +202,16 @@ export class GatewayClient {
     }
     info.assets = [...assets].sort((a, b) => compare(a.symbol, b.symbol));
     info.capabilities = Array.isArray(info.capabilities) ? info.capabilities : [];
-    if (this.fingerprint && networkFingerprint(info) !== this.fingerprint) {
-      throw new GatewayError("trust", "The network's identity changed since it was reviewed. Signing is paused until it is reviewed again.");
+    if (this.fingerprint) {
+      let actual: string;
+      try {
+        actual = networkFingerprint(info);
+      } catch (cause) {
+        throw new GatewayError("identity", "The gateway's asset catalogue is invalid.", cause);
+      }
+      if (actual !== this.fingerprint) {
+        throw new GatewayError("trust", "The network's identity changed since it was reviewed. Signing is paused until it is reviewed again.");
+      }
     }
     return info;
   }
@@ -273,7 +281,12 @@ export class GatewayClient {
    */
   async prepareTransfer(input: PrepareTransferInput): Promise<TransferIntent> {
     const from = normalizeUserAccount(input.from);
-    const to = resolveRecipient(input.recipient);
+    let to: ReturnType<typeof resolveRecipient>;
+    try {
+      to = resolveRecipient(input.recipient);
+    } catch (cause) {
+      throw new GatewayError("input", "Transfer recipient must be a nonzero user address.", cause);
+    }
     const info = await this.info(input.signal ? { fresh: true, signal: input.signal } : { fresh: true });
     if (!info.capabilities.includes(CAPABILITY_TRANSFER_STATUS)) {
       throw new GatewayError("capability", "This network can't resolve uncertain transfers, so sending is disabled.");
@@ -281,14 +294,24 @@ export class GatewayClient {
     const catalogue = new Map<string, AssetInfo>(info.assets.map((a) => [a.symbol, a]));
     const yellow = catalogue.get("YELLOW");
     if (!yellow || input.maxFee === "") throw new GatewayError("input", "An explicit YELLOW fee cap is required.");
-    const fee = toBaseUnits(input.maxFee, yellow.decimals);
+    let fee: bigint;
+    try {
+      fee = toBaseUnits(input.maxFee, yellow.decimals);
+    } catch (cause) {
+      throw new GatewayError("input", "Invalid YELLOW fee cap.", cause);
+    }
     if (input.assets.length === 0) throw new GatewayError("input", "Add at least one asset.");
     const seen = new Set<string>();
     const legs: TransferAsset[] = input.assets.map((leg) => {
       const meta = catalogue.get(leg.asset);
       if (!meta || seen.has(leg.asset)) throw new GatewayError("input", `Unknown or duplicate asset ${leg.asset}.`);
       seen.add(leg.asset);
-      const units = toBaseUnits(leg.amount, meta.decimals);
+      let units: bigint;
+      try {
+        units = toBaseUnits(leg.amount, meta.decimals);
+      } catch (cause) {
+        throw new GatewayError("input", `Invalid ${leg.asset} amount.`, cause);
+      }
       if (units <= 0n) throw new GatewayError("input", `${leg.asset} amount must be greater than zero.`);
       return { asset: leg.asset, amount: units.toString() };
     });

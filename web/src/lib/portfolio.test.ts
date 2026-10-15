@@ -41,7 +41,7 @@ describe("portfolio", () => {
     expect(estimateFee([{ asset: "USDC", amount: "100000000" }], assets, pools).fee).toBe(E18); // 1000 YELLOW -> 1
     expect(estimateFee([{ asset: "YELLOW", amount: "1" }], assets, pools).fee).toBe(10n ** 14n);
     expect(estimateFee([{ asset: "USDC", amount: "100000000" }], assets, pools).suggestedCap).toBe("1.5");
-    expect(estimateFee([{ asset: "ETH", amount: "1" }], assets, []).fee).toBeNull();
+    expect(estimateFee([{ asset: "ETH", amount: "1" }], assets, [])).toMatchObject({ fee: null, suggestedCap: null });
   });
 
   it("applies the fee floor separately to every asset leg", () => {
@@ -101,6 +101,19 @@ describe("send validation", () => {
   it("flags a fee cap below the estimate", () => {
     const r = validate({ recipient: OTHER, legs: [leg("USDC", "100")], feeCap: "0.5" }, p, assets, pools, SELF);
     expect(r.feeCapError).toMatch(/lower cap will be rejected/);
+  });
+
+  it("requires a consciously chosen fee cap when the pool price is unavailable", () => {
+    const state = { recipient: OTHER, legs: [leg("USDC", "1")], feeCap: null };
+    const unknown = validate(state, p, assets, [], SELF);
+    expect(unknown.fee).toBeNull();
+    expect(unknown.feeCap).toBe("");
+    expect(unknown.feeCapError).toMatch(/Enter a YELLOW fee cap/);
+    expect(unknown.ready).toBe(false);
+    const explicit = validate({ ...state, feeCap: "1" }, p, assets, [], SELF);
+    expect(explicit.fee).toBeNull();
+    expect(explicit.ready).toBe(true);
+    expect(explicit.feeCap).toBe("1");
   });
 
   it("retains the post-transfer 10 YELLOW floor, including for Max", () => {

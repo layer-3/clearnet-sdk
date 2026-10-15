@@ -3,6 +3,7 @@
 import { clsx } from "clsx";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useState } from "react";
+import { useHydrated } from "@/lib/hydration";
 
 export type ClearingStage = "idle" | "signing" | "cosigning" | "sealed" | "rejected" | "unknown";
 
@@ -22,8 +23,9 @@ const RECIPIENT = { x: 378, y: 70 };
  * co-sign; at quorum the block is sealed. Drawn in the canvas ink so it works
  * on the yellow page (light) and the black page (dark).
  */
-export function Clearing({ stage, legs, className, size = "lg" }: { stage: ClearingStage; legs: string[]; className?: string; size?: "lg" | "sm" }) {
-  const reduce = useReducedMotion();
+export function Clearing({ stage, legs, className }: { stage: ClearingStage; legs: string[]; className?: string }) {
+  const reducedMotion = useReducedMotion();
+  const reduce = useHydrated() && reducedMotion;
   const [tick, setTick] = useState<{ stage: ClearingStage; n: number }>({ stage, n: 0 });
 
   useEffect(() => {
@@ -75,12 +77,10 @@ export function Clearing({ stage, legs, className, size = "lg" }: { stage: Clear
       <path d={`M${SENDER.x},${SENDER.y} L${C},${C} L${RECIPIENT.x},${RECIPIENT.y}`} stroke={ink} strokeOpacity={0.28} strokeWidth={1.25} strokeDasharray="1 6" strokeLinecap="round" fill="none" />
       <circle cx={SENDER.x} cy={SENDER.y} r={5} fill={ink} />
       <circle cx={RECIPIENT.x} cy={RECIPIENT.y} r={5} fill="none" stroke={ink} strokeWidth={2} />
-      {size === "lg" && (
-        <g fill={ink} fontSize="13" fontWeight={600} style={{ fontVariationSettings: '"wdth" 88' }}>
-          <text x={SENDER.x + 12} y={SENDER.y + 22}>You</text>
-          <text x={RECIPIENT.x - 12} y={RECIPIENT.y - 14} textAnchor="end">Recipient</text>
-        </g>
-      )}
+      <g fill={ink} fontSize="13" fontWeight={600} style={{ fontVariationSettings: '"wdth" 88' }}>
+        <text x={SENDER.x + 12} y={SENDER.y + 22}>You</text>
+        <text x={RECIPIENT.x - 12} y={RECIPIENT.y - 14} textAnchor="end">Recipient</text>
+      </g>
 
       {/* Clearnodes */}
       {nodes.map((p, i) => {
@@ -168,7 +168,8 @@ const STEPS: Array<[ClearingStage, number]> = [
 
 /** Self-running showcase for the connect screen. Click to replay with another transfer. */
 export function ClearingShowcase({ className }: { className?: string }) {
-  const reduce = useReducedMotion();
+  const reducedMotion = useReducedMotion();
+  const reduce = useHydrated() && reducedMotion;
   const [scene, setScene] = useState(0);
   const [step, setStep] = useState(0);
 

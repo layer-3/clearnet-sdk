@@ -81,11 +81,13 @@ export function validate(state: ComposeState, portfolio: Portfolio, assets: Asse
 
   const estimate = estimateFee(out.legs, assets, pools);
   out.fee = estimate.fee;
-  out.feeCap = state.feeCap ?? estimate.suggestedCap;
+  out.feeCap = state.feeCap ?? estimate.suggestedCap ?? "";
   const yellow = assets.find((a) => a.symbol === YELLOW);
   let capUnits = 0n;
   if (!yellow) out.formError = "This network has no YELLOW for fees, so sending is unavailable.";
-  else {
+  else if (out.fee === null && state.feeCap === null) {
+    out.feeCapError = "No reliable fee estimate is available for this asset. Enter a YELLOW fee cap you approve before continuing.";
+  } else {
     try {
       capUnits = toBaseUnits(normalizeAmountInput(out.feeCap), yellow.decimals);
       if (out.fee !== null && capUnits < out.fee) out.feeCapError = `The estimated fee is ${formatUnits(out.fee, yellow.decimals)} YELLOW. A lower cap will be rejected.`;

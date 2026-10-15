@@ -82,7 +82,10 @@ export function resolveRecipient(raw: string): `0x${string}` {
     value = lower.slice(USER_URI_PREFIX.length);
     if (value.includes("/")) throw new RecipientError("Sub-account links aren't supported yet. Use the account address.");
   }
-  if (!/^0x[0-9a-fA-F]{40}$/.test(value)) throw new RecipientError("That isn't a full Ethereum address. It should be 0x followed by 40 characters.");
+  // Go's common.IsHexAddress also accepts bare 40-hex strings and 0X.
+  if (/^[0-9a-fA-F]{40}$/.test(value)) value = `0x${value}`;
+  if (/^0X[0-9a-fA-F]{40}$/.test(value)) value = `0x${value.slice(2)}`;
+  if (!/^0x[0-9a-fA-F]{40}$/.test(value)) throw new RecipientError("That isn't a full Ethereum address. It should be 40 hex characters, optionally prefixed by 0x.");
   // Mixed-case input must carry a valid EIP-55 checksum.
   if (!isAddress(value, { strict: true }) && value !== value.toLowerCase() && value.slice(2) !== value.slice(2).toUpperCase()) {
     throw new RecipientError("The address checksum doesn't match. Check for a typo.");
@@ -90,6 +93,30 @@ export function resolveRecipient(raw: string): `0x${string}` {
   const address = getAddress(value);
   if (address === zeroAddress) throw new RecipientError("You can't send to the zero address.");
   return address;
+}
+
+/**
+ * The signed `to` address slot, byte-compatible with Go TransferRecipientAddress.
+ * A URI is committed as the first 20 bytes of keccak256(canonical URI); the
+ * routed request retains the original URI. The ordinary web send flow uses a
+ * raw address, but this also binds Go-signed URI intents for recovery.
+ */
+export function transferRecipientSlot(raw: string): `0x${string}` {
+  if (raw.startsWith("yellow://")) {
+    if (raw !== raw.toLowerCase()) throw new RecipientError("Yellow links must be lowercase and canonical.");
+    const uri = /^yellow:\/\/ynet\/([^/]+)(?:\/(.*))?$/.exec(raw);
+    if (!uri) throw new RecipientError("Only yellow://ynet links are supported.");
+    const kind = uri[1];
+    const path = uri[2] ?? "";
+    if (!kind || !["user", "pool", "treasury", "node", "dax", "game", "relay", "contract"].includes(kind)) {
+      throw new RecipientError("Unsupported Yellow account kind.");
+    }
+    if (kind === "treasury" && path !== "emission") throw new RecipientError("Unknown Yellow treasury.");
+    if (kind === "node" && !/^[0-9a-f]{64}$/.test(path)) throw new RecipientError("Invalid Yellow node ID.");
+    return `0x${keccak256(toHex(stringToBytes(raw))).slice(2, 42)}`;
+  }
+  if (raw !== raw.trim()) throw new RecipientError("Recipient must not contain whitespace.");
+  return resolveRecipient(raw);
 }
 
 export function sortTransferAssets(assets: TransferAsset[]): TransferAsset[] {
@@ -105,7 +132,7 @@ function message(intent: Pick<TransferIntent, "to" | "assets" | "maxFee" | "nonc
   });
   if (!Number.isSafeInteger(intent.nonce) || intent.nonce < 0) throw new Error("Invalid nonce.");
   return {
-    to: resolveRecipient(intent.to),
+    to: transferRecipientSlot(intent.to),
     assets: intent.assets.map((a) => ({ asset: a.asset, amount: parseBaseUnitInteger(a.amount) })),
     maxFee: parseBaseUnitInteger(intent.maxFee),
     nonce: BigInt(intent.nonce),

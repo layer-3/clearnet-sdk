@@ -900,11 +900,11 @@ func TestDryRunIgnoresUnresolvedGuard(t *testing.T) {
 	g.postCode = 504
 	dir, _ := setup(t, g)
 	a, out, _ := newTestApp(dir, &scriptedPrompt{approve: true})
-	if code := a.execute(context.Background(), sendArgs()); code != ExitUnknown {
+	if code := a.execute(context.Background(), sendArgs("--idempotency-key", "invoice-42")); code != ExitUnknown {
 		t.Fatalf("first send exit = %d (%s)", code, out)
 	}
 	a, out, _ = newTestApp(dir, &scriptedPrompt{approve: true})
-	if code := a.execute(context.Background(), sendArgs("--dry-run")); code != 0 {
+	if code := a.execute(context.Background(), sendArgs("--dry-run", "--idempotency-key", "invoice-42")); code != 0 {
 		t.Fatalf("dry run exit = %d (%s)", code, out)
 	}
 	if !strings.Contains(out.String(), `"dryRun":true`) {

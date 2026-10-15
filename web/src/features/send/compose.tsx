@@ -226,7 +226,7 @@ function FeeField({ result, yellow, onChange }: { result: ComposeResult; yellow:
     <div className="rounded-field shadow-[inset_0_0_0_1.5px_var(--line)] p-4">
       <div className="flex items-baseline justify-between gap-4">
         <span className="type-label text-[15px]">Network fee</span>
-        <span className="num text-[15px]">{result.fee !== null && yellow ? `≈ ${formatUnits(result.fee, yellow.decimals, 6)} YELLOW` : "Estimated at review"}</span>
+        <span className="num text-[15px]">{result.fee !== null && yellow ? `≈ ${formatUnits(result.fee, yellow.decimals, 6)} YELLOW` : "Estimate unavailable"}</span>
       </div>
       <div className="mt-2 flex items-center justify-between gap-4">
         <label htmlFor={id} className="shrink-0 whitespace-nowrap text-[14px] text-muted">
@@ -246,18 +246,18 @@ function FeeField({ result, yellow, onChange }: { result: ComposeResult; yellow:
             <span className="text-[14px]">YELLOW</span>
           </span>
         ) : (
-          <button type="button" onClick={() => setEditing(true)} aria-label={`Fee cap ${result.feeCap} YELLOW. Change fee cap`} className="num inline-flex items-center gap-2 rounded-control px-2 py-1 text-[15px] hover:bg-surface-2">
-            {result.feeCap} YELLOW <span className="type-label text-[13px] underline underline-offset-2">Change</span>
+          <button type="button" onClick={() => setEditing(true)} aria-label={result.feeCap ? `Fee cap ${result.feeCap} YELLOW. Change fee cap` : "Set a YELLOW fee cap"} className="num inline-flex items-center gap-2 rounded-control px-2 py-1 text-[15px] hover:bg-surface-2">
+            {result.feeCap ? `${result.feeCap} YELLOW` : "Set fee cap"} <span className="type-label text-[13px] underline underline-offset-2">Change</span>
           </button>
         )}
       </div>
-      {editing && (
+      {editing && result.fee !== null && (
         <button type="button" className="type-label mt-1 text-[13px] text-muted underline underline-offset-2" onClick={() => { onChange(null); setEditing(false); }}>
           Use suggested cap
         </button>
       )}
       <p className={clsx("mt-3 text-[13.5px] leading-relaxed", result.feeCapError ? "text-flare" : "text-muted")} aria-live="polite">
-        {result.feeCapError ?? "Fees are 0.10% of the value, paid in YELLOW. You never pay more than your cap."}
+        {result.feeCapError ?? (result.fee === null ? "The price is unavailable. The network will reject this transfer if its fee exceeds your cap." : "Fees are 0.10% of the value, paid in YELLOW. You never pay more than your cap.")}
       </p>
     </div>
   );

@@ -19,8 +19,20 @@ jobs:
   typescript:
     uses: ./.github/workflows/test-ts.yml
 
+  web:
+    uses: ./.github/workflows/test-web.yml
+
+  forge:
+    uses: ./.github/workflows/test-forge.yml
+
+  integration:
+    uses: ./.github/workflows/test-integration.yml
+
+  artifacts:
+    uses: ./.github/workflows/check-release-artifacts.yml
+
   publish:
-    needs: [cli, unit, typescript]
+    needs: [cli, unit, typescript, web, forge, integration, artifacts]
     runs-on: ubuntu-latest
     permissions:
       contents: write

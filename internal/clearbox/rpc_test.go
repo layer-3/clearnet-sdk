@@ -86,6 +86,14 @@ func TestRPCAccountScopedBlocks(t *testing.T) {
 	if got, err := call("eth_getBlockByHash", first.Receipt.BlockHash, false); err != nil || got == nil {
 		t.Fatal("sealed block hash cannot be resolved", got, err)
 	}
+	// The production gateway ignores the optional full-transactions flag and
+	// extra wallet parameters instead of imposing a stricter boolean check.
+	if got, err := call("eth_getBlockByHash", first.Receipt.BlockHash, "ignored", 42); err != nil || got == nil {
+		t.Fatal("ignored block hash flags changed the result", got, err)
+	}
+	if got, err := call("eth_getBlockByNumber", s.SeedAddress, "latest", "ignored", 42); err != nil || got == nil {
+		t.Fatal("ignored block number flags changed the result", got, err)
+	}
 	if got, err := call("eth_getBlockByNumber", s.SeedAddress, "0x2", false); err != nil || got != nil {
 		t.Fatal("missing account block must return null", got, err)
 	}

@@ -113,7 +113,7 @@ func netError(err error) error {
 	return fail(ExitNetwork, "%s", err)
 }
 func (a *app) profileReview(p profile) {
-	fmt.Fprintf(a.diag, "\nReview network %s\n  Gateway      %s\n  Network ID   %s\n  EIP-712      %d\n  Router       %s\n  Fingerprint  %s\n", clean(p.Name), clean(p.Gateway), p.NetworkID, p.Identity.ChainID, p.Identity.Router, p.Fingerprint)
+	fmt.Fprintf(a.diag, "\nReview network %s\n  Gateway      %s\n  Network ID   %s\n  EIP-712      %d\n  Router       %s\n  Fingerprint  %s\n", clean(p.Name), clean(p.Gateway), clean(p.NetworkID), p.Identity.ChainID, clean(p.Identity.Router), clean(p.Fingerprint))
 	for _, asset := range p.Identity.Assets {
 		fmt.Fprintf(a.diag, "  %-12s %d decimals · chain %d · %s\n", asset.Symbol, asset.Decimals, asset.ChainID, clean(asset.Address))
 	}
@@ -254,7 +254,7 @@ func (a *app) networkCommands() *cobra.Command {
 		}
 		return a.emit(p, func() {
 			a.title("Network · " + p.Name)
-			fmt.Fprintf(a.out, "Gateway      %s\nNetwork ID   %s\nEIP-712      %d\nRouter       %s\nFingerprint  %s\n", clean(p.Gateway), p.NetworkID, p.Identity.ChainID, p.Identity.Router, p.Fingerprint)
+			fmt.Fprintf(a.out, "Gateway      %s\nNetwork ID   %s\nEIP-712      %d\nRouter       %s\nFingerprint  %s\n", clean(p.Gateway), clean(p.NetworkID), p.Identity.ChainID, clean(p.Identity.Router), clean(p.Fingerprint))
 			rows := [][]string{}
 			for _, v := range p.Identity.Assets {
 				rows = append(rows, []string{v.Symbol, fmt.Sprint(v.Decimals), fmt.Sprint(v.ChainID), v.Address})

@@ -29,6 +29,7 @@ export {
   TRANSFER_TYPES,
   transferDigest,
   transferOperationId,
+  transferRecipientSlot,
   transferTypedData,
   USER_URI_PREFIX,
   validOperationId,

@@ -31,7 +31,6 @@ function apply(p: ThemePref) {
 }
 
 export function useTheme() {
-  const pref = useSyncExternalStore(subscribe, read, () => "system" as ThemePref);
   const dark = useSyncExternalStore(subscribe, () => isDark(read()), () => false);
   const setPref = useCallback((p: ThemePref) => {
     window.localStorage.setItem(KEY, p);
@@ -39,5 +38,5 @@ export function useTheme() {
     listeners.forEach((l) => l());
   }, []);
   const toggle = useCallback(() => setPref(isDark(read()) ? "light" : "dark"), [setPref]);
-  return { pref, dark, setPref, toggle };
+  return { dark, toggle };
 }

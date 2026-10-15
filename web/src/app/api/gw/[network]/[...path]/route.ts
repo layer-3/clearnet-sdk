@@ -67,16 +67,29 @@ async function relay(req: Request, ctx: Ctx, method: "GET" | "POST") {
   const route = path.join("/");
   if (!ALLOWED.test(route) || route.includes("..")) return fail(404, CODE_ROUTE_NOT_FOUND, "route not found");
 
+  const requestURL = new URL(req.url);
+  // Browser writes must originate from this app. Never make this endpoint a
+  // blind cross-site relay to a configured gateway.
+  if (method === "POST") {
+    const origin = req.headers.get("Origin");
+    if ((origin && origin !== requestURL.origin) || req.headers.get("Sec-Fetch-Site") === "cross-site") {
+      return fail(403, CODE_INVALID_REQUEST, "cross-origin write refused");
+    }
+  }
   const target = new URL(`${n.gateway.replace(/\/+$/, "")}/${route}`);
-  target.search = new URL(req.url).search;
+  target.search = requestURL.search;
 
   let body: string | undefined;
   if (method === "POST") {
     const declared = declaredLength(req);
     if (declared !== null && declared > MAX_BODY) return fail(413, CODE_INVALID_REQUEST, "request body too large");
-    const raw = await readLimited(req.body, MAX_BODY);
-    if (raw === null) return fail(413, CODE_INVALID_REQUEST, "request body too large");
-    body = raw;
+    try {
+      const raw = await readLimited(req.body, MAX_BODY);
+      if (raw === null) return fail(413, CODE_INVALID_REQUEST, "request body too large");
+      body = raw;
+    } catch {
+      return fail(400, CODE_INVALID_REQUEST, "cannot read request body");
+    }
   }
 
   let upstream: Response;
@@ -100,9 +113,17 @@ async function relay(req: Request, ctx: Ctx, method: "GET" | "POST") {
   if (Number.isFinite(declared) && declared > MAX_RESPONSE) {
     return fail(502, CODE_BACKEND_UNAVAILABLE, "gateway response too large");
   }
-  const text = await readLimited(upstream.body, MAX_RESPONSE);
+  let text: string | null;
+  try {
+    text = await readLimited(upstream.body, MAX_RESPONSE);
+  } catch {
+    // The gateway may have accepted a signed POST before its response failed.
+    return fail(502, CODE_BACKEND_UNAVAILABLE, "gateway response unreadable");
+  }
   if (text === null) return fail(502, CODE_BACKEND_UNAVAILABLE, "gateway response too large");
-  return new Response(text, {
+  // A 204/205/304 response must have a null body, not even an empty string.
+  // JSON-RPC notifications legitimately produce 204 (including in clearbox).
+  return new Response([204, 205, 304].includes(upstream.status) ? null : text, {
     status: upstream.status,
     // Every relayed route answers JSON. Never forward the upstream content type
     // verbatim: a gateway answering text/html would be served on this origin.

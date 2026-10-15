@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -136,19 +137,32 @@ func (s store) lock(ctx context.Context) (func(), error) {
 	return func() { _ = l.Close() }, nil
 }
 func readJSON(path string, out any) error {
+	// A FIFO can block even in Open, before a size check is possible. Secrets
+	// and backups are regular files; do not follow symlinks to device files.
+	st, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() {
+		return fmt.Errorf("local JSON must be a regular file")
+	}
+	if st.Size() > 16<<20 {
+		return fmt.Errorf("local file exceeds 16 MiB")
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	st, err := f.Stat()
+	st, err = f.Stat()
 	if err != nil {
 		return err
 	}
-	if st.Size() > 16<<20 {
-		return fmt.Errorf("local file exceeds 16 MiB")
+	if !st.Mode().IsRegular() || st.Size() > 16<<20 {
+		return fmt.Errorf("local JSON is not a regular file under 16 MiB")
 	}
-	return json.NewDecoder(f).Decode(out)
+	// A file may grow between the checks and Decode.
+	return json.NewDecoder(io.LimitReader(f, (16<<20)+1)).Decode(out)
 }
 func (s store) config() (config, error) {
 	c := config{Version: formatVersion, Networks: map[string]profile{}}
@@ -395,9 +409,21 @@ func writeNewFile(path string, raw []byte) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if _, err := f.Write(raw); err != nil {
-		return err
+	n, writeErr := f.Write(raw)
+	if writeErr == nil && n != len(raw) {
+		writeErr = io.ErrShortWrite
 	}
-	return f.Sync()
+	if writeErr == nil {
+		writeErr = f.Sync()
+	}
+	closeErr := f.Close()
+	if writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		// An incomplete encrypted backup must not block a subsequent O_EXCL
+		// retry or be mistaken for a complete, durable backup.
+		_ = os.Remove(path)
+	}
+	return writeErr
 }

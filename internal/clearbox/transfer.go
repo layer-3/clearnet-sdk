@@ -52,6 +52,7 @@ func pools() any {
 // fixtures, represented as YELLOW base units per asset base unit.
 func feeFor(assets []eip712.TransferAsset) *big.Int {
 	fee := new(big.Int)
+	floor := big.NewInt(100000000000000)
 	for _, leg := range assets {
 		price := big.NewInt(1)
 		switch leg.Asset {
@@ -62,8 +63,8 @@ func feeFor(assets []eip712.TransferAsset) *big.Int {
 		}
 		part := new(big.Int).Mul(leg.Amount, price)
 		part.Div(part, big.NewInt(1000)) // Fixed 10 bps, rounded down per leg.
-		if part.Cmp(integer("100000000000000")) < 0 {
-			part.SetString("100000000000000", 10)
+		if part.Cmp(floor) < 0 {
+			part.Set(floor)
 		}
 		fee.Add(fee, part)
 	}
@@ -261,6 +262,7 @@ func (s *Server) seal(op *operation) {
 	hash, entryHash := block.Hash(), core.ComputeEntryHash(entry)
 	sender.LastBlock = hash
 	s.blocks = append(s.blocks, block)
+	s.blockByHash[hash] = block
 	receipt := &client.Receipt{OperationID: op.Status.OperationID, BlockHash: "0x" + hex.EncodeToString(hash[:]), EntryHash: "0x" + hex.EncodeToString(entryHash[:]), SealedAt: block.SealedAt, StateRoot: "0x" + hex.EncodeToString(block.StateRoot[:])}
 	op.Status.Status, op.Status.Receipt, op.Status.PendingUntil = "sealed", receipt, 0
 	item := client.TransferActivity{

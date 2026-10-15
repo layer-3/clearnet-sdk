@@ -44,9 +44,11 @@ are strings. Use decimal/integer arithmetic, never binary floating point.
 
 A nonzero exit may still carry an operation result. Pending (3) and unresolved
 (4) do not mean failed; only `state: sealed` with a matching receipt completes a
-payment. Every send carries an `--idempotency-key`; if a send is interrupted or
-output is missing, rerun the identical command with the same key, which returns
-the saved operation instead of paying twice. Never send without a key.
+payment. As a **skill policy**, always supply an `--idempotency-key` on sends;
+the CLI itself permits manual sends without one. If a send is interrupted or
+output is missing, rerun the identical command with the same key. It returns
+the saved operation without signing again when one exists; otherwise no earlier
+POST could have occurred. Never send without a key.
 
 Run CLI calls sequentially: one local storage lock also covers reads and time at
 prompts. Cache reviewed metadata within the task; refresh balance for live

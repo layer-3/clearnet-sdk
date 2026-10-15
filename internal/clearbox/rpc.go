@@ -137,7 +137,7 @@ func (s *Server) rpc(method string, params []json.RawMessage) (any, *rpcError) {
 			return "0x", nil
 		}
 	case "eth_getBlockByNumber":
-		if len(params) < 2 || len(params) > 3 {
+		if len(params) < 2 {
 			return bad("expected [account, block tag, optional full-transactions boolean]")
 		}
 		var raw, tag string
@@ -171,28 +171,34 @@ func (s *Server) rpc(method string, params []json.RawMessage) (any, *rpcError) {
 		}
 		return blockRPC(blocks[number-1], number), nil
 	case "eth_getBlockByHash":
-		if len(params) < 1 || len(params) > 2 {
+		if len(params) < 1 {
 			return bad("expected [block hash, optional full-transactions boolean]")
 		}
+		// Like eth_getBlockByNumber, the gateway accepts but ignores the
+		// full-transactions flag and any additional wallet parameters.
 		var raw string
-		var full bool
-		if json.Unmarshal(params[0], &raw) != nil || (len(params) == 2 && json.Unmarshal(params[1], &full) != nil) {
-			return bad("invalid block hash or full-transactions boolean")
+		if json.Unmarshal(params[0], &raw) != nil {
+			return bad("invalid block hash")
 		}
 		hash, err := hex.DecodeString(strings.TrimPrefix(raw, "0x"))
 		if err != nil || len(hash) != 32 {
 			return bad("invalid block hash")
 		}
-		for _, block := range s.blocks {
-			if common.Hash(block.Hash()) == common.BytesToHash(hash) {
-				for i, candidate := range s.accountBlocks(block.Entries[0].Account) {
-					if candidate == block {
-						return blockRPC(block, uint64(i+1)), nil
-					}
-				}
+		var key [32]byte
+		copy(key[:], hash)
+		block := s.blockByHash[key]
+		if block == nil {
+			return nil, nil
+		}
+		if len(block.Entries) == 0 {
+			return nil, &rpcError{-32007, "indexed account block has no entries"}
+		}
+		for i, candidate := range s.accountBlocks(block.Entries[0].Account) {
+			if candidate == block {
+				return blockRPC(block, uint64(i+1)), nil
 			}
 		}
-		return nil, nil
+		return nil, &rpcError{-32007, "indexed account block is missing"}
 	default:
 		return nil, &rpcError{-32601, "method " + method + " is not supported by clearbox"}
 	}

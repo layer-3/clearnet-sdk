@@ -76,6 +76,10 @@ console.log("Packed SDK: public exports, Solana preparation/signing/simulation, 
   run(process.execPath, ["smoke.mjs"], consumer);
   writeFileSync(join(consumer, "smoke.ts"), `
 import { solana, type SubmitDepositResult, type VaultDepositor, type DepositStatus, type SolanaSigner } from "@yellow-org/clearnet-sdk";
+import { GatewayClient, type TransferIntent } from "@yellow-org/clearnet-sdk/gateway";
+const gateway: GatewayClient = new GatewayClient({ baseUrl: "https://gateway.example", networkId: "YDEV" });
+const to: TransferIntent["to"] = "yellow://ynet/user/0x00000000000000000000000000000000000000bb";
+void [gateway, to];
 const connection: solana.Connection = new solana.Connection("http://127.0.0.1:8899");
 void connection;
 const result: SubmitDepositResult = { txHash: "tx", depositId: "deposit" };

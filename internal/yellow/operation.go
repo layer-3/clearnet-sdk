@@ -54,7 +54,7 @@ func (a *app) operationResult(op operation) error {
 		}
 		a.title(label)
 		fmt.Fprintln(a.out, "Operation", op.ID)
-		fmt.Fprintf(a.out, "Network   %s (%s)\nGateway   %s\nSender    %s\nNonce     %d\n", op.Profile.Name, op.Profile.NetworkID, clean(op.Profile.Gateway), op.Sender, op.Nonce)
+		fmt.Fprintf(a.out, "Network   %s (%s)\nGateway   %s\nSender    %s\nNonce     %d\n", clean(op.Profile.Name), clean(op.Profile.NetworkID), clean(op.Profile.Gateway), clean(op.Sender), op.Nonce)
 		if op.Receipt != nil {
 			fmt.Fprintf(a.out, "Block     %s\nEntry     %d\nSealed at %s\n", clean(op.Receipt.BlockHash), op.Receipt.EntryIndex, time.Unix(op.Receipt.SealedAt, 0).UTC().Format(time.RFC3339))
 		}
@@ -241,12 +241,11 @@ func (a *app) operationCommands() *cobra.Command {
 		if !neverSubmitted && !ended {
 			return fail(ExitUnknown, "operation %s is unresolved or still pending; the original gateway has not established an ended pending window without a seal. No replay sent", op.ID)
 		}
-		signer, key, close, err := a.unlock(ac)
+		_, key, close, err := a.unlockKey(ac)
 		if err != nil {
 			return err
 		}
 		defer close()
-		_ = signer
 		signed, err := decodeOperation(key, *op)
 		if err != nil {
 			return err

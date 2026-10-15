@@ -2,6 +2,7 @@ package clearbox
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,6 +66,11 @@ func TestSQLiteRestartDoesNotReseedAndRecoversPendingDelivery(t *testing.T) {
 	if err != nil || op.Status != "sealed" {
 		t.Fatalf("durable operation: %+v %v", op, err)
 	}
+	hashParam, _ := json.Marshal(op.Receipt.BlockHash)
+	indexed, rpcErr := reopened.rpc("eth_getBlockByHash", []json.RawMessage{hashParam})
+	if rpcErr != nil || indexed == nil {
+		t.Fatalf("reloaded block hash index: %+v, %v", indexed, rpcErr)
+	}
 	replay, err := c.SubmitTransfer(context.Background(), signed)
 	if err != nil || *replay.Receipt != *op.Receipt {
 		t.Fatalf("durable replay: %+v %v", replay, err)
@@ -76,6 +82,56 @@ func TestSQLiteRestartDoesNotReseedAndRecoversPendingDelivery(t *testing.T) {
 	}
 	if stat, err := os.Stat(path); err != nil || stat.Mode().Perm() != 0600 {
 		t.Fatal("local key database must be owner-only", err)
+	}
+}
+
+func TestExistingSQLiteDatabaseIsOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "clearbox.db")
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(Config{DatabasePath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	stat, err := os.Stat(path)
+	if err != nil || stat.Mode().Perm() != 0600 {
+		t.Fatalf("existing key database permissions = %v, %v, want 0600", stat, err)
+	}
+}
+
+func TestInvalidCheckpointFailsAtStartupRatherThanPanickingOnReads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "clearbox.db")
+	s, err := New(Config{DatabasePath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	if err := s.db.QueryRow("SELECT data FROM clearbox_state WHERE id = 1").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var stored checkpoint
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatal(err)
+	}
+	delete(stored.Accounts[s.SeedAddress].Balances, "YELLOW")
+	corrupt, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("UPDATE clearbox_state SET data = ? WHERE id = 1", corrupt); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := New(Config{DatabasePath: path}); err == nil {
+		reopened.Close()
+		t.Fatal("corrupt checkpoint was served instead of rejected")
 	}
 }
 

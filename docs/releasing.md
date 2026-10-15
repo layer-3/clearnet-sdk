@@ -73,7 +73,11 @@ The package bundles its Solana v1 client with patched JSON-RPC dependencies
 because npm consumers do not inherit this SDK's overrides. Prepack builds the
 SDK and prepares the bundled dependency manifest. Preserve this preparation
 when publishing the package, and keep the public `solana` namespace compatible
-with the transactions returned by the SDK.
+with the transactions returned by the SDK. npm 12.2.0 rejects packing this
+existing override-plus-bundle arrangement (`EBUNDLEOVERRIDE`); the release
+workflow uses Node 22 with npm 10. Do not bypass the newer guard or publish
+with npm 12 until the bundled dependency graph has been migrated and the packed
+consumer check passes under it.
 
 A maintainer with npm publishing access can then publish the verified package.
 
@@ -87,8 +91,11 @@ tests, checks that `cmd/yellow` imports no private Clearnet, custody, blockchain
 adapter or node p2p packages, and cross-compiles Linux/macOS/Windows amd64 and arm64
 archives with SHA-256 checksums. PR and branch checks retain these as the
 `yellow-cli` Actions artifact. Publishing the SDK release builds the exact tag and
-attaches archives and `SHA256SUMS` to that release. Release publication must follow
-normal SDK validation; this workflow does not tag or move tags.
+attaches archives and `SHA256SUMS` to that release only after the Go, TypeScript,
+web wallet, Forge, artifact and devnet integration workflows all pass on the
+release tag.
+Release publication must follow normal SDK validation; this workflow does not
+create or move tags.
 
 Before publishing, review `yellow help`, `yellow transfer send --help`,
 `yellow operation retry --help`, `yellow shell --help`, and the [CLI README](../cmd/yellow/README.md). Confirm help has

@@ -81,12 +81,23 @@ func TestTrustedProxyBoundaryAndBoundedVisitors(t *testing.T) {
 	}
 	// A stream of distinct clients cannot grow the visitor table indefinitely.
 	tokens, _ := configure(&Config{})
+	oldest := netip.AddrFrom4([4]byte{10, 0, 0, 1})
 	for i := 0; i < 2048; i++ {
 		ip := netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 1})
-		tokens.clients[ip] = &visitor{seen: time.Now()}
+		seen := time.Now()
+		if ip == oldest {
+			seen = seen.Add(-time.Minute) // old but not expired
+		}
+		tokens.clients[ip] = &visitor{seen: seen}
 	}
-	if tokens.allow(r) || len(tokens.clients) != 2048 {
-		t.Fatal("visitor table was not bounded")
+	if !tokens.allow(r) || len(tokens.clients) != 2048 {
+		t.Fatal("new clients must be admitted without growing the visitor table")
+	}
+	if _, ok := tokens.clients[oldest]; ok {
+		t.Fatal("the least-recently-seen visitor was not evicted")
+	}
+	if _, ok := tokens.clients[netip.MustParseAddr("127.0.0.1")]; !ok {
+		t.Fatal("the new visitor did not get a limiter bucket")
 	}
 }
 

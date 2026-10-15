@@ -128,8 +128,8 @@ function safeBig(v: string | undefined): bigint {
 export interface FeeEstimate {
   /** Estimated fee in YELLOW base units, or null if a leg has no price. */
   fee: bigint | null;
-  /** Suggested ceiling in YELLOW (decimal string). */
-  suggestedCap: string;
+  /** Suggested ceiling in YELLOW, or null when the fee cannot be estimated. */
+  suggestedCap: string | null;
 }
 
 /**
@@ -145,7 +145,7 @@ export function estimateFee(legs: TransferAsset[], assets: AssetInfo[], pools: P
   for (const leg of legs) {
     const asset = assets.find((a) => a.symbol === leg.asset);
     const v = asset ? toYellow(BigInt(leg.amount), asset, yellowDecimals, prices) : null;
-    if (v === null) return { fee: null, suggestedCap: "0.1" };
+    if (v === null) return { fee: null, suggestedCap: null };
     const raw = (v * FEE_BPS) / 10_000n;
     fee += raw > min ? raw : min;
   }

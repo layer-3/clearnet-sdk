@@ -67,7 +67,8 @@ export interface TransferIntent {
   networkId: string;
   chainId: number;
   from: `0x${string}`;
-  to: `0x${string}`;
+  /** Routed recipient. A canonical yellow:// URI signs its derived EIP-712 address slot. */
+  to: `0x${string}` | `yellow://${string}`;
   assets: TransferAsset[];
   /** Integer YELLOW base units. "0" authorizes no fee. */
   maxFee: string;
@@ -90,7 +91,8 @@ export interface Receipt {
   sealedAt: number;
   stateRoot: string;
   entryHash?: string;
-  operationId?: string;
+  /** Must match the signed intent; missing or mismatched IDs are not seals. */
+  operationId: string;
 }
 
 export type GatewayOperationStatus = "pending" | "sealed" | "rejected" | "unknown";

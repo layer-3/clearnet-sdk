@@ -44,8 +44,5 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: sdk/ts/package-lock.json
-      - name: Install SDK dependencies
-        run: npm ci
-        working-directory: sdk/ts
       - name: Go simulator, CLI recovery and TS client against one gateway
         run: make test-clearbox

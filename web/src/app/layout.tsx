@@ -8,11 +8,26 @@ import "./globals.css";
 const archivo = Archivo({ subsets: ["latin"], axes: ["wdth"], variable: "--font-archivo", display: "swap" });
 const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jetbrains", display: "swap", weight: ["400", "500"] });
 
+function metadataOrigin(raw: string | undefined): URL | undefined {
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+      throw new Error("not a web origin");
+    }
+    return url;
+  } catch {
+    throw new Error("NEXT_PUBLIC_SITE_URL must be an absolute HTTP(S) origin without credentials, path or query");
+  }
+}
+
+const siteOrigin = metadataOrigin(process.env.NEXT_PUBLIC_SITE_URL);
+
 export const metadata: Metadata = {
   title: { default: "Yellow", template: "%s · Yellow" },
   description: "Your account on Yellow Network. Hold, send and track assets that clear in one signature.",
   applicationName: "Yellow",
-  ...(process.env.NEXT_PUBLIC_SITE_URL && { metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL) }),
+  ...(siteOrigin && { metadataBase: siteOrigin }),
   openGraph: { title: "Yellow", description: "Your account on Yellow Network.", siteName: "Yellow", type: "website" },
 };
 

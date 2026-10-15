@@ -43,6 +43,12 @@ func (s *Server) openStorage(path string) error {
 		if err != nil {
 			return err
 		}
+		// The database contains a development private key. An existing file
+		// could have been created with broader permissions than OpenFile's mode.
+		if err := file.Chmod(0600); err != nil {
+			file.Close()
+			return err
+		}
 		if err := file.Close(); err != nil {
 			return err
 		}
@@ -100,10 +106,78 @@ func (s *Server) load() error {
 	if err != nil || crypto.PubkeyToAddress(key.PublicKey).Hex() != state.SeedAddress || state.Accounts[state.SeedAddress] == nil {
 		return fmt.Errorf("invalid stored local seed account; database has not been reset")
 	}
+	if err := validateCheckpoint(state); err != nil {
+		return fmt.Errorf("invalid clearbox checkpoint (database has not been reset): %w", err)
+	}
 	s.SeedAddress, s.SeedPrivateKey = state.SeedAddress, state.SeedPrivateKey
 	s.accounts, s.ops, s.order, s.nonceOwner, s.blocks = state.Accounts, state.Operations, state.Order, state.NonceOwner, state.Blocks
+	s.blockByHash = make(map[[32]byte]*core.Block, len(state.Blocks))
+	for _, block := range state.Blocks {
+		s.blockByHash[block.Hash()] = block
+	}
 	s.dirty = false
 	return nil
+}
+
+// validateCheckpoint refuses corrupt or incompatible state at startup rather
+// than panicking later during a balance read, block lookup or pending delivery.
+// A future catalogue change must migrate stored balances or bump the format.
+func validateCheckpoint(state checkpoint) error {
+	for address, a := range state.Accounts {
+		if a == nil || a.Balances == nil || a.Clearing == nil || a.Fees == nil || a.Fees.Sign() < 0 {
+			return fmt.Errorf("account %s has missing balances, clearing or fees", address)
+		}
+		for _, asset := range catalog {
+			balance, clearing := a.Balances[asset.Symbol], a.Clearing[asset.Symbol]
+			if balance == nil || clearing == nil || balance.Sign() < 0 || clearing.Sign() < 0 {
+				return fmt.Errorf("account %s has invalid %s balance or clearing (catalogue migration required)", address, asset.Symbol)
+			}
+		}
+	}
+	for id, op := range state.Operations {
+		if op == nil || op.Request.Nonce == nil || op.Status.OperationID != id || op.Status.Kind != "transfer" ||
+			(op.Status.Status != "pending" && op.Status.Status != "sealed") ||
+			(op.Status.Status == "sealed" && op.Status.Receipt == nil) ||
+			state.Accounts[op.From] == nil || state.Accounts[op.To] == nil || len(op.Request.Assets) == 0 {
+			return fmt.Errorf("operation %s has invalid state or missing accounts", id)
+		}
+		for _, leg := range op.Request.Assets {
+			amount, err := uint256(leg.Amount)
+			if err != nil || amount.Sign() <= 0 || !opFromCatalog(leg.Asset) {
+				return fmt.Errorf("operation %s has invalid asset %s amount", id, leg.Asset)
+			}
+		}
+	}
+	if len(state.Order) != len(state.Operations) {
+		return fmt.Errorf("operation order does not match stored operations")
+	}
+	seen := make(map[string]bool, len(state.Order))
+	for _, id := range state.Order {
+		if seen[id] || state.Operations[id] == nil {
+			return fmt.Errorf("operation order contains a duplicate or missing operation %s", id)
+		}
+		seen[id] = true
+	}
+	for owner, id := range state.NonceOwner {
+		if state.Operations[id] == nil {
+			return fmt.Errorf("nonce owner %s references missing operation %s", owner, id)
+		}
+	}
+	for i, block := range state.Blocks {
+		if block == nil || len(block.Entries) == 0 {
+			return fmt.Errorf("block %d has no entries", i)
+		}
+	}
+	return nil
+}
+
+func opFromCatalog(symbol string) bool {
+	for _, asset := range catalog {
+		if asset.Symbol == symbol {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) save() error {

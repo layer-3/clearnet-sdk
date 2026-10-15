@@ -24,6 +24,10 @@ jobs:
     name: TypeScript
     uses: ./.github/workflows/test-ts.yml
 
+  web:
+    name: Yellow Web
+    uses: ./.github/workflows/test-web.yml
+
   integration:
     name: Integration
     uses: ./.github/workflows/test-integration.yml

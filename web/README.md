@@ -67,7 +67,11 @@ Each network entry:
   (defaults to the site's relay when proxied, otherwise `<gateway>/rpc`). MetaMask only signs typed data for the active
   chain, so the app adds/switches to the Yellow chain before asking to sign.
 
-See `.env.example`. Invalid configuration fails the production build.
+See `.env.example`. Invalid configuration fails the production build. The app
+sets nosniff, referrer and frame protections, but does **not** ship an enforced
+Content Security Policy: the pre-paint scripts and wallet connectors need a
+nonce-based policy tested with the chosen WalletConnect deployment. Add that
+policy at the hosting edge before treating this as a hardened public wallet.
 
 ## How sending stays safe
 
@@ -83,6 +87,14 @@ The web app follows the CLI's operation journal rules (exported by the SDK):
    replays the identical signature only when the gateway confirms its window
    closed without a seal.
 
+The current production gateway does not report `pendingUntil`. After a genuine
+submission timeout, its `unknown` status cannot prove that a replay or a fresh
+nonce is safe. The transfer remains unresolved and blocks new sends from that
+account in this browser; contact the gateway operator for an authoritative
+outcome. IndexedDB holds the signed authorization **unencrypted** (never the
+wallet's private key); scripts on this origin can read and replay it at its
+original nonce. Clearing site data does **not** revoke a signed authorization.
+
 ## Scripts
 
 ```sh
@@ -94,3 +106,7 @@ pnpm build
 pnpm build && pnpm start -p 3200 &
 CLEARBOX_PRIVATE_KEY=<key-from-clearbox-initialization> BASE_URL=http://localhost:3200 pnpm shots
 ```
+
+`CLEARBOX_URL` optionally overrides the test gateway at `http://127.0.0.1:8080`
+when capturing screenshots. Use only the generated local test key; screenshots
+inject it into a throwaway browser session.

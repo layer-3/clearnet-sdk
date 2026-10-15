@@ -4,6 +4,7 @@ import {
   applySubmission,
   blockingOperation as blockingEntry,
   markSubmitting,
+  newOperationRecord,
   observeOperation,
   retryDecision,
   staleNonceOperation as staleNonceEntry,
@@ -35,6 +36,15 @@ const base: OperationRecord = {
 };
 
 describe("journal rules", () => {
+  it("copies the signed body before journaling it", () => {
+    const signed = { ...base.signed, intent: { ...base.signed.intent, assets: [{ asset: "YELLOW", amount: "1000" }] } };
+    const record = newOperationRecord(signed, "/api/mock", 1_000);
+    signed.intent.assets[0]!.amount = "9999";
+    signed.intent.to = "0x00000000000000000000000000000000000000cc";
+    expect(record.signed.intent.assets[0]!.amount).toBe("1000");
+    expect(record.signed.intent.to).toBe(base.signed.intent.to);
+  });
+
   it("requires a matching receipt to seal", () => {
     expect(observe(base, { operationId: ID, kind: "transfer", status: "sealed" }).error).toBeTruthy();
     const ok = observe(base, { operationId: ID, kind: "transfer", status: "sealed", receipt: { blockHash: "0x1", entryIndex: 0, sealedAt: 1, stateRoot: "0x", operationId: ID } });

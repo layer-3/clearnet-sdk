@@ -47,7 +47,9 @@ export function newOperationRecord(signed: SignedTransfer, gateway: string, now 
     state: "signed_unsubmitted",
     createdAt: now,
     updatedAt: now,
-    signed,
+    // Journal the exact authorization at this moment, not a mutable caller
+    // object that might be edited after the operation ID was derived.
+    signed: { ...signed, intent: { ...signed.intent, assets: signed.intent.assets.map((a) => ({ ...a })) } },
   };
 }
 

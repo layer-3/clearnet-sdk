@@ -98,13 +98,17 @@ type SignedTransfer struct {
 	Signature   string         `json:"signature"`
 }
 
+// Receipt is a verified seal. The operation ID is required: SubmitTransfer and
+// operation reconciliation refuse a receipt not bound to the signed intent.
+// Other gateways must supply it even though the production gateway's own JSON
+// struct uses omitempty (its sealed response always fills the field).
 type Receipt struct {
 	BlockHash   string `json:"blockHash"`
 	EntryIndex  uint64 `json:"entryIndex"`
 	SealedAt    int64  `json:"sealedAt"`
 	StateRoot   string `json:"stateRoot"`
 	EntryHash   string `json:"entryHash,omitempty"`
-	OperationID string `json:"operationId,omitempty"`
+	OperationID string `json:"operationId"`
 }
 
 type OperationStatus struct {

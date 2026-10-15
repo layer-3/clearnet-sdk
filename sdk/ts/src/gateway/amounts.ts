@@ -2,6 +2,7 @@
 // the CLI's displayUnits; never uses floating point for amounts.
 
 const MAX_UINT256 = (1n << 256n) - 1n;
+const MAX_DECIMALS = 77; // 10^77 fits in uint256.
 
 export class AmountError extends Error {
   constructor(message: string) {
@@ -14,7 +15,14 @@ export class AmountError extends Error {
  * Converts a human decimal amount ("1.25") to integer base units.
  * Accepts digits with one optional "." separator; no sign, exponent, or grouping.
  */
+function checkDecimals(decimals: number) {
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > MAX_DECIMALS) {
+    throw new AmountError("Asset decimals must be an integer between 0 and 77.");
+  }
+}
+
 export function toBaseUnits(amount: string, decimals: number): bigint {
+  checkDecimals(decimals);
   if (amount === "") throw new AmountError("Enter an amount.");
   const parts = amount.split(".");
   if (parts.length > 2 || parts[0] === "") throw new AmountError("Enter a number like 12.5.");
@@ -53,6 +61,7 @@ export function normalizeAmountInput(raw: string): string {
 
 /** Exact decimal string with trailing zeros trimmed (CLI displayUnits). */
 export function fromBaseUnits(raw: string | bigint, decimals: number): string {
+  checkDecimals(decimals);
   let v: bigint;
   try {
     v = typeof raw === "bigint" ? raw : BigInt(raw);

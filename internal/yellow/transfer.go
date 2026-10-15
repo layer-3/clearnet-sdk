@@ -121,10 +121,10 @@ func (a *app) balanceCommand() *cobra.Command {
 	return command
 }
 func parseAssets(raw []string, metadata []client.AssetInfo) ([]client.TransferAmount, error) {
-	known := map[string]uint8{}
+	known := map[string]bool{}
 	var names []string
 	for _, asset := range metadata {
-		known[asset.Symbol] = asset.Decimals
+		known[asset.Symbol] = true
 		names = append(names, asset.Symbol)
 	}
 	seen := map[string]bool{}
@@ -134,21 +134,13 @@ func parseAssets(raw []string, metadata []client.AssetInfo) ([]client.TransferAm
 	}
 	for _, leg := range raw {
 		symbol, amount, ok := strings.Cut(leg, "=")
-		d, exists := known[symbol]
-		if !ok || !exists {
+		if !ok || !known[symbol] {
 			return nil, fail(ExitInput, "use --asset SYMBOL=AMOUNT; available assets: %s", strings.Join(names, ", "))
 		}
 		if seen[symbol] {
 			return nil, fail(ExitInput, "asset %s appears twice; combine it into one amount", symbol)
 		}
 		seen[symbol] = true
-		units, err := client.AmountInBaseUnits(amount, d)
-		if err != nil {
-			return nil, fail(ExitInput, "%s: %s", symbol, err)
-		}
-		if units.Sign() == 0 {
-			return nil, fail(ExitInput, "%s transfer amount must be greater than zero", symbol)
-		}
 		assets = append(assets, client.TransferAmount{Asset: symbol, Amount: amount})
 	}
 	return assets, nil
@@ -157,7 +149,7 @@ func (a *app) reviewTransfer(p profile, name string, intent *client.TransferInte
 	writeReview(a.diag, "Review transfer", p, name, intent)
 }
 func writeReview(w io.Writer, title string, p profile, name string, intent *client.TransferIntent) {
-	fmt.Fprintf(w, "\n%s\n  Network    %s (%s)\n  Gateway    %s\n  Sender     %s · %s\n  Recipient  %s\n  Nonce      %d\n", title, p.Name, p.NetworkID, clean(p.Gateway), name, intent.From, intent.To, intent.Nonce)
+	fmt.Fprintf(w, "\n%s\n  Network    %s (%s)\n  Gateway    %s\n  Sender     %s · %s\n  Recipient  %s\n  Nonce      %d\n", title, clean(p.Name), clean(p.NetworkID), clean(p.Gateway), clean(name), clean(intent.From), clean(intent.To), intent.Nonce)
 	decimals := assetDecimals(p)
 	for _, asset := range intent.Assets {
 		fmt.Fprintf(w, "  %-10s %s · %s base units\n", asset.Asset, displayUnits(asset.Amount, decimals[asset.Asset]), asset.Amount)
@@ -180,6 +172,9 @@ func baseUnitLegs(p profile, assets []client.TransferAmount, maxFee string) ([]c
 		units, err := client.AmountInBaseUnits(v.Amount, decimals[v.Asset])
 		if err != nil {
 			return nil, "", fail(ExitInput, "%s: %s", v.Asset, err)
+		}
+		if units.Sign() == 0 {
+			return nil, "", fail(ExitInput, "%s transfer amount must be greater than zero", v.Asset)
 		}
 		legs = append(legs, client.TransferAsset{Asset: v.Asset, Amount: units.String()})
 	}
@@ -275,7 +270,9 @@ func (a *app) transferCommands() *cobra.Command {
 			return err
 		}
 		hash := requestHash(p, recipient, baseLegs, fee)
-		if idempotencyKey != "" {
+		// Dry-run describes the live request; it never returns an earlier saved
+		// operation just because its idempotency key matches.
+		if !dryRun && idempotencyKey != "" {
 			for _, op := range ac.Operations {
 				if op.IdempotencyKey != idempotencyKey || op.Profile.NetworkID != p.NetworkID {
 					continue

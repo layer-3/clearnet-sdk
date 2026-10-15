@@ -161,7 +161,9 @@ did not execute. An operator may explicitly resubmit the **same** retained
 `SignedTransfer` after its pending window; the SDK never retries a POST or
 obtains a new nonce automatically. The
 Go client intentionally excludes deposits, withdrawals, swaps, WebSocket
-subscriptions and key storage. The standalone [Yellow CLI](cmd/yellow/README.md) owns
+subscriptions and key storage. The separate `pkg/eip712` package exposes pure
+Swap/Withdrawal digest and signing helpers for integrations, but `pkg/client`
+does not submit those operations. The standalone [Yellow CLI](cmd/yellow/README.md) owns
 local account storage and safe transfer recovery under `cmd/yellow`.
 
 Run the Go checks:

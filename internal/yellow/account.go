@@ -88,7 +88,6 @@ func (a *app) unlockKey(ac *accountFile) (*ecdsa.PrivateKey, []byte, func(), err
 		return nil, nil, nil, err
 	}
 	private, err := secretKey(sec)
-	sec.Value = ""
 	if err != nil {
 		clear(key)
 		return nil, nil, nil, err
@@ -239,7 +238,6 @@ func (a *app) backupAgent(ac *accountFile) (*accountFile, error) {
 		return nil, err
 	}
 	defer clear(oldKey)
-	defer func() { sec.Value = "" }()
 	newPass, err := a.newPassphrase()
 	if err != nil {
 		return nil, err
@@ -424,12 +422,11 @@ func (a *app) accountCommands() *cobra.Command {
 				return err
 			}
 		} else {
-			signer, _, close, err := a.unlock(ac)
+			_, _, close, err := a.unlockKey(ac)
 			if err != nil {
 				return err
 			}
 			defer close()
-			_ = signer
 		}
 		// Backups retain encrypted operation authorizations for crash recovery.
 		raw, err := json.MarshalIndent(backup, "", "  ")

@@ -3,7 +3,7 @@
 // Durable, cross-tab journal of signed transfers in IndexedDB. Every write is
 // awaited before the next protocol step (sign -> save -> mark -> POST).
 
-import { createStore, del, entries as idbEntries, get, set, type UseStore } from "idb-keyval";
+import { createStore, entries as idbEntries, get, update, type UseStore } from "idb-keyval";
 import { isFinalOperationState } from "@yellow-org/clearnet-sdk/gateway";
 import type { JournalEntry } from "./copy";
 
@@ -73,22 +73,20 @@ export const journal = {
     return get<JournalEntry>(id, db());
   },
   /**
-   * Durably writes an entry. Throws if the browser refused the write. A record
-   * that is already final is never downgraded: a stale poll must not turn a
-   * sealed transfer back into a pending or unknown one.
+   * Durably writes an entry. The final-state guard and write share one IDB
+   * readwrite transaction: a stale response in another tab cannot interleave
+   * a get/set and turn a sealed transfer back into a pending one.
    */
   async put(entry: JournalEntry): Promise<void> {
-    const stored = await get<JournalEntry>(entry.id, db());
-    if (stored && isFinalOperationState(stored.state) && !isFinalOperationState(entry.state)) return;
-    await set(entry.id, entry, db());
+    await update<JournalEntry>(entry.id, (stored) => {
+      if (stored?.state === "sealed" && entry.state !== "sealed") return stored;
+      if (stored && isFinalOperationState(stored.state) && !isFinalOperationState(entry.state)) return stored;
+      return entry;
+    }, db());
     const check = await get<JournalEntry>(entry.id, db());
-    if (!check || check.state !== entry.state) throw new Error("This browser didn't save the transfer record.");
-    await reload();
-    channel?.postMessage("changed");
-  },
-  /** Drops a saved record. Only safe for an authorization that was never sent. */
-  async remove(id: string): Promise<void> {
-    await del(id, db());
+    if (!check || (check.state !== entry.state && !isFinalOperationState(check.state))) {
+      throw new Error("This browser didn't save the transfer record.");
+    }
     await reload();
     channel?.postMessage("changed");
   },

@@ -5,10 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/layer-3/clearnet-sdk/pkg/abiutil"
 	"github.com/layer-3/clearnet-sdk/pkg/sign"
 )
 
@@ -35,16 +32,12 @@ func SwapDigest(chainID *big.Int, assetIn, assetOut string, amountIn, minAmountO
 	if amountIn.Sign() == 0 {
 		return [32]byte{}, fmt.Errorf("amountIn must be positive")
 	}
-	args := abi.Arguments{
-		{Type: abiutil.Bytes32}, {Type: abiutil.Bytes32}, {Type: abiutil.Bytes32},
-		{Type: abiutil.Uint256}, {Type: abiutil.Uint256}, {Type: abiutil.Uint256}, {Type: abiutil.Uint64},
-	}
-	packed, err := args.Pack(SwapTypeHash, crypto.Keccak256Hash([]byte(assetIn)), crypto.Keccak256Hash([]byte(assetOut)), amountIn, minAmountOut, maxFee, nonce)
+	structHash, err := swapStructHash(assetIn, assetOut, amountIn, minAmountOut, maxFee, nonce)
 	if err != nil {
 		return [32]byte{}, err
 	}
 	var digest [32]byte
-	copy(digest[:], Digest(ComputeDomainSeparator(chainID), crypto.Keccak256Hash(packed)))
+	copy(digest[:], Digest(ComputeDomainSeparator(chainID), structHash))
 	return digest, nil
 }
 
@@ -63,16 +56,12 @@ func WithdrawalDigest(chainID *big.Int, asset string, amount *big.Int, targetCha
 	if amount.Sign() == 0 {
 		return [32]byte{}, fmt.Errorf("withdrawal amount must be positive")
 	}
-	args := abi.Arguments{
-		{Type: abiutil.Bytes32}, {Type: abiutil.Bytes32}, {Type: abiutil.Uint256},
-		{Type: abiutil.Uint256}, {Type: abiutil.Address}, {Type: abiutil.Uint256}, {Type: abiutil.Uint64},
-	}
-	packed, err := args.Pack(WithdrawalTypeHash, crypto.Keccak256Hash([]byte(asset)), amount, new(big.Int).SetUint64(targetChainID), recipient, maxFee, nonce)
+	structHash, err := withdrawalStructHash(asset, amount, targetChainID, recipient, maxFee, nonce)
 	if err != nil {
 		return [32]byte{}, err
 	}
 	var digest [32]byte
-	copy(digest[:], Digest(ComputeDomainSeparator(chainID), crypto.Keccak256Hash(packed)))
+	copy(digest[:], Digest(ComputeDomainSeparator(chainID), structHash))
 	return digest, nil
 }
 

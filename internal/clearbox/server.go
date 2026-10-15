@@ -90,6 +90,7 @@ type Server struct {
 	order          []string
 	nonceOwner     map[string]string
 	blocks         []*core.Block
+	blockByHash    map[[32]byte]*core.Block // derived account-block index, rebuilt from the checkpoint
 }
 
 func New(cfg Config) (*Server, error) {
@@ -100,7 +101,7 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, traffic: traffic, inflight: make(chan struct{}, 16), now: time.Now, accounts: make(map[string]*account), ops: make(map[string]*operation), nonceOwner: make(map[string]string)}
+	s := &Server{cfg: cfg, traffic: traffic, inflight: make(chan struct{}, 16), now: time.Now, accounts: make(map[string]*account), ops: make(map[string]*operation), nonceOwner: make(map[string]string), blockByHash: make(map[[32]byte]*core.Block)}
 	if err := s.openStorage(cfg.DatabasePath); err != nil {
 		return nil, err
 	}
@@ -126,8 +127,13 @@ func (s *Server) createAccount(address string) *account {
 	return a
 }
 
+// integer is for fixed fixtures and amounts already checked by uint256 or
+// checkpoint loading. Invalid internal data is a programming error, not zero.
 func integer(raw string) *big.Int {
-	v, _ := new(big.Int).SetString(raw, 10)
+	v, ok := new(big.Int).SetString(raw, 10)
+	if !ok {
+		panic("clearbox: invalid internal integer")
+	}
 	return v
 }
 
@@ -230,7 +236,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Restrict Host as well as the listener so DNS rebinding cannot turn the
 	// local gateway into an endpoint accessible from an arbitrary site.
 	if s.cfg.PublicURL == "" && !localHost(r.Host) {
-		fail(w, 403, -32003, "clearbox accepts only a loopback Host", "")
+		fail(w, 403, -32600, "clearbox accepts only a loopback Host", "")
 		return
 	}
 	if s.cfg.PublicURL != "" {
@@ -239,7 +245,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if origin := r.Header.Get("Origin"); origin != "" {
 		u, err := url.Parse(origin)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !localHost(u.Host) {
-			fail(w, 403, -32003, "clearbox accepts only local browser origins", "")
+			fail(w, 403, -32600, "clearbox accepts only local browser origins", "")
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)

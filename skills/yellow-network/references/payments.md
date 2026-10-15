@@ -35,6 +35,8 @@ higher amount. If the request is ambiguous, ask before sending.
    balance is short, tell the user how much to add; do not split or shrink it.
 3. Choose an idempotency key for this payment, unique to the user's intent (for
    example `pay-<recipient-suffix>-<short-id>`), and keep it for the whole task.
+   The flag is optional in the CLI, but **required for payments made by this
+   skill** so an interrupted command can be identified without signing again.
 4. Optionally preview with `--dry-run`: it returns the exact assets, base units,
    fee cap and live nonce, and signs nothing.
 5. Send once:

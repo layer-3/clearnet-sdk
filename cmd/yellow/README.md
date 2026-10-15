@@ -52,7 +52,8 @@ Imported mnemonics use `m/44'/60'/0'/0/0`, Ethereum index zero, with no BIP-39
 extension passphrase. `account import` asks whether you have recovery words, a
 raw secp256k1 key, or an encrypted Yellow backup. Secret input is hidden. Importing
 a backup asks for its existing passphrase and a new local passphrase, preserving
-all saved authorizations and unresolved states. Duplicate local signing addresses
+all saved authorizations and unresolved states. The backup must be a regular file,
+not a symlink or pipe. Duplicate local signing addresses
 are refused so two aliases cannot bypass nonce reservations.
 
 ## Import an account by private key
@@ -160,9 +161,11 @@ account backup personal --out 'my account backup.json'
 ```
 
 The prompt parses arguments without executing a system shell. Variables, pipes,
-redirection and command substitution are treated as literal input. Pasted text
-never runs automatically; pasted line breaks become spaces. Results remain in
-normal terminal scrollback, and the prompt adapts when you resize the terminal.
+redirection and command substitution are treated as literal input. On terminals
+with bracketed-paste support, pasted line breaks become spaces and do not run a
+command. Without bracketed paste, a pasted newline may act as Enter: paste one
+line at a time. Results remain in normal terminal scrollback, and the prompt
+adapts when you resize the terminal.
 `--no-color` and `NO_COLOR` disable colors. Interrupting the process cancels
 any running command and closes the shell; saved transfer authorizations remain in
 the journal.
@@ -213,8 +216,9 @@ uint256 overflow are refused. `--max-fee` is required and denominated in YELLOW:
 Yellow asks you to unlock, then shows the network, gateway, full sender and
 recipient, sorted assets, base units, live nonce and fee cap for approval. It signs
 once, encrypts and durably saves the exact authorization, then sends one POST.
-There are no automatic submission retries or redirects. `--wait` polls status; it
-never resubmits. Human results go to stdout, while prompts and diagnostics go to
+There are no automatic submission retries or redirects. `--wait` polls status
+once per second (a wait shorter than one second may make no query); it never
+resubmits. Human results go to stdout, while prompts and diagnostics go to
 stderr. For personal accounts, secret input and approval require an interactive
 terminal, including with `--json`. Agent accounts sign without prompts; see
 [Scripts and agents](#scripts-and-agents).
@@ -233,7 +237,11 @@ All unresolved authorizations remain in the journal and block new sends by that
 account on the same network, even when another gateway profile is selected.
 An advanced nonce, changed balance, or another gateway's `unknown` cannot resolve
 an operation. Yellow never silently deletes the journal or re-signs an unresolved
-transfer at a new nonce.
+transfer at a new nonce. The current production gateway does not supply
+`pendingUntil`; an uncertain submitted transfer therefore cannot be replayed or
+cleared through this CLI after it reports `unknown`. Ask the gateway operator
+to establish its final outcome. Do not edit or delete the journal: losing the
+local record does not revoke the signature.
 
 ```sh
 yellow operation list
@@ -326,7 +334,9 @@ Failures use `{"version":1,"error":"…","exitCode":2}`. Every executed data com
 returns one JSON object; help and generated completion scripts remain text.
 Keys, recovery words, passphrases and signed payloads are never emitted as JSON. Prompts
 remain on stderr. A personal account's approval cannot be bypassed by `--json` or
-piped input. `yellow --json schema` describes every command and option.
+piped input. `yellow --json schema` describes the public data commands,
+their local flags and global options; built-in help and shell completion are
+excluded.
 
 | Exit | Meaning |
 | --- | --- |
@@ -442,7 +452,11 @@ operation ID, sender, nonce, original profile and creation time. Unix directorie
 use mode 0700 and files 0600. Windows stores files inside your user profile;
 Windows permissions follow that directory's ACLs. Atomic writes sync data and
 replace the destination, with directory sync on Unix and write-through replacement
-on Windows. Backups commit a fully written file exclusively, refusing overwrite.
+on Windows. Backups prefer an exclusive hard link to a fully synced temporary
+file, refusing overwrite. On filesystems without hard-link support, export falls
+back to exclusive create and fsync: it still refuses overwrite, but a power loss
+mid-write can leave an incomplete backup. Prefer a local filesystem for backup
+creation, then copy the completed encrypted file to removable media.
 OS file locks serialize local commands, preventing conflicting nonce reservations,
 and release on process exit or crash. Unlock holds keys only during the command;
 Go cannot guarantee erasure of every temporary copy of a secret in memory.

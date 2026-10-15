@@ -97,6 +97,12 @@ func (t *traffic) allow(r *http.Request) bool {
 	ip := t.clientIP(r)
 	v := t.clients[ip]
 	if v == nil {
+		// Avoid evicting a visitor for a request the global limiter will
+		// reject. Do not consume a global token for requests already over
+		// their existing per-IP limit.
+		if t.global.Tokens() < 1 {
+			return false
+		}
 		if len(t.clients) >= 2048 {
 			for key, old := range t.clients {
 				if time.Since(old.seen) > 10*time.Minute {
@@ -105,7 +111,17 @@ func (t *traffic) allow(r *http.Request) bool {
 			}
 		}
 		if len(t.clients) >= 2048 {
-			return false
+			// Keeping a full table forever would deny every new client even when
+			// the global request limiter still has capacity. Evict the oldest
+			// bucket rather than permanently locking out new addresses.
+			var oldest netip.Addr
+			var oldestSeen time.Time
+			for key, old := range t.clients {
+				if !oldest.IsValid() || old.seen.Before(oldestSeen) {
+					oldest, oldestSeen = key, old.seen
+				}
+			}
+			delete(t.clients, oldest)
 		}
 		v = &visitor{limiter: rate.NewLimiter(t.perIP, int(2*t.perIP))}
 		t.clients[ip] = v

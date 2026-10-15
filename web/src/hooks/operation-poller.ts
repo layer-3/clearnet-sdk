@@ -22,6 +22,7 @@ export function useOperationPoller() {
     if (!key) return;
     let stopped = false;
     let running = false;
+    const controller = new AbortController();
     const tick = async () => {
       // A slow gateway must not stack ticks on top of each other.
       if (running) return;
@@ -31,7 +32,7 @@ export function useOperationPoller() {
           if (stopped || isFinalOperationState(entry.state) || entry.submittedAt === undefined) continue;
           try {
             const fingerprint = findNetwork(entry.networkSlug)?.fingerprint;
-            const status = await clientFor(entry.gateway, entry.networkId, fingerprint).operation(entry.id);
+            const status = await clientFor(entry.gateway, entry.networkId, fingerprint).operation(entry.id, controller.signal);
             const { record, error } = observeOperation(entry, status);
             if (!error && (record.state !== entry.state || record.receipt !== entry.receipt)) {
               await journal.put(record);
@@ -50,6 +51,7 @@ export function useOperationPoller() {
     const id = window.setInterval(tick, 3_000);
     return () => {
       stopped = true;
+      controller.abort();
       window.clearInterval(id);
     };
   }, [key, queryClient]);

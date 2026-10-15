@@ -64,6 +64,13 @@ const result = await gateway.submitTransfer(signed);         // sealed (receipt)
 
 Wallets that enforce "domain chain ID equals active chain" (MetaMask) need the
 Yellow chain active before signing. Its chain ID is `networkChainId(networkId)`.
+`prepareTransfer` resolves a pasted user URI to its account address before
+signing. For an externally prepared Go intent that retains a canonical
+`yellow://` recipient, `transferTypedData` instead signs the first 20 bytes of
+`keccak256(uri)` in the EIP-712 `to` slot, exactly like the Go SDK, while the
+routed request keeps the original URI. If your app signs one of these raw URI
+intents, show the full URI to the user before requesting the wallet signature:
+the wallet displays the derived address, not the human-readable URI.
 
 Submission never retries automatically: a timeout can happen after the network
 included the transfer. Persist the signed transfer before posting and follow

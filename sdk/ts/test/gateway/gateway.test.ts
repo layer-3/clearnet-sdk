@@ -15,6 +15,7 @@ import {
   SubmissionError,
   toBaseUnits,
   transferOperationId,
+  transferRecipientSlot,
   transferTypedData,
   VIRTUAL_ROUTER,
   type NetworkInfo,
@@ -43,6 +44,16 @@ describe("eip712", () => {
     expect(transferOperationId(golden)).toBe("0x6584fcefdda0d7cd8a6e664361851647fcc942bec3d39ae0fc0329646451165f");
   });
 
+  it("matches the Go SDK's canonical URI recipient and operation ID", () => {
+    const uri = "yellow://ynet/user/0x00000000000000000000000000000000000000bb" as const;
+    const intent: TransferIntent = { ...golden, to: uri };
+    expect(transferTypedData(intent).message.to).toBe(transferRecipientSlot(uri));
+    expect(transferRecipientSlot(uri)).not.toBe(golden.to);
+    expect(transferOperationId(intent)).toBe("0x01440c9c01d11dbc51566065cb6d27d89647992df4ea4a6d98ee6c865ad6bfb9");
+    expect(() => transferRecipientSlot("yellow://ynet/node/nope")).toThrow(/node ID/);
+    expect(() => transferRecipientSlot("yellow://ynet/treasury/notreal")).toThrow(/treasury/);
+  });
+
   it("rejects unsorted asset legs", () => {
     const bad = { ...golden, assets: [{ asset: "YELLOW", amount: "1" }, { asset: "ETH", amount: "1" }] };
     expect(() => transferTypedData(bad)).toThrow(/sorted/);
@@ -51,6 +62,7 @@ describe("eip712", () => {
   it("resolves recipients like the CLI", () => {
     const addr = "0x236eB848C95b231299B4AA9f56c73D6893462720";
     expect(resolveRecipient(addr.toLowerCase())).toBe(addr);
+    expect(resolveRecipient(addr.slice(2).toLowerCase())).toBe(addr);
     expect(resolveRecipient(`  yellow://ynet/user/${addr.toLowerCase()} `)).toBe(addr);
     expect(() => resolveRecipient("yellow://ynet/pool/eth")).toThrow(/user account/);
     expect(() => resolveRecipient("0x0000000000000000000000000000000000000000")).toThrow(/zero/);
@@ -75,6 +87,8 @@ describe("amounts", () => {
     expect(() => toBaseUnits("1.1234567", 6)).toThrow(/6 decimal/);
     expect(() => toBaseUnits("-1", 6)).toThrow();
     expect(() => toBaseUnits("1e3", 6)).toThrow();
+    expect(() => toBaseUnits("1", 1000000000)).toThrow(AmountError);
+    expect(() => fromBaseUnits("1", -1)).toThrow(AmountError);
   });
 
   it("formats exactly", () => {
@@ -179,6 +193,24 @@ describe("GatewayClient", () => {
     const result = await c.submitTransfer(signed);
     expect(result.status).toBe("sealed");
     expect(posted).toMatchObject({ nonce: 4, maxFee: "100000000000000000", to: expect.stringMatching(/^0x0{38}bb$/i) });
+  });
+
+  it("binds and submits an externally signed canonical URI intent unchanged", async () => {
+    const uri = "yellow://ynet/user/0x00000000000000000000000000000000000000bb" as const;
+    const intent: TransferIntent = { ...golden, from: account.address, to: uri };
+    let posted: Record<string, unknown> | undefined;
+    let expectedId = "";
+    const c = new GatewayClient({
+      baseUrl: "https://gw.test", networkId: "YDEV",
+      fetch: fakeFetch((_url, init) => {
+        posted = JSON.parse(String(init?.body));
+        return { status: 202, body: { operationId: expectedId, kind: "transfer", status: "pending" } };
+      }),
+    });
+    const signed = await c.finalizeSignature(intent, await account.signTypedData(transferTypedData(intent)));
+    expectedId = signed.operationId;
+    expect((await c.submitTransfer(signed)).status).toBe("pending");
+    expect(posted).toMatchObject({ to: uri, nonce: 7, maxFee: "100" });
   });
 
   it("classifies submission outcomes", async () => {
