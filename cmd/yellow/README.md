@@ -21,6 +21,10 @@ Use the included `SHA256SUMS` to verify your download.
 
 ## First run
 
+For development without a live network, start the SDK's [local clearbox
+gateway](../clearbox/README.md). It shares balances and history with the web app
+and generates a local test account on first initialization. Use that key only for local tests.
+
 Use the gateway URL and four-byte network ID supplied by your network operator.
 The following URL is an example, not a running gateway:
 

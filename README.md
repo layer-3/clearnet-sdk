@@ -9,6 +9,8 @@ This repository currently contains:
 - a TypeScript package under `sdk/ts`, published/imported as
   `@yellow-org/clearnet-sdk`;
 - Docker-backed local devnet tooling for Go and TypeScript integration tests.
+- a [local clearbox gateway](cmd/clearbox/README.md) shared by the Yellow CLI and
+  web app, with a generated test account and SQLite persistence and no external infrastructure.
 
 The Go SDK is the broader backend-facing SDK. The TypeScript SDK currently
 focuses on browser and application deposit flows for EVM, Solana, XRPL, and Bitcoin.
@@ -49,6 +51,7 @@ mechanical rather than a fresh audit.
 | Path | Purpose |
 |---|---|
 | `cmd/yellow`, `internal/yellow` | Public account, balance, transfer and recovery CLI. See [the user guide](cmd/yellow/README.md). |
+| `cmd/clearbox`, `internal/clearbox` | Yellow account/transfer simulator for development. See [setup and local test-key precautions](cmd/clearbox/README.md). |
 | `skills/yellow-network` | Agent skill for efficient CLI queries, human-approved payments and safe operation recovery. See [installation and use](cmd/yellow/README.md#scripts-and-agents). |
 | `pkg/wallet` | Public BIP-39/BIP-32 Ethereum index-zero key derivation. |
 | `pkg/core` | Shared Clearnet data types, operations, transaction references, deposit destinations, and adapter interfaces. |

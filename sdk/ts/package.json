@@ -31,6 +31,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "test:core": "vitest run test/core",
+    "test:clearbox": "vitest run --mode integration test/gateway/clearbox.integration.test.ts",
     "test:evm": "vitest run test/blockchain/evm",
     "test:sol": "vitest run test/blockchain/sol",
     "test:xrpl": "vitest run test/blockchain/xrpl test/examples/xrpl-deposit",
