@@ -9,8 +9,8 @@ const assets: AssetInfo[] = [
   { symbol: "YELLOW", chainId: 1, address: "0x2", decimals: 18, native: false },
 ];
 const pools = [
-  { poolId: "eth", tokenA: "ETH", tokenB: "YELLOW", spotPrice: "24850" },
-  { poolId: "usdc", tokenA: "USDC", tokenB: "YELLOW", spotPrice: "10" },
+  { poolId: "eth", tokenA: "ETH", tokenB: "YELLOW", spotPrice: "24850000000000000000000", transferPrice: "24850" },
+  { poolId: "usdc", tokenA: "USDC", tokenB: "YELLOW", spotPrice: "10000000000000000000000000000000", transferPrice: "10000000000000" },
 ];
 const E18 = 10n ** 18n;
 const balance: Balance = {
@@ -65,15 +65,25 @@ describe("portfolio", () => {
     expect(cap).toMatch(/^\d+(\.\d+)?$/);
   });
 
-  it("ignores implausibly scaled pool prices", () => {
-    const scaled = [{ poolId: "eth", tokenA: "ETH", tokenB: "YELLOW", spotPrice: "24850000000000000000000" }];
-    expect(buildPortfolio(assets, balance, scaled).holdings.find((h) => h.asset.symbol === "ETH")?.yellowValue).toBeNull();
-    expect(estimateFee([{ asset: "ETH", amount: "1" }], assets, scaled).fee).toBeNull();
+  it("values production fixed-point prices and uses a distinct EMA for fees", () => {
+    const production = [{ ...pools[0]!, transferPrice: "20000" }];
+    expect(toYellow(E18, assets[0]!, priceMap(production))).toBe(24850n * E18);
+    expect(estimateFee([{ asset: "ETH", amount: E18.toString() }], assets, production).fee).toBe(20n * E18);
+    expect(estimateFee([{ asset: "ETH", amount: "1" }], assets, [{ ...pools[0]!, transferPrice: undefined }]).fee).toBeNull();
   });
 
-  it("inverts YELLOW-quoted pool prices exactly", () => {
-    const quoted = [{ poolId: "yellow-usdc", tokenA: "YELLOW", tokenB: "USDC", spotPrice: "0.25" }];
-    expect(toYellow(1_000_000n, assets[1]!, 18, priceMap(quoted))).toBe(4n * E18);
+  it("rejects malformed, zero and oversized price fields", () => {
+    for (const raw of ["1.25", "-1", "0", "1e18", "9".repeat(100), (2n ** 256n).toString()]) {
+      const invalid = [{ ...pools[0]!, spotPrice: raw, transferPrice: raw }];
+      expect(toYellow(E18, assets[0]!, priceMap(invalid))).toBeNull();
+      expect(estimateFee([{ asset: "ETH", amount: E18.toString() }], assets, invalid).fee).toBeNull();
+    }
+  });
+
+  it("inverts YELLOW-quoted base-unit prices exactly across different decimals", () => {
+    // 0.25 USDC per YELLOW: 250000 / 1e18 * 1e18 = 250000.
+    const quoted = [{ poolId: "yellow-usdc", tokenA: "YELLOW", tokenB: "USDC", spotPrice: "250000" }];
+    expect(toYellow(1_000_000n, assets[1]!, priceMap(quoted))).toBe(4n * E18);
   });
 });
 

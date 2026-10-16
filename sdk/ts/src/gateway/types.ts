@@ -64,6 +64,8 @@ export interface TransferAmount {
 }
 
 export interface TransferIntent {
+  /** Metadata used for conversion; a local guard, outside the EIP-712 payload. */
+  catalogueFingerprint: string;
   networkId: string;
   chainId: number;
   from: `0x${string}`;
@@ -102,7 +104,8 @@ export interface OperationStatus {
   kind: string;
   status: GatewayOperationStatus;
   reason?: string;
-  /** Unix seconds; end of the original gateway admission window. */
+  /** Unix seconds; end of the retained routing wait window. Allows identical
+   * replay only; it does not expire the signature or prove non-execution. */
   pendingUntil?: number;
   receipt?: Receipt;
 }
@@ -137,5 +140,9 @@ export interface PoolSummary {
   poolId: string;
   tokenA: string;
   tokenB: string;
+  /** tokenB base units per tokenA base unit, multiplied by 10^18. */
   spotPrice: string;
+  /** Effective integer YELLOW base units per tokenA base unit for transfer fees.
+   * Missing on older gateways; do not substitute spot price for EMA. */
+  transferPrice?: string;
 }

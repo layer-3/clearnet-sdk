@@ -131,7 +131,7 @@ export function retryDecision(record: OperationRecord, status: OperationStatus, 
   if (neverSubmitted || windowEnded) return { allowed: true, reason: "" };
   return {
     allowed: false,
-    reason: "The network hasn't confirmed that this transfer's window closed without a seal, so sending it again could pay twice.",
+    reason: "The original gateway hasn't provided an ended routing window for this authorization, so replay remains blocked.",
   };
 }
 

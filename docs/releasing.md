@@ -121,7 +121,45 @@ terminal handoffs and recovery rules against the release CLI when those contract
 change. Verify both archive formats retain `SKILL.md`, `agents/openai.yaml` and
 the linked references. See [skill installation](../cmd/yellow/README.md#scripts-and-agents).
 
-Previously submitted operation replay requires the original gateway's optional
-`pendingUntil` status evidence. Gateways without it can still handle account,
-balance, transfer, history and status commands, and sealed receipt reconciliation;
-the CLI safely refuses replay of submitted uncertain authorizations.
+## Gateway compatibility and recovery
+
+See the [v0.9.0 validation record](v0.9.0-validation.md) for completed local checks
+and remaining release gates. Update that record against the final release commits.
+
+Release v0.9.0 together with the companion gateway changes exposing
+`pendingUntil`, effective `transferPrice`, and operator `-backfill-from` recovery.
+Deploy those changes before advertising full v0.9.0 recovery and fee-estimation
+support. Older gateways still support reads and sealed receipt reconciliation;
+unknown submitted transfers without admission evidence cannot replay, and missing
+fee prices require an explicit approved cap.
+
+Run the actual-gateway contract suite with both checked-out release revisions:
+
+```sh
+CLEARNET_SOURCE=/path/to/clearnet bash scripts/test-gateway-contract.sh
+```
+
+This builds the current TypeScript SDK and uses an isolated Go module replacement
+for the current SDK source. It exercises the actual gateway handlers with local
+deterministic routing/index fixtures, Go SDK transfer/status contracts, CLI
+operator repair and subsequent sends, and TypeScript/web ETH/USDC valuations and
+EMA-based fee estimates. It requires installed SDK and web npm dependencies.
+It does not contact a deployed gateway or open a browser wallet.
+
+Before publishing v0.9.0, record results for:
+
+- Go and TypeScript catalogue-drift regression tests, including changes before
+  signing and after signing, missing fingerprints and persisted authorizations.
+- The actual-gateway contract suite above and both Clearbox integrations.
+- [Operator-assisted recovery](../cmd/yellow/RECOVERY.md), including retained
+  journal and a successful new send after reconciliation. Ship `RECOVERY.md`
+  in every CLI archive and review its steps against the deployed gateway revision.
+- Web tests, typecheck, lint and production build; SDK release checks above.
+- Final GitHub CI on the exact SDK and companion gateway commits to be released.
+
+Deployment and manual acceptance remain explicit release gates: record the gateway
+revision/environment, a deployed-network recovery/pricing check, and real-wallet
+browser connect, chain add/switch, signature review and journal recovery results.
+Local fixtures cannot substitute for those checks. If the release owner defers
+them, record that decision and the unvalidated behavior in the release notes;
+do not report production or browser-wallet compatibility as verified.

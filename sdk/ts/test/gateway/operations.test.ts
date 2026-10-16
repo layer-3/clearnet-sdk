@@ -31,7 +31,7 @@ const base: OperationRecord = {
   signed: {
     operationId: ID,
     signature: "0x",
-    intent: { networkId: "YDEV", chainId: 1, from: "0x00000000000000000000000000000000000000aA", to: "0x00000000000000000000000000000000000000bb", assets: [], maxFee: "0", nonce: 3 },
+    intent: { catalogueFingerprint: "test-catalogue", networkId: "YDEV", chainId: 1, from: "0x00000000000000000000000000000000000000aA", to: "0x00000000000000000000000000000000000000bb", assets: [], maxFee: "0", nonce: 3 },
   },
 };
 

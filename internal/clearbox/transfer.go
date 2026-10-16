@@ -27,12 +27,13 @@ type transferRequest struct {
 }
 
 type poolSummary struct {
-	PoolID    string `json:"poolId"`
-	TokenA    string `json:"tokenA"`
-	TokenB    string `json:"tokenB"`
-	ReserveA  string `json:"reserveA"`
-	ReserveB  string `json:"reserveB"`
-	SpotPrice string `json:"spotPrice"`
+	PoolID        string `json:"poolId"`
+	TokenA        string `json:"tokenA"`
+	TokenB        string `json:"tokenB"`
+	ReserveA      string `json:"reserveA"`
+	ReserveB      string `json:"reserveB"`
+	SpotPrice     string `json:"spotPrice"`
+	TransferPrice string `json:"transferPrice"`
 }
 
 // pools returns the static valuation fixtures. Pool IDs are the canonical
@@ -43,8 +44,8 @@ func pools() any {
 		Items []poolSummary `json:"items"`
 		Total int           `json:"total"`
 	}{[]poolSummary{
-		{"eth", "ETH", "YELLOW", "100000000000000000000", "2485000000000000000000000", "24850"},
-		{"usdc", "USDC", "YELLOW", "1000000000000", "10000000000000000000000000", "10"},
+		{"eth", "ETH", "YELLOW", "100000000000000000000", "2485000000000000000000000", "24850000000000000000000", "24850"},
+		{"usdc", "USDC", "YELLOW", "1000000000000", "10000000000000000000000000", "10000000000000000000000000000000", "10000000000000"},
 	}, 2}
 }
 

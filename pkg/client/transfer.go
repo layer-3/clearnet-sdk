@@ -38,6 +38,10 @@ func (c *Client) PrepareTransfer(ctx context.Context, signer sign.Signer, recipi
 	if !info.HasCapability(CapabilityTransferStatus) {
 		return nil, fmt.Errorf("gateway cannot resolve uncertain transfer submissions")
 	}
+	fingerprint, err := NetworkFingerprint(*info)
+	if err != nil {
+		return nil, err
+	}
 	metadata := make(map[string]AssetInfo, len(info.Assets))
 	for _, asset := range info.Assets {
 		metadata[asset.Symbol] = asset
@@ -76,7 +80,8 @@ func (c *Client) PrepareTransfer(ctx context.Context, signer sign.Signer, recipi
 		return nil, err
 	}
 	return &TransferIntent{
-		NetworkID: info.NetworkID, ChainID: info.ChainID, From: address.Hex(), To: recipient,
+		CatalogueFingerprint: fingerprint,
+		NetworkID:            info.NetworkID, ChainID: info.ChainID, From: address.Hex(), To: recipient,
 		Assets: legs, MaxFee: fee.String(), Nonce: balance.Nonce,
 	}, nil
 }
@@ -142,6 +147,10 @@ func (c *Client) SignTransfer(ctx context.Context, signer sign.Signer, prepared 
 	if !info.HasCapability(CapabilityTransferStatus) || prepared.NetworkID != info.NetworkID || prepared.ChainID != info.ChainID {
 		return nil, fmt.Errorf("prepared transfer network changed or lacks operation status")
 	}
+	fingerprint, err := NetworkFingerprint(*info)
+	if err != nil || prepared.CatalogueFingerprint != fingerprint {
+		return nil, fmt.Errorf("prepared transfer asset catalogue changed or is missing; prepare and review again")
+	}
 	from, err := sign.EthAddress(signer)
 	if err != nil {
 		return nil, err
@@ -175,6 +184,10 @@ func (c *Client) SubmitTransfer(ctx context.Context, signed *SignedTransfer) (*S
 	}
 	if !info.HasCapability(CapabilityTransferStatus) || signed.Intent.NetworkID != info.NetworkID || signed.Intent.ChainID != info.ChainID {
 		return nil, &SubmissionError{OperationID: id, Err: fmt.Errorf("gateway network or transfer status capability changed")}
+	}
+	fingerprint, err := NetworkFingerprint(*info)
+	if err != nil || signed.Intent.CatalogueFingerprint != fingerprint {
+		return nil, &SubmissionError{OperationID: id, Err: fmt.Errorf("signed transfer asset catalogue changed or is missing; review again before submission")}
 	}
 	to, assets, fee, err := transferFields(signed.Intent)
 	if err != nil {

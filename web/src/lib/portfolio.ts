@@ -29,62 +29,33 @@ function parseDecimal(value: string): { int: bigint; scale: bigint } | null {
   return { int: BigInt(w! + f), scale: 10n ** BigInt(f.length) };
 }
 
-/**
- * Largest price treated as plausible, in YELLOW per whole token. A gateway that
- * reports a differently scaled price (for example an 18-decimal fixed-point
- * integer) would otherwise poison every valuation and fee estimate, so such a
- * pool is ignored and the asset counts as unpriced.
- */
-const MAX_PLAUSIBLE_PRICE = 10n ** 12n;
+interface PriceRatio { numerator: bigint; denominator: bigint }
+const E18 = 10n ** 18n;
 
-/** Prices as YELLOW-per-whole-token, keyed by symbol. YELLOW itself is 1. */
-export function priceMap(pools: PoolSummary[] | undefined): Map<string, string> {
-  const m = new Map<string, string>([[YELLOW, "1"]]);
-  for (const p of pools ?? []) {
-    if (!p.spotPrice) continue;
-    if (p.tokenB === YELLOW) {
-      const price = plausiblePrice(p.spotPrice);
-      if (price) m.set(p.tokenA, price);
-    } else if (p.tokenA === YELLOW) {
-      const inverse = invertDecimal(p.spotPrice);
-      const price = inverse && plausiblePrice(inverse);
-      if (price) m.set(p.tokenB, price);
+function uint256(raw: string | undefined): bigint | null {
+  if (typeof raw !== "string" || raw.length > 78 || !/^\d+$/.test(raw)) return null;
+  const n = BigInt(raw);
+  return n > 0n && n < 2n ** 256n ? n : null;
+}
+
+/** Exact YELLOW base units per asset base unit; gateway spotPrice is scaled by 1e18. */
+export function priceMap(pools: PoolSummary[] | undefined): Map<string, PriceRatio> {
+  const prices = new Map<string, PriceRatio>([[YELLOW, { numerator: 1n, denominator: 1n }]]);
+  for (const pool of pools ?? []) {
+    const price = uint256(pool.spotPrice);
+    if (price === null) continue;
+    if (pool.tokenB === YELLOW && pool.tokenA !== YELLOW) {
+      prices.set(pool.tokenA, { numerator: price, denominator: E18 });
+    } else if (pool.tokenA === YELLOW && pool.tokenB !== YELLOW) {
+      prices.set(pool.tokenB, { numerator: E18, denominator: price });
     }
   }
-  return m;
+  return prices;
 }
 
-/** Returns value when it is a positive, plausibly scaled price, else null. */
-function plausiblePrice(value: string): string | null {
-  const d = parseDecimal(value);
-  if (!d || d.int <= 0n || d.int > MAX_PLAUSIBLE_PRICE * d.scale) return null;
-  return value;
-}
-
-/** Exact decimal inverse (scale/int), truncated to `digits` fractional digits. */
-function invertDecimal(value: string, digits = 18): string | null {
-  const d = parseDecimal(value);
-  if (!d || d.int <= 0n) return null;
-  const whole = d.scale / d.int;
-  let rem = d.scale % d.int;
-  if (rem === 0n) return whole.toString();
-  let fraction = "";
-  for (let i = 0; i < digits && rem !== 0n; i++) {
-    rem *= 10n;
-    fraction += (rem / d.int).toString();
-    rem %= d.int;
-  }
-  fraction = fraction.replace(/0+$/, "");
-  return fraction ? `${whole}.${fraction}` : whole.toString();
-}
-
-export function toYellow(amount: bigint, asset: AssetInfo, yellowDecimals: number, prices: Map<string, string>): bigint | null {
-  if (asset.symbol === YELLOW) return amount;
+export function toYellow(amount: bigint, asset: AssetInfo, prices: Map<string, PriceRatio>): bigint | null {
   const price = prices.get(asset.symbol);
-  if (!price) return null;
-  const d = parseDecimal(price);
-  if (!d) return null;
-  return (amount * d.int * 10n ** BigInt(yellowDecimals)) / (10n ** BigInt(asset.decimals) * d.scale);
+  return price ? amount * price.numerator / price.denominator : null;
 }
 
 export function buildPortfolio(assets: AssetInfo[], balance: Balance, pools: PoolSummary[] | undefined): Portfolio {
@@ -98,7 +69,7 @@ export function buildPortfolio(assets: AssetInfo[], balance: Balance, pools: Poo
       asset,
       available,
       pendingWithdrawal: safeBig(entry?.pendingWithdrawal),
-      yellowValue: toYellow(available, asset, yellowDecimals, prices),
+      yellowValue: toYellow(available, asset, prices),
     };
   });
   holdings.sort((a, b) => {
@@ -134,17 +105,24 @@ export interface FeeEstimate {
 
 /**
  * Client-side estimate of the network fee, from the protocol rule (fixed 10 bps
- * of each leg's YELLOW value, minimum 0.0001 YELLOW per leg). The signed cap protects
+ * of each leg's YELLOW value at the gateway's effective EMA price, minimum
+ * 0.0001 YELLOW per leg). Older gateways without that price require an explicit
+ * cap. The signed cap protects
  * the user if the real fee differs: the network rejects, nothing is charged.
  */
 export function estimateFee(legs: TransferAsset[], assets: AssetInfo[], pools: PoolSummary[] | undefined): FeeEstimate {
   const yellowDecimals = assets.find((a) => a.symbol === YELLOW)?.decimals ?? 18;
   const min = 10n ** BigInt(Math.max(0, yellowDecimals - 4));
-  const prices = priceMap(pools);
+  const prices = new Map<string, bigint>([[YELLOW, 1n]]);
+  for (const pool of pools ?? []) {
+    const price = uint256(pool.transferPrice);
+    if (pool.tokenB === YELLOW && pool.tokenA !== YELLOW && price !== null) prices.set(pool.tokenA, price);
+  }
   let fee = 0n;
   for (const leg of legs) {
     const asset = assets.find((a) => a.symbol === leg.asset);
-    const v = asset ? toYellow(BigInt(leg.amount), asset, yellowDecimals, prices) : null;
+    const price = prices.get(leg.asset);
+    const v = asset && price !== undefined ? BigInt(leg.amount) * price : null;
     if (v === null) return { fee: null, suggestedCap: null };
     const raw = (v * FEE_BPS) / 10_000n;
     fee += raw > min ? raw : min;

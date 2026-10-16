@@ -23,6 +23,7 @@ import {
 } from "../../src/gateway/index.js";
 
 const golden: TransferIntent = {
+  catalogueFingerprint: "golden-vector-only",
   networkId: "YDEV",
   chainId: networkChainId("YDEV"),
   from: "0x00000000000000000000000000000000000000aa",
@@ -136,10 +137,10 @@ const INFO = {
 
 type Handler = (url: string, init?: RequestInit) => { status: number; body: unknown };
 
-function fakeFetch(handler: Handler): typeof fetch {
+function fakeFetch(handler: Handler, info: () => typeof INFO = () => INFO): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.endsWith("/v1/gateway/info")) return new Response(JSON.stringify(INFO), { status: 200 });
+    if (url.endsWith("/v1/gateway/info")) return new Response(JSON.stringify(info()), { status: 200 });
     const { status, body } = handler(url, init);
     return new Response(JSON.stringify(body), { status });
   }) as typeof fetch;
@@ -197,7 +198,7 @@ describe("GatewayClient", () => {
 
   it("binds and submits an externally signed canonical URI intent unchanged", async () => {
     const uri = "yellow://ynet/user/0x00000000000000000000000000000000000000bb" as const;
-    const intent: TransferIntent = { ...golden, from: account.address, to: uri };
+    const intent: TransferIntent = { ...golden, catalogueFingerprint: networkFingerprint(INFO), from: account.address, to: uri };
     let posted: Record<string, unknown> | undefined;
     let expectedId = "";
     const c = new GatewayClient({
@@ -310,5 +311,50 @@ describe("GatewayClient", () => {
       fetch: (async () => new Response(JSON.stringify({ ...INFO, version: huge }), { status: 200 })) as typeof fetch,
     });
     await expect(c.info()).rejects.toThrow(/too large/);
+  });
+});
+
+
+describe("prepared catalogue binding", () => {
+  const changes = {
+    decimals: (info: typeof INFO) => { info.assets[1]!.decimals = 6; },
+    backingAddress: (info: typeof INFO) => { info.assets[1]!.address = "0x00000000000000000000000000000000000000cc"; },
+    backingChain: (info: typeof INFO) => { info.assets[1]!.chainId = 1; },
+    native: (info: typeof INFO) => { info.assets[1]!.native = false; },
+    feeDecimals: (info: typeof INFO) => { info.assets[0]!.decimals = 6; },
+    removedAsset: (info: typeof INFO) => { info.assets.pop(); },
+  };
+  for (const [name, change] of Object.entries(changes)) {
+    it(`rejects ${name} drift before signing and before submission`, async () => {
+      let info = structuredClone(INFO);
+      let posts = 0;
+      const c = new GatewayClient({ baseUrl: "https://gw.test", networkId: "YDEV", fetch: fakeFetch((url) => {
+        if (url.includes("/balances")) return { status: 200, body: { nonce: 7, balances: [] } };
+        posts++;
+        throw new Error("drift reached POST");
+      }, () => info) });
+      const intent = await c.prepareTransfer({ from: account.address, recipient: golden.to, assets: [{ asset: "ETH", amount: "1" }], maxFee: "0.1" });
+      expect(intent.catalogueFingerprint).toBe(networkFingerprint(info));
+      const signed = await c.signTransfer(intent, (data) => account.signTypedData(data));
+      const restored = JSON.parse(JSON.stringify(signed));
+      change(info);
+      let signatures = 0;
+      await expect(c.signTransfer(intent, async (data) => { signatures++; return account.signTypedData(data); })).rejects.toMatchObject({ kind: "trust" });
+      await expect(c.submitTransfer(restored)).rejects.toMatchObject({ submitted: false, outcomeUnknown: false });
+      expect(signatures).toBe(0);
+      expect(posts).toBe(0);
+      info = structuredClone(INFO);
+      info.assets.reverse();
+      info.assets[0]!.address = info.assets[0]!.address.toUpperCase();
+      await expect(c.signTransfer(intent, (data) => account.signTypedData(data))).resolves.toMatchObject({ operationId: signed.operationId });
+    });
+  }
+  it("refuses intents without retained catalogue metadata", async () => {
+    const c = new GatewayClient({ baseUrl: "https://gw.test", networkId: "YDEV", fetch: fakeFetch(() => ({ status: 200, body: { nonce: 7, balances: [] } })) });
+    const signed = await signedFor(c);
+    const legacy = JSON.parse(JSON.stringify(signed));
+    delete legacy.intent.catalogueFingerprint;
+    await expect(c.signTransfer(legacy.intent, (data) => account.signTypedData(data))).rejects.toMatchObject({ kind: "trust" });
+    await expect(c.submitTransfer(legacy)).rejects.toMatchObject({ submitted: false });
   });
 });

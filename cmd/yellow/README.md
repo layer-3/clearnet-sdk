@@ -237,11 +237,10 @@ All unresolved authorizations remain in the journal and block new sends by that
 account on the same network, even when another gateway profile is selected.
 An advanced nonce, changed balance, or another gateway's `unknown` cannot resolve
 an operation. Yellow never silently deletes the journal or re-signs an unresolved
-transfer at a new nonce. The current production gateway does not supply
-`pendingUntil`; an uncertain submitted transfer therefore cannot be replayed or
-cleared through this CLI after it reports `unknown`. Ask the gateway operator
-to establish its final outcome. Do not edit or delete the journal: losing the
-local record does not revoke the signature.
+transfer at a new nonce. Gateways released with the v0.9.0 companion gateway
+changes supply `pendingUntil`. Older deployments without it require an operator
+upgrade or restoration of the verified seal before the CLI can recover. Follow
+[operator-assisted recovery](RECOVERY.md). Do not edit or delete the journal: losing the local record does not revoke the signature.
 
 ```sh
 yellow operation list
@@ -251,19 +250,22 @@ yellow operation retry <operation-id>
 
 Status and replay always use the original gateway URL. A previously submitted
 operation can only replay when the **original gateway** reports `unknown` and
-provides `pendingUntil`, the original admission window's end in Unix seconds,
-already in the past and no earlier than the recorded submission time. Yellow
-refuses replay when the gateway does not provide
-this information, when the query fails, or while the operation is pending. A sealed or rejected operation is
-never replayed. Replay requires unlock and explicit confirmation and sends exactly
-the retained nonce, recipient, assets, fee and signature.
+provides `pendingUntil`, the retained routing attempt's wait-window end in Unix
+seconds, already in the past and no earlier than the recorded submission time. Yellow
+refuses replay when the gateway does not provide this information, when the query
+fails, or while the operation is pending. A sealed or rejected operation is never
+replayed. Replay requires unlock and explicit confirmation and sends exactly
+the retained nonce, recipient, assets, fee and signature. An ended window permits
+identical replay; it does not expire the signature or prove non-execution.
 
 Gateway status is trusted through HTTPS and your reviewed signing-domain profile;
 Yellow does not independently verify validator quorum proofs. A catalogue change
 requires review with `yellow network trust-update <name>`. That explicit review
 also allows recovery against the same original gateway and signing domain; the
-operation keeps its original fingerprint and authorization. Replay review shows
-any catalogue differences again and uses the current reviewed precision to display
+journal keeps its original fingerprint and authorization. After explicit replay
+approval, only the local submission guard is rebound to the reviewed catalogue;
+the signed wire fields and encrypted journal payload are unchanged. Replay review
+shows any catalogue differences again and uses the current reviewed precision to display
 the retained base units. An asset removed from the catalogue prevents replay.
 
 ## Read balances and recent history

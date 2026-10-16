@@ -62,6 +62,20 @@ const signed = await gateway.signTransfer(intent, (typedData) => walletClient.si
 const result = await gateway.submitTransfer(signed);         // sealed (receipt) or pending
 ```
 
+Prepared intents retain a `catalogueFingerprint` covering the signing domain,
+asset decimals and backing-asset identities. Both signing and submission check
+fresh metadata against it, including when the client has no configured trust pin.
+Persist that field with signed intents. Missing or changed catalogue metadata
+requires preparation and review again; this local guard does not change the
+EIP-712 schema or revoke signatures already issued. The Go client uses the same
+fingerprint through `client.NetworkFingerprint`.
+
+Pool `spotPrice` is a base-unit reserve ratio multiplied by `10^18`, not a human
+price string. The optional `transferPrice` is the effective integer YELLOW
+base-unit ratio used for transfer fees (EMA after bootstrap). Older gateways
+without `transferPrice` need an explicit user-approved fee cap.
+
+
 Wallets that enforce "domain chain ID equals active chain" (MetaMask) need the
 Yellow chain active before signing. Its chain ID is `networkChainId(networkId)`.
 `prepareTransfer` resolves a pasted user URI to its account address before

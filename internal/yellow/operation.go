@@ -239,7 +239,7 @@ func (a *app) operationCommands() *cobra.Command {
 		neverSubmitted := op.Submitted == nil && op.State == "signed_unsubmitted" && status.Status == "unknown"
 		ended := status.Status == "unknown" && status.PendingUntil > 0 && status.PendingUntil <= time.Now().Unix() && op.Submitted != nil && status.PendingUntil >= op.Submitted.Unix()
 		if !neverSubmitted && !ended {
-			return fail(ExitUnknown, "operation %s is unresolved or still pending; the original gateway has not established an ended pending window without a seal. No replay sent", op.ID)
+			return fail(ExitUnknown, "operation %s is unresolved or still pending; the original gateway has not provided an ended routing window for this authorization. No replay sent", op.ID)
 		}
 		_, key, close, err := a.unlockKey(ac)
 		if err != nil {
@@ -277,6 +277,9 @@ func (a *app) operationCommands() *cobra.Command {
 		if err := a.approve(ac, "Submit this exact saved authorization"); err != nil {
 			return err
 		}
+		// Explicit review updates only the local catalogue guard. The journal
+		// retains the original metadata, signed amounts and signature.
+		signed.Intent.CatalogueFingerprint = current.Fingerprint
 		return a.submit(ctx, c, name, ac, index, signed, 0)
 	})
 	retry.Long = "Replay an authorization only after explicit review and unlock. A previously submitted operation requires its original gateway to report unknown with a past pendingUntil (Unix seconds). Older gateways without this evidence fail closed. The original nonce, recipient, assets, fee and signature are preserved."

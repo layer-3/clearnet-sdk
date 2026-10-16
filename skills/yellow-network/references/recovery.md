@@ -99,7 +99,10 @@ the optional `pendingUntil` admission-window evidence: positive Unix seconds,
 already ended and no earlier than the last local submission time. **Unknown
 alone is insufficient.** The public operation view does not expose this raw
 evidence; let `operation retry` enforce the checks rather than fabricating them
-or calling private endpoints. Missing evidence means stop and report blocked.
+or calling private endpoints. Missing evidence means stop and report blocked. Ask the operator to follow the
+[recovery procedure](https://github.com/layer-3/clearnet-sdk/blob/v0.9.0/cmd/yellow/RECOVERY.md) in the SDK source guide;
+the installed CLI README also links it. An ended window permits the identical
+authorization to be retried; it does not revoke the signature or prove non-execution.
 
 Trust changes require human review via `network trust-update <original-profile>`.
 An explicitly reviewed catalogue change on the same gateway/signing domain can

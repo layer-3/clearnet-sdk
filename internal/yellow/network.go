@@ -3,8 +3,6 @@ package yellow
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,12 +31,8 @@ func reviewed(info *client.NetworkInfo) (identity, string, error) {
 		id.Assets[i].Address = strings.ToLower(id.Assets[i].Address)
 	}
 	sort.Slice(id.Assets, func(i, j int) bool { return id.Assets[i].Symbol < id.Assets[j].Symbol })
-	raw, err := json.Marshal(id)
-	if err != nil {
-		return id, "", err
-	}
-	sum := sha256.Sum256(raw)
-	return id, hex.EncodeToString(sum[:]), nil
+	fingerprint, err := client.NetworkFingerprint(*info)
+	return id, fingerprint, err
 }
 
 // Every SDK Info request is checked, including preparation/signing/submission

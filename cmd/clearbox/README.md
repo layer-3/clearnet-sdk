@@ -158,11 +158,17 @@ Without `-public-url` the default `-listen 127.0.0.1:8080` binds the container's
 own loopback and `-p 8080:8080` is unreachable. The published key in the startup
 log is for development only; on a shared sandbox it is effectively public.
 
-One scaling caveat when developing against the real gateway: Clearnet serves
-`spotPrice` as an 18-decimal fixed-point integer, while its OpenAPI schema and
-this simulator describe a pre-formatted decimal (`24850`, not
-`24850000000000000000000`). Wallet code that reads pool prices should treat an
-implausibly large value as "no price" rather than computing with it.
+Pool prices use the production gateway's integer encoding: `spotPrice` is
+`reserveB * 10^18 / reserveA`, where reserves are **base units**. ETH/YELLOW at
+24850 YELLOW per ETH is `24850000000000000000000`; USDC/YELLOW at 10 YELLOW per
+USDC (6 versus 18 decimals) is `10000000000000000000000000000000`. Multiply asset
+base units by that ratio, divide by `10^18`, then format YELLOW base units.
+
+`transferPrice` is the effective integer YELLOW base units per asset base unit
+used for fees. Production uses reserve ratios during bootstrap and EMA afterwards;
+Clearbox's static prices have identical spot and fee values. Clients must not
+substitute spot price when the effective fee price is unavailable. See the
+[actual-gateway contract checks](../../docs/releasing.md#gateway-compatibility-and-recovery).
 
 ## Interface coverage
 

@@ -317,6 +317,7 @@ export class GatewayClient {
     });
     const balance = await this.balance(from, input.signal);
     return {
+      catalogueFingerprint: networkFingerprint(info),
       networkId: info.networkId,
       chainId: info.chainId,
       from,
@@ -332,6 +333,9 @@ export class GatewayClient {
     const info = await this.info({ fresh: true });
     if (!info.capabilities.includes(CAPABILITY_TRANSFER_STATUS) || intent.networkId !== info.networkId || intent.chainId !== info.chainId) {
       throw new GatewayError("identity", "The network changed since this transfer was prepared.");
+    }
+    if (intent.catalogueFingerprint !== networkFingerprint(info)) {
+      throw new GatewayError("trust", "The asset catalogue changed or is missing. Prepare and review the transfer again.");
     }
     const frozen = freeze(intent);
     return this.finalizeSignature(frozen, await signer(transferTypedData(frozen)));
@@ -364,6 +368,9 @@ export class GatewayClient {
       const info = await this.info(signal ? { fresh: true, signal } : { fresh: true });
       if (!info.capabilities.includes(CAPABILITY_TRANSFER_STATUS) || signed.intent.networkId !== info.networkId || signed.intent.chainId !== info.chainId) {
         throw new Error("The network or its transfer-status support changed since signing.");
+      }
+      if (signed.intent.catalogueFingerprint !== networkFingerprint(info)) {
+        throw new Error("The asset catalogue changed or is missing. Review the transfer again before submission.");
       }
       if (transferOperationId(signed.intent) !== id) throw new Error("Signed transfer operation ID doesn't match its fields.");
       const recovered = await recoverTransferSigner(signed.intent, signed.signature);

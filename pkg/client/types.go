@@ -80,13 +80,16 @@ type TransferAmount struct {
 }
 
 type TransferIntent struct {
-	NetworkID string          `json:"networkId"`
-	ChainID   uint64          `json:"chainId"`
-	From      string          `json:"from"`
-	To        string          `json:"to"`
-	Assets    []TransferAsset `json:"assets"`
-	MaxFee    string          `json:"maxFee"` // integer YELLOW wei
-	Nonce     uint64          `json:"nonce"`
+	// CatalogueFingerprint retains the metadata used for amount conversion.
+	// It is a local preflight guard, not part of the EIP-712 wire payload.
+	CatalogueFingerprint string          `json:"catalogueFingerprint"`
+	NetworkID            string          `json:"networkId"`
+	ChainID              uint64          `json:"chainId"`
+	From                 string          `json:"from"`
+	To                   string          `json:"to"`
+	Assets               []TransferAsset `json:"assets"`
+	MaxFee               string          `json:"maxFee"` // integer YELLOW wei
+	Nonce                uint64          `json:"nonce"`
 }
 
 // SignedTransfer is a spend authorization. Treat its signature and serialized
@@ -116,8 +119,9 @@ type OperationStatus struct {
 	Kind        string `json:"kind"`
 	Status      string `json:"status"`
 	Reason      string `json:"reason,omitempty"`
-	// PendingUntil is the original gateway admission window end, in Unix seconds.
-	// Zero means the gateway has not supplied evidence that replay is safe.
+	// PendingUntil ends the retained routing attempt's wait window, in Unix
+	// seconds. It permits identical replay only, never signature revocation.
+	// Zero means the gateway has not supplied replay-window evidence.
 	PendingUntil int64    `json:"pendingUntil,omitempty"`
 	Receipt      *Receipt `json:"receipt,omitempty"`
 }

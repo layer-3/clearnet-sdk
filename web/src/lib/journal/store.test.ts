@@ -16,7 +16,7 @@ vi.mock("idb-keyval", () => ({
 const id = `0x${"ab".repeat(32)}` as const;
 const signed: SignedTransfer = {
   operationId: id, signature: "0x01", intent: {
-    networkId: "YDEV", chainId: 1497646422,
+    catalogueFingerprint: "test-catalogue", networkId: "YDEV", chainId: 1497646422,
     from: "0x00000000000000000000000000000000000000aa",
     to: "0x00000000000000000000000000000000000000bb",
     nonce: 1, assets: [{ asset: "YELLOW", amount: "1" }], maxFee: "0",
