@@ -239,8 +239,8 @@ An advanced nonce, changed balance, or another gateway's `unknown` cannot resolv
 an operation. Yellow never silently deletes the journal or re-signs an unresolved
 transfer at a new nonce. Gateways released with the v0.9.0 companion gateway
 changes supply `pendingUntil`. Older deployments without it require an operator
-upgrade or restoration of the verified seal before the CLI can recover. Follow
-[operator-assisted recovery](RECOVERY.md). Do not edit or delete the journal: losing the local record does not revoke the signature.
+upgrade or restoration of the verified seal before the CLI can recover. Do not
+edit or delete the journal: losing the local record does not revoke the signature.
 
 ```sh
 yellow operation list
