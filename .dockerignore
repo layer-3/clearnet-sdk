@@ -1,0 +1,26 @@
+# Mirror cmd/clearbox/Dockerfile.dockerignore for Docker's classic builder.
+# Keep .clearbox/ and other local secrets out of the build context altogether.
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/clearbox/
+!cmd/clearbox/*.go
+!internal/
+!internal/clearbox/
+!internal/clearbox/*.go
+!pkg/
+!pkg/abiutil/
+!pkg/abiutil/**
+!pkg/cborx/
+!pkg/cborx/**
+!pkg/client/
+!pkg/client/**
+!pkg/core/
+!pkg/core/**
+!pkg/decimal/
+!pkg/decimal/**
+!pkg/eip712/
+!pkg/eip712/**
+!pkg/sign/
+!pkg/sign/**

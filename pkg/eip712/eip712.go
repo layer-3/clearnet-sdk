@@ -204,39 +204,52 @@ func RecoverTransfer(chainID *big.Int, to common.Address, assets []TransferAsset
 	return RecoverSigner(digest, sig)
 }
 
-// RecoverSwap recovers the signer of a Swap EIP-712 message.
-// Per ADR-009 §6.1: Swap(string assetIn, string assetOut, uint256 amountIn, uint256 minAmountOut, uint256 maxFee, uint64 nonce).
-func RecoverSwap(chainID *big.Int, assetIn, assetOut string, amountIn, minAmountOut, maxFee *big.Int, nonce uint64, sig []byte) (common.Address, error) {
-	domainSep := ComputeDomainSeparator(chainID)
-	aiHash := crypto.Keccak256Hash([]byte(assetIn))
-	aoHash := crypto.Keccak256Hash([]byte(assetOut))
+// The swap and withdrawal encoders are shared by signers and verifiers so a
+// schema change cannot leave two independently maintained digests in sync only
+// by accident. Legacy verifiers keep their nil-as-zero behavior here; signing
+// helpers apply stricter positive-amount and domain validation before calling.
+func swapStructHash(assetIn, assetOut string, amountIn, minAmountOut, maxFee *big.Int, nonce uint64) ([32]byte, error) {
 	args := abi.Arguments{
 		{Type: abiutil.Bytes32}, {Type: abiutil.Bytes32}, {Type: abiutil.Bytes32},
 		{Type: abiutil.Uint256}, {Type: abiutil.Uint256}, {Type: abiutil.Uint256}, {Type: abiutil.Uint64},
 	}
-	packed, err := args.Pack(SwapTypeHash, aiHash, aoHash, bigOrZero(amountIn), bigOrZero(minAmountOut), bigOrZero(maxFee), nonce)
+	packed, err := args.Pack(SwapTypeHash, crypto.Keccak256Hash([]byte(assetIn)), crypto.Keccak256Hash([]byte(assetOut)), bigOrZero(amountIn), bigOrZero(minAmountOut), bigOrZero(maxFee), nonce)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return crypto.Keccak256Hash(packed), nil
+}
+
+func withdrawalStructHash(asset string, amount *big.Int, targetChainID uint64, recipient common.Address, maxFee *big.Int, nonce uint64) ([32]byte, error) {
+	args := abi.Arguments{
+		{Type: abiutil.Bytes32}, {Type: abiutil.Bytes32}, {Type: abiutil.Uint256},
+		{Type: abiutil.Uint256}, {Type: abiutil.Address}, {Type: abiutil.Uint256}, {Type: abiutil.Uint64},
+	}
+	packed, err := args.Pack(WithdrawalTypeHash, crypto.Keccak256Hash([]byte(asset)), bigOrZero(amount), new(big.Int).SetUint64(targetChainID), recipient, bigOrZero(maxFee), nonce)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return crypto.Keccak256Hash(packed), nil
+}
+
+// RecoverSwap recovers the signer of a Swap EIP-712 message.
+// Per ADR-009 §6.1: Swap(string assetIn, string assetOut, uint256 amountIn, uint256 minAmountOut, uint256 maxFee, uint64 nonce).
+func RecoverSwap(chainID *big.Int, assetIn, assetOut string, amountIn, minAmountOut, maxFee *big.Int, nonce uint64, sig []byte) (common.Address, error) {
+	domainSep := ComputeDomainSeparator(chainID)
+	structHash, err := swapStructHash(assetIn, assetOut, amountIn, minAmountOut, maxFee, nonce)
 	if err != nil {
 		return common.Address{}, err
 	}
-	structHash := crypto.Keccak256Hash(packed)
-	digest := Digest(domainSep, structHash)
-	return RecoverSigner(digest, sig)
+	return RecoverSigner(Digest(domainSep, structHash), sig)
 }
 
 // RecoverWithdrawal recovers the signer of a Withdrawal EIP-712 message.
 // Per ADR-009 §6.1: Withdrawal(string asset, uint256 amount, uint256 chainId, address recipient, uint256 maxFee, uint64 nonce).
 func RecoverWithdrawal(chainID *big.Int, asset string, amount *big.Int, targetChainID uint64, recipient common.Address, maxFee *big.Int, nonce uint64, sig []byte) (common.Address, error) {
 	domainSep := ComputeDomainSeparator(chainID)
-	assetHash := crypto.Keccak256Hash([]byte(asset))
-	args := abi.Arguments{
-		{Type: abiutil.Bytes32}, {Type: abiutil.Bytes32}, {Type: abiutil.Uint256},
-		{Type: abiutil.Uint256}, {Type: abiutil.Address}, {Type: abiutil.Uint256}, {Type: abiutil.Uint64},
-	}
-	packed, err := args.Pack(WithdrawalTypeHash, assetHash, bigOrZero(amount), new(big.Int).SetUint64(targetChainID), recipient, bigOrZero(maxFee), nonce)
+	structHash, err := withdrawalStructHash(asset, amount, targetChainID, recipient, maxFee, nonce)
 	if err != nil {
 		return common.Address{}, err
 	}
-	structHash := crypto.Keccak256Hash(packed)
-	digest := Digest(domainSep, structHash)
-	return RecoverSigner(digest, sig)
+	return RecoverSigner(Digest(domainSep, structHash), sig)
 }

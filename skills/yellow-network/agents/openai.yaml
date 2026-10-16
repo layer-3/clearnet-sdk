@@ -1,0 +1,4 @@
+interface:
+  display_name: "Yellow Network"
+  short_description: "Check balances and send Clearnet payments"
+  default_prompt: "Use $yellow-network to check my Clearnet balances and send payments from my agent account."

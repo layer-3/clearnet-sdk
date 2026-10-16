@@ -1,0 +1,313 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Signal Yellow.
+ * Light: a neutral light page, white sheets, true-black ink; yellow is the accent
+ *        (primary action, active navigation, brand mark, sealed state).
+ * Dark: the page is black; yellow becomes the signal (balance, primary action, focus).
+ */
+:root {
+  --signal: #fcd000;
+  --sodium: #e9a800;
+  --olive: #4d4300;
+  --ink: #000000;
+  --sheet: #ffffff;
+  --flare: #e0301e;
+  --leaf: #0d7a3f;
+
+  --canvas: #f4f4f2;
+  --on-canvas: var(--ink);
+  --on-canvas-muted: #5c5c57;
+  --canvas-line: rgb(0 0 0 / 0.1);
+  --surface: var(--sheet);
+  --surface-2: #f2f2ef;
+  --on-surface: var(--ink);
+  --muted: #5f5f5a;
+  --line: rgb(0 0 0 / 0.08);
+  --sheet-edge: inset 0 0 0 1px rgb(0 0 0 / 0.07);
+  --primary: var(--signal);
+  --on-primary: var(--ink);
+  --hero: var(--ink);
+  --accent: var(--signal);
+  --on-accent: var(--ink);
+  /* Lines and outlines drawn around yellow: ink on light, yellow on black. */
+  --accent-edge: var(--ink);
+  --focus: var(--ink);
+  --nav-active: var(--signal);
+  --on-nav-active: var(--ink);
+  --mark-disc: var(--signal);
+  --mark-y: var(--ink);
+  /* Offset "block" shadow behind buttons (yellow.com CTA). */
+  --btn-edge: var(--ink);
+  --btn-shadow: #ecaa00;
+  --btn-shadow-quiet: rgb(0 0 0 / 0.16);
+  color-scheme: light;
+}
+
+.dark {
+  --canvas: var(--ink);
+  --on-canvas: #ffffff;
+  --on-canvas-muted: #a8a8a0;
+  --canvas-line: rgb(255 255 255 / 0.12);
+  --surface: #151515;
+  --surface-2: #202020;
+  --on-surface: #ffffff;
+  --muted: #a3a39c;
+  --line: rgb(255 255 255 / 0.09);
+  --sheet-edge: none;
+  --primary: var(--signal);
+  --on-primary: var(--ink);
+  --hero: var(--signal);
+  --accent: var(--signal);
+  --on-accent: var(--ink);
+  --accent-edge: var(--signal);
+  --focus: var(--signal);
+  --nav-active: var(--signal);
+  --on-nav-active: var(--ink);
+  --mark-disc: var(--signal);
+  --mark-y: var(--ink);
+  --btn-edge: var(--ink);
+  --btn-shadow: #8a6400;
+  --btn-shadow-quiet: rgb(255 255 255 / 0.22);
+  --flare: #ff6a55;
+  --leaf: #4ade80;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-signal: var(--signal);
+  --color-sodium: var(--sodium);
+  --color-olive: var(--olive);
+  --color-ink: var(--ink);
+  --color-sheet: var(--sheet);
+  --color-flare: var(--flare);
+  --color-leaf: var(--leaf);
+  --color-canvas: var(--canvas);
+  --color-on-canvas: var(--on-canvas);
+  --color-on-canvas-muted: var(--on-canvas-muted);
+  --color-canvas-line: var(--canvas-line);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-on-surface: var(--on-surface);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-primary: var(--primary);
+  --color-on-primary: var(--on-primary);
+  --color-hero: var(--hero);
+  --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
+  --color-accent-edge: var(--accent-edge);
+  --color-nav-active: var(--nav-active);
+  --color-on-nav-active: var(--on-nav-active);
+
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+
+  /* Square, like yellow.com: controls are nearly sharp, containers softly rounded. */
+  --radius-control: 3px;
+  --radius-field: 6px;
+  --radius-sheet: 12px;
+
+  --ease-snap: cubic-bezier(0.2, 0.9, 0.1, 1);
+}
+
+@layer base {
+  html {
+    background: var(--canvas);
+    -webkit-tap-highlight-color: transparent;
+    text-size-adjust: 100%;
+  }
+  body {
+    background: var(--canvas);
+    color: var(--on-canvas);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "tnum";
+    -webkit-font-smoothing: antialiased;
+    min-height: 100dvh;
+  }
+  ::selection {
+    background: var(--signal);
+    color: var(--ink);
+  }
+  .dark ::selection {
+    background: var(--signal);
+    color: var(--ink);
+  }
+  :focus-visible {
+    outline: 2.5px solid var(--focus);
+    outline-offset: 2px;
+  }
+  button,
+  [role="button"] {
+    cursor: pointer;
+  }
+  /* No one-word last lines in copy; balanced headings. */
+  p {
+    text-wrap: pretty;
+  }
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+@layer components {
+  /*
+   * Type scale. Archivo's width axis carries the voice: narrower and heavier
+   * as size grows, normal width for reading. One large moment per screen.
+   */
+  .type-balance {
+    font-size: clamp(52px, 9.5vw, 92px);
+    font-variation-settings: "wdth" 72;
+    font-weight: 760;
+    letter-spacing: -0.03em;
+    line-height: 0.95;
+    font-variant-numeric: tabular-nums;
+  }
+  .type-hero {
+    font-size: clamp(34px, 5vw, 56px);
+    font-variation-settings: "wdth" 80;
+    font-weight: 720;
+    letter-spacing: -0.022em;
+    line-height: 1.04;
+  }
+  .type-h1 {
+    font-size: clamp(32px, 4.2vw, 44px);
+    font-variation-settings: "wdth" 82;
+    font-weight: 720;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+  }
+  .type-amount {
+    font-size: clamp(34px, 7vw, 46px);
+    font-variation-settings: "wdth" 80;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+  }
+  .type-title {
+    font-variation-settings: "wdth" 90;
+    font-weight: 680;
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+  }
+  .type-label {
+    font-variation-settings: "wdth" 96;
+    font-weight: 600;
+  }
+  .lede {
+    font-size: 17px;
+    line-height: 1.55;
+    color: var(--on-canvas-muted);
+    max-width: 52ch;
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+  .sheet {
+    background: var(--surface);
+    color: var(--on-surface);
+    border-radius: var(--radius-sheet);
+    box-shadow: var(--sheet-edge);
+  }
+  .hairline {
+    box-shadow: inset 0 0 0 1px var(--line);
+  }
+}
+
+@layer components {
+  /*
+   * Buttons follow yellow.com: a 1px edge and a hard shadow offset 3px down
+   * and left. Hover and focus slide the face into the shadow; press settles it.
+   */
+  .btn {
+    box-shadow: -3px 3px 0 0 var(--btn-shadow);
+    transition: transform 0.45s cubic-bezier(0, 0.9, 0.13, 0.9), box-shadow 0.45s cubic-bezier(0, 0.9, 0.13, 0.9), background-color 0.15s, color 0.15s;
+  }
+  .btn-quiet-shadow {
+    box-shadow: -3px 3px 0 0 var(--btn-shadow-quiet);
+  }
+  .btn:not(:disabled):hover,
+  .btn:not(:disabled):focus-visible {
+    transform: translate(-3px, 3px);
+    box-shadow: 0 0 0 0 transparent;
+  }
+  .btn:not(:disabled):active {
+    transform: translate(-1px, 1px);
+  }
+  .btn:disabled {
+    box-shadow: none;
+  }
+}
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* AppKit modal: match the type family. */
+:root {
+  --apkt-font-family: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+}
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.96); }
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+.skeleton {
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--line) 25%, color-mix(in srgb, var(--line) 40%, transparent) 50%, var(--line) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* Wallet reconnect hint (see lib/hydration.ts). */
+.when-wallet-pending {
+  display: none;
+}
+[data-wallet] .when-wallet-pending {
+  display: contents;
+}
+[data-wallet] .unless-wallet-pending {
+  display: none;
+}

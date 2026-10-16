@@ -459,25 +459,20 @@ func currencyAmountFromBaseUnits(asset string, baseUnits *big.Int, decimals uint
 	return currencyAmount(asset, blockchain.BaseUnitsToDecimal(baseUnits, decimals))
 }
 
-// ValidateCanonical asserts the canonical flatTx matches the op, that its Fee
-// lies in [minFee, maxAcceptableFeeDrops] where minFee is the multisign floor,
-// and that its LastLedgerSequence falls inside the follower's expiry band.
-func ValidateCanonical(ctx context.Context, assets blockchain.AssetResolver, flat transaction.FlatTransaction, op *core.WithdrawalOp, withdrawalID [32]byte, vault string, policy llsPolicy, minFee uint64) error {
+// validatePaymentShape rejects cheap Byzantine-candidate errors before any
+// live fee/ledger RPC. ValidateCanonical calls it too so both paths agree.
+func validatePaymentShape(flat transaction.FlatTransaction, op *core.WithdrawalOp, withdrawalID [32]byte, vault string) error {
+	if op == nil {
+		return fmt.Errorf("xrpl canonical: withdrawal operation is required")
+	}
 	if asString(flat["TransactionType"]) != "Payment" {
 		return fmt.Errorf("xrpl canonical: wrong TransactionType %v", flat["TransactionType"])
 	}
-	if !strings.EqualFold(asString(flat["Account"]), vault) {
+	if asString(flat["Account"]) != vault {
 		return fmt.Errorf("xrpl canonical: Account %v != vault %s", flat["Account"], vault)
 	}
-	if !strings.EqualFold(asString(flat["Destination"]), op.Recipient) {
+	if asString(flat["Destination"]) != op.Recipient {
 		return fmt.Errorf("xrpl canonical: Destination %v != op.Recipient %s", flat["Destination"], op.Recipient)
-	}
-	wantAmount, err := BuildAmount(ctx, assets, op)
-	if err != nil {
-		return fmt.Errorf("xrpl canonical: build expected Amount: %w", err)
-	}
-	if err := amountEqual(flat["Amount"], wantAmount); err != nil {
-		return fmt.Errorf("xrpl canonical: Amount mismatch: %w", err)
 	}
 	wantInvoice := strings.ToUpper(hex.EncodeToString(withdrawalID[:]))
 	if !strings.EqualFold(asString(flat["InvoiceID"]), wantInvoice) {
@@ -489,22 +484,11 @@ func ValidateCanonical(ctx context.Context, assets blockchain.AssetResolver, fla
 	if seq, ok := uint32Field(flat["Sequence"]); !ok || seq != 0 {
 		return fmt.Errorf("xrpl canonical: Sequence must be 0 on Tickets path, got %v", flat["Sequence"])
 	}
-	if err := checkFee("canonical", flat["Fee"], minFee); err != nil {
-		return err
-	}
-	// Flags is allowlisted (honest bodies omit it) but its value must be
-	// constrained: a non-zero Flags can carry tfPartialPayment, which on an
-	// issued-currency withdrawal lets the submitter deliver less than Amount
-	// while the ceremony still reports success (ISS-002). Reject any present
-	// Flags that is non-zero or non-numeric.
-	if raw, ok := flat["Flags"]; ok {
+	// tfPartialPayment could deliver less than the authorized Amount.
+	if raw, present := flat["Flags"]; present {
 		if v, ok := uint32Field(raw); !ok || v != 0 {
 			return fmt.Errorf("xrpl canonical: non-zero or invalid Flags not permitted: %v", raw)
 		}
-	}
-	llsRaw, llsPresent := flat["LastLedgerSequence"]
-	if err := policy.checkField(llsRaw, llsPresent); err != nil {
-		return err
 	}
 	for k := range flat {
 		if _, ok := canonicalAllowedFields[k]; !ok {
@@ -512,6 +496,27 @@ func ValidateCanonical(ctx context.Context, assets blockchain.AssetResolver, fla
 		}
 	}
 	return nil
+}
+
+// ValidateCanonical asserts the canonical flatTx matches the op, that its Fee
+// lies in [minFee, maxAcceptableFeeDrops] where minFee is the multisign floor,
+// and that its LastLedgerSequence falls inside the follower's expiry band.
+func ValidateCanonical(ctx context.Context, assets blockchain.AssetResolver, flat transaction.FlatTransaction, op *core.WithdrawalOp, withdrawalID [32]byte, vault string, policy llsPolicy, minFee uint64) error {
+	if err := validatePaymentShape(flat, op, withdrawalID, vault); err != nil {
+		return err
+	}
+	wantAmount, err := BuildAmount(ctx, assets, op)
+	if err != nil {
+		return fmt.Errorf("xrpl canonical: build expected Amount: %w", err)
+	}
+	if err := amountEqual(flat["Amount"], wantAmount); err != nil {
+		return fmt.Errorf("xrpl canonical: Amount mismatch: %w", err)
+	}
+	if err := checkFee("canonical", flat["Fee"], minFee); err != nil {
+		return err
+	}
+	llsRaw, llsPresent := flat["LastLedgerSequence"]
+	return policy.checkField(llsRaw, llsPresent)
 }
 
 // ValidateNetworkID enforces the exact live network-domain policy on a flat
@@ -551,16 +556,12 @@ var rotationAllowedFields = map[string]struct{}{
 	"LastLedgerSequence": {},
 }
 
-// validateCanonicalRotation asserts the canonical SignerListSet flatTx rotates
-// the vault to exactly newSigners / newThreshold (each entry weight 1, quorum ==
-// newThreshold), with a Fee in [minFee, maxAcceptableFeeDrops] and no
-// unexpected fields. minFee is the floor for the CURRENT SignerList's quorum,
-// which signs the SignerListSet; newThreshold does not size it.
-func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []string, newThreshold int, vault string, policy llsPolicy, minFee uint64) error {
+// validateRotationShape rejects cheap candidate errors before live RPC reads.
+func validateRotationShape(flat transaction.FlatTransaction, newSigners []string, newThreshold int, vault string) error {
 	if asString(flat["TransactionType"]) != "SignerListSet" {
 		return fmt.Errorf("xrpl rotation: wrong TransactionType %v", flat["TransactionType"])
 	}
-	if !strings.EqualFold(asString(flat["Account"]), vault) {
+	if asString(flat["Account"]) != vault {
 		return fmt.Errorf("xrpl rotation: Account %v != vault %s", flat["Account"], vault)
 	}
 	quorum, ok := uint32Field(flat["SignerQuorum"])
@@ -583,19 +584,10 @@ func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []st
 			return fmt.Errorf("xrpl rotation: unexpected signer entry %s", a)
 		}
 	}
-	if err := checkFee("rotation", flat["Fee"], minFee); err != nil {
-		return err
-	}
-	// Flags is allowlisted but its value must be constrained; reject any present
-	// Flags that is non-zero or non-numeric (ISS-002).
-	if raw, ok := flat["Flags"]; ok {
+	if raw, present := flat["Flags"]; present {
 		if v, ok := uint32Field(raw); !ok || v != 0 {
 			return fmt.Errorf("xrpl rotation: non-zero or invalid Flags not permitted: %v", raw)
 		}
-	}
-	llsRaw, llsPresent := flat["LastLedgerSequence"]
-	if err := policy.checkField(llsRaw, llsPresent); err != nil {
-		return err
 	}
 	for k := range flat {
 		if _, ok := rotationAllowedFields[k]; !ok {
@@ -603,6 +595,19 @@ func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []st
 		}
 	}
 	return nil
+}
+
+// validateCanonicalRotation checks the canonical SignerListSet and its fee and
+// ledger bounds. The floor uses the current, not the incoming, SignerQuorum.
+func validateCanonicalRotation(flat transaction.FlatTransaction, newSigners []string, newThreshold int, vault string, policy llsPolicy, minFee uint64) error {
+	if err := validateRotationShape(flat, newSigners, newThreshold, vault); err != nil {
+		return err
+	}
+	if err := checkFee("rotation", flat["Fee"], minFee); err != nil {
+		return err
+	}
+	llsRaw, llsPresent := flat["LastLedgerSequence"]
+	return policy.checkField(llsRaw, llsPresent)
 }
 
 // signerEntryAccounts extracts the set of member accounts from a SignerEntries
@@ -657,7 +662,7 @@ func amountEqual(got any, want types.CurrencyAmount) error {
 		if !ok {
 			return fmt.Errorf("issued amount must be an object, got %v (%T)", got, got)
 		}
-		if !strings.EqualFold(asString(gotMap["issuer"]), string(w.Issuer)) {
+		if asString(gotMap["issuer"]) != string(w.Issuer) {
 			return fmt.Errorf("issuer %v != %s", gotMap["issuer"], w.Issuer)
 		}
 		if !strings.EqualFold(asString(gotMap["currency"]), w.Currency) {
@@ -826,8 +831,11 @@ func blobSignerAccount(blob string) (string, error) {
 		return "", fmt.Errorf("blob missing Signers field")
 	}
 	signers, ok := signersAny.([]any)
-	if !ok || len(signers) == 0 {
-		return "", fmt.Errorf("blob Signers field not a non-empty array")
+	// Honest signMultisig produces one signer per blob. Multisign merges every
+	// Signers entry, so checking only the first would let a peer smuggle an
+	// unauthorized second signer into the submitted transaction.
+	if !ok || len(signers) != 1 {
+		return "", fmt.Errorf("blob must contain exactly one Signer, got %d", len(signers))
 	}
 	first, ok := signers[0].(map[string]any)
 	if !ok {
@@ -849,6 +857,9 @@ func hashHex(h [32]byte) string { return strings.ToUpper(hex.EncodeToString(h[:]
 
 // computeTxHash computes the XRPL transaction hash from a tx blob hex string.
 func computeTxHash(txBlobHex string) ([32]byte, error) {
+	if txBlobHex == "" {
+		return [32]byte{}, fmt.Errorf("xrpl: successful submit returned an empty tx blob")
+	}
 	blobBytes, err := hex.DecodeString(txBlobHex)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("xrpl: decode tx blob: %w", err)

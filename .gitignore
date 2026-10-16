@@ -1,6 +1,9 @@
 # Stray `go build` output for the refresher command
 /abi_refresher
 
+# Local clearbox ledger, generated development key and SQLite journals
+/.clearbox/
+
 # Foundry build output
 contracts/out/
 contracts/cache/

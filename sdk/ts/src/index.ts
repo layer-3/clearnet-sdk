@@ -78,3 +78,6 @@ export type {
   XrplSigner,
   XrplSubmitDepositInput,
 } from "./blockchain/xrpl/index.js";
+// Public gateway client (balances, history, EIP-712 transfers). Also available
+// as the lightweight "@yellow-org/clearnet-sdk/gateway" entry point.
+export * from "./gateway/index.js";

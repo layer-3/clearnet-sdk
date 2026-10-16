@@ -1,4 +1,4 @@
-.PHONY: build lint test generate devnet devnet-evm devnet-sol devnet-xrpl devnet-btc devnet-down ts-deps integration
+.PHONY: build lint test generate clearbox test-clearbox devnet devnet-evm devnet-sol devnet-xrpl devnet-btc devnet-down ts-deps integration
 
 build:
 	go build ./...
@@ -8,6 +8,15 @@ lint:
 
 test:
 	go test -race ./...
+
+# Local-only shared gateway for the Yellow CLI and web app. No Docker/L1 needed.
+clearbox:
+	go run ./cmd/clearbox
+
+test-clearbox: ts-deps
+	go test -race ./internal/clearbox ./cmd/clearbox
+	go test -race ./internal/yellow -run '^TestCLIWithClearbox$$'
+	npm --prefix sdk/ts run test:clearbox
 
 # Regenerate all generated code:
 #   - pkg/blockchain/evm/*_abi.go from the vendored ABI/bytecode in

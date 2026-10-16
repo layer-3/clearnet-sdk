@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/Peersyst/xrpl-go/xrpl/queries/account"
+	"github.com/Peersyst/xrpl-go/xrpl/queries/common"
 	"github.com/Peersyst/xrpl-go/xrpl/rpc"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction"
 	"github.com/Peersyst/xrpl-go/xrpl/transaction/types"
@@ -168,6 +169,9 @@ func (f *RotationFinalizer) Pack(ctx context.Context, _ [32]byte, newSigners []s
 	if err := call.AutofillMultisigned(&flatTx, uint64(quorum)); err != nil {
 		return nil, fmt.Errorf("xrpl: autofill: %w", err)
 	}
+	if err := checkFee("packed rotation", flatTx["Fee"], 1); err != nil {
+		return nil, err
+	}
 	// Replace autofill's LastLedgerSequence with a ledger-budget bound (or drop it
 	// in standalone mode). No withdrawal deadline applies to a rotation, so the
 	// budget is ledger-based only.
@@ -197,6 +201,9 @@ func (f *RotationFinalizer) Validate(ctx context.Context, _ [32]byte, packed []b
 	var flat transaction.FlatTransaction
 	if err := json.Unmarshal(packed, &flat); err != nil {
 		return candidateRejected(fmt.Errorf("xrpl: decode packed: %w", err))
+	}
+	if err := validateRotationShape(flat, newSigners, newThreshold, f.vaultAddress); err != nil {
+		return candidateRejected(err)
 	}
 	policy := llsPolicy{standalone: f.standalone}
 	if !f.standalone {
@@ -267,21 +274,25 @@ func (f *RotationFinalizer) Submit(ctx context.Context, _ []byte, signatures [][
 	}
 }
 
-// VerifyRotation reads the vault's on-chain SignerList and reports whether it now
-// holds exactly newSigners with SignerQuorum == newThreshold. Binary: no txID is
-// recoverable from the SignerList object, so an empty txID is returned with
-// done=true.
+// VerifyRotation reads the vault's validated SignerList and reports whether it
+// holds exactly newSigners with SignerQuorum == newThreshold. No txID is
+// recoverable from the SignerList object, so done=true returns an empty txID.
+// Custody uses its own validated-ledger rotation verifier.
 func (f *RotationFinalizer) VerifyRotation(ctx context.Context, newSigners []string, newThreshold int) (string, bool, error) {
 	call, err := f.rpc(ctx)
 	if err != nil {
 		return "", false, err
 	}
 	resp, err := call.GetAccountObjects(&account.ObjectsRequest{
-		Account: types.Address(f.vaultAddress),
-		Type:    account.SignerListObject,
+		Account:     types.Address(f.vaultAddress),
+		LedgerIndex: common.Validated,
+		Type:        account.SignerListObject,
 	})
 	if err != nil {
 		return "", false, fmt.Errorf("xrpl rotation verify: account_objects: %w", err)
+	}
+	if !resp.Validated {
+		return "", false, fmt.Errorf("xrpl rotation verify: account_objects response is not validated")
 	}
 	want := make(map[string]struct{}, len(newSigners))
 	for _, s := range newSigners {

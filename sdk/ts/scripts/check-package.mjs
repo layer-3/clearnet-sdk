@@ -40,6 +40,10 @@ for (const name of ["EvmVaultDepositor", "BitcoinVaultDepositor", "SolanaVaultDe
   assert.equal(typeof sdk[name], "function", name);
 }
 assert.deepEqual(sdk.splitNonce(sdk.composeNonce(7n, 3n)), { key: 7n, sequence: 3n });
+const gateway = await import("@yellow-org/clearnet-sdk/gateway");
+assert.equal(typeof gateway.GatewayClient, "function");
+assert.equal(sdk.GatewayClient, gateway.GatewayClient);
+assert.equal(gateway.networkChainId("YDEV"), 1497646422);
 const keypair = web3.Keypair.generate();
 const depositor = new sdk.SolanaVaultDepositor({
   rpcUrl: "http://127.0.0.1:8899",
@@ -72,6 +76,10 @@ console.log("Packed SDK: public exports, Solana preparation/signing/simulation, 
   run(process.execPath, ["smoke.mjs"], consumer);
   writeFileSync(join(consumer, "smoke.ts"), `
 import { solana, type SubmitDepositResult, type VaultDepositor, type DepositStatus, type SolanaSigner } from "@yellow-org/clearnet-sdk";
+import { GatewayClient, type TransferIntent } from "@yellow-org/clearnet-sdk/gateway";
+const gateway: GatewayClient = new GatewayClient({ baseUrl: "https://gateway.example", networkId: "YDEV" });
+const to: TransferIntent["to"] = "yellow://ynet/user/0x00000000000000000000000000000000000000bb";
+void [gateway, to];
 const connection: solana.Connection = new solana.Connection("http://127.0.0.1:8899");
 void connection;
 const result: SubmitDepositResult = { txHash: "tx", depositId: "deposit" };
