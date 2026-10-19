@@ -9,6 +9,8 @@ This repository currently contains:
 - a TypeScript package under `sdk/ts`, published/imported as
   `@yellow-org/clearnet-sdk`;
 - Docker-backed local devnet tooling for Go and TypeScript integration tests.
+- a [local clearbox gateway](cmd/clearbox/README.md) shared by the Yellow CLI and
+  web app, with a generated test account and SQLite persistence and no external infrastructure.
 
 The Go SDK is the broader backend-facing SDK. The TypeScript SDK currently
 focuses on browser and application deposit flows for EVM, Solana, XRPL, and Bitcoin.
@@ -48,6 +50,10 @@ mechanical rather than a fresh audit.
 
 | Path | Purpose |
 |---|---|
+| `cmd/yellow`, `internal/yellow` | Public account, balance, transfer and recovery CLI. See [the user guide](cmd/yellow/README.md). |
+| `cmd/clearbox`, `internal/clearbox` | Yellow account/transfer simulator for development. See [setup and local test-key precautions](cmd/clearbox/README.md). |
+| `skills/yellow-network` | Agent skill for efficient CLI queries, human-approved payments and safe operation recovery. See [installation and use](cmd/yellow/README.md#scripts-and-agents). |
+| `pkg/wallet` | Public BIP-39/BIP-32 Ethereum index-zero key derivation. |
 | `pkg/core` | Shared Clearnet data types, operations, transaction references, deposit destinations, and adapter interfaces. |
 | `pkg/blockchain/evm` | **Custody-implementation-specific.** Go EVM adapters for vault deposits, withdrawals, signer rotation, registry/faucet/token/fraud interactions, and generated contract bindings. |
 | `pkg/blockchain/sol` | **Custody-implementation-specific.** Go Solana custody adapter code, program bindings, deposits, withdrawals, and signer rotation. |
@@ -64,6 +70,26 @@ mechanical rather than a fresh audit.
 | `testdata` | Shared conformance fixtures, including vectors used by both Go and TypeScript. |
 | `docs` | Release guidance. See `docs/releasing.md`. |
 
+## Yellow CLI
+
+The public [Yellow CLI](cmd/yellow/README.md) provides encrypted local accounts, live
+balances, transfers, recent history, recovery, shell completion, and an interactive
+prompt with live suggestions. Direct commands provide versioned JSON for scripts
+and agents.
+
+Import an existing Ethereum private key with `yellow account import <name>`, or
+reveal a saved account's key with `yellow account export-key [name]` to import it
+into MetaMask. See the [wallet import and export guide](cmd/yellow/README.md#import-an-account-by-private-key).
+
+```sh
+go install github.com/layer-3/clearnet-sdk/cmd/yellow@v0.9.0
+yellow help
+yellow shell
+```
+
+See the [CLI README](cmd/yellow/README.md) for setup, commands, and recovery,
+including [the AI agent skill](cmd/yellow/README.md#scripts-and-agents).
+
 ## Go SDK
 
 The Go module is rooted at this repository:
@@ -74,6 +100,10 @@ go get github.com/layer-3/clearnet-sdk
 
 Common entry points:
 
+- `pkg/client`: public gateway HTTP client for network/asset discovery,
+  balances, recent transfer history, deterministic transfer preparation,
+  signing, submission and unknown-outcome status checks. It does not manage
+  private-key files or expose validator/operator plumbing.
 - `pkg/core`: chain-neutral interfaces such as `VaultDepositor`,
   `VaultWithdrawalFinalizer`, `SignerRotationFinalizer`, `TxRef`, and
   `DepositDestination`.
@@ -87,6 +117,65 @@ Common entry points:
   checker reference and K are private; use the constructor, including for K=1.
   Former struct literals setting `TrustedValidators` no longer compile. The
   checker may still track live registry membership; its reference cannot be replaced.
+
+A user client talks to a trusted gateway, not the validator TCP port. The
+application supplies an already-authorized `sign.Signer`; the SDK never reads
+a mnemonic or key file:
+
+```go
+c, err := client.New("https://gateway.example.org", "YTES")
+if err != nil { return err }
+info, err := c.Info(ctx) // verifies network ID, EIP-712 chain and router
+if err != nil { return err }
+_ = info
+balance, err := c.Balance(ctx, accountAddress)
+if err != nil { return err }
+_ = balance
+intent, err := c.PrepareTransfer(ctx, signer, recipient,
+    []client.TransferAmount{{Asset: "YELLOW", Amount: "1.25"}}, "0.01")
+if err != nil { return err }
+// Display/review intent; SignTransfer does not submit it.
+signed, err := c.SignTransfer(ctx, signer, intent)
+if err != nil { return err }
+// Persist this signed authorization safely before submitting; it can spend
+// funds, and retrying with a NEW nonce after a timeout can pay twice.
+result, err := c.SubmitTransfer(ctx, signed, client.SubmitOptions{FirstSubmission: true})
+if err != nil {
+    var uncertain *client.SubmissionError
+    if errors.As(err, &uncertain) && uncertain.OutcomeUnknown {
+        status, queryErr := c.Operation(ctx, uncertain.OperationID)
+        _ = status; _ = queryErr // do not re-sign or assume unknown means rejected
+    }
+    return err
+}
+_ = result
+page, err := c.Transfers(ctx, accountAddress, client.TransferPageOptions{Limit: 20})
+_ = page; _ = err
+```
+
+Set `FirstSubmission` only when the authorization has never been submitted.
+Omit it for replay or uncertain history: a refused request then leaves the outcome
+unknown because an earlier request may have executed. `Submitted: false` describes
+only a failed preflight in the current call, not the fate of earlier submissions.
+
+`SealedTransferAtNonce(ctx, sender, nonce)` can reconcile a nonce consumed by
+another wallet using the trusted gateway's verified outgoing history. It checks
+up to 1,000 recent entries; a missing result never proves non-execution. The
+[CLI automatically retains this evidence](cmd/yellow/README.md#understand-the-result)
+when a nonce advances past a rejected authorization, avoiding a manual override.
+
+`Transfers` is a recent, sender-sealed transfer feed (30-day gateway retention
+by default), not an archive or proof of recipient credit. `Operation` is
+transfer-only and relies on the gateway's locally persisted signed intent;
+another gateway may report `unknown`. `unknown` is not evidence the transfer
+did not execute. An operator may explicitly resubmit the **same** retained
+`SignedTransfer` after its pending window; the SDK never retries a POST or
+obtains a new nonce automatically. The
+Go client intentionally excludes deposits, withdrawals, swaps, WebSocket
+subscriptions and key storage. The separate `pkg/eip712` package exposes pure
+Swap/Withdrawal digest and signing helpers for integrations, but `pkg/client`
+does not submit those operations. The standalone [Yellow CLI](cmd/yellow/README.md) owns
+local account storage and safe transfer recovery under `cmd/yellow`.
 
 Run the Go checks:
 
@@ -178,6 +267,11 @@ Bitcoin integration tests. See `devnet/README.md` for ports,
 provisioning behavior, and environment overrides.
 
 ## Development Notes
+
+Use the [PR template](.github/pull_request_template.md) when creating or updating
+pull requests, including those written by agents. Lead with the user benefit,
+then explain the changes, relevant behavior, scope and validation. Keep small
+changes brief and label upcoming work separately from the current diff.
 
 - Use `make test` for the Go race-enabled test suite.
 - Use `npm --prefix sdk/ts test` to discover all TypeScript unit and example

@@ -1,6 +1,6 @@
 {
   "name": "@yellow-org/clearnet-sdk",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "TypeScript SDK for Clearnet integration.",
   "type": "module",
   "license": "MIT",
@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./gateway": {
+      "types": "./dist/gateway/index.d.ts",
+      "import": "./dist/gateway/index.js"
     }
   },
   "files": [
@@ -27,6 +31,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "test:core": "vitest run test/core",
+    "test:clearbox": "vitest run --mode integration test/gateway/clearbox.integration.test.ts",
     "test:evm": "vitest run test/blockchain/evm",
     "test:sol": "vitest run test/blockchain/sol",
     "test:xrpl": "vitest run test/blockchain/xrpl test/examples/xrpl-deposit",

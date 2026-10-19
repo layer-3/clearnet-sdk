@@ -98,26 +98,30 @@ func rewind(req *http.Request) (*http.Request, error) {
 	return retry, nil
 }
 
-// networkIDCache is the NetworkID an SDK object learned from server_info,
-// shared by its concurrent operations. Zero means unknown or not required.
+// networkIDCache distinguishes an unresolved policy from a resolved network
+// that requires no NetworkID field (whose encoded ID is also zero).
 type networkIDCache struct {
-	mu sync.Mutex
-	id uint32
+	mu    sync.Mutex
+	id    uint32
+	known bool
 }
 
-func (c *networkIDCache) load() uint32 {
+func (c *networkIDCache) load() (uint32, bool) {
 	if c == nil {
-		return 0
+		return 0, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.id
+	return c.id, c.known
 }
 
 func (c *networkIDCache) store(id uint32) {
+	if c == nil {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.id = id
+	c.id, c.known = id, true
 }
 
 // rpcCall returns an xrpl-go client for one operation against rpcURL. Every
@@ -135,7 +139,7 @@ func rpcCall(ctx context.Context, rpcURL string, cache *networkIDCache) (*rpc.Cl
 		return nil, fmt.Errorf("xrpl: create rpc config: %w", err)
 	}
 	call := rpc.NewClient(cfg)
-	call.NetworkID = cache.load()
+	call.NetworkID, _ = cache.load()
 	return call, nil
 }
 
@@ -165,26 +169,32 @@ func Request(ctx context.Context, rpcURL string, req rpc.XRPLRequest) (rpc.XRPLR
 // if client does: pass a client from NewContextClient for a context-bound,
 // 503-safe read, as the SDK finalizers use their own context-bound client.
 func ResolveNetworkIDPolicy(client *rpc.Client) (NetworkIDPolicy, error) {
-	policy, id, err := networkIDPolicy(client.NetworkID, client)
-	client.NetworkID = id
+	policy, id, err := networkIDPolicy(client.NetworkID, client.NetworkID != 0, client)
+	if err == nil {
+		client.NetworkID = id
+	}
 	return policy, err
 }
 
 // resolveNetworkIDPolicy reads server_info through call unless cache already
-// holds a NetworkID, and leaves the result on both cache and call so a later
+// knows the policy, and leaves the result on both cache and call so a later
 // Autofill through call sees it. The cache lock is not held across the RPC;
 // concurrent resolvers store the same live value.
 func resolveNetworkIDPolicy(cache *networkIDCache, call *rpc.Client) (NetworkIDPolicy, error) {
-	policy, id, err := networkIDPolicy(cache.load(), call)
+	cached, known := cache.load()
+	policy, id, err := networkIDPolicy(cached, known, call)
+	if err != nil {
+		return NetworkIDPolicy{}, err
+	}
 	cache.store(id)
 	call.NetworkID = id
-	return policy, err
+	return policy, nil
 }
 
-// networkIDPolicy derives the policy from cached, reading server_info through
-// call only when cached is zero. It returns the NetworkID to cache.
-func networkIDPolicy(cached uint32, call *rpc.Client) (NetworkIDPolicy, uint32, error) {
-	if cached != 0 {
+// networkIDPolicy derives the policy from cached, reading server_info only
+// when it has not yet been resolved (including on networks with no NetworkID).
+func networkIDPolicy(cached uint32, known bool, call *rpc.Client) (NetworkIDPolicy, uint32, error) {
+	if known {
 		if cached <= xrplNetworkIDRequiredAbove {
 			return NetworkIDPolicy{}, 0, nil
 		}

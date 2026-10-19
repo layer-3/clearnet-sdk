@@ -1,0 +1,48 @@
+name: Yellow CLI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Public CLI safety and recovery tests
+        run: go test -race ./cmd/yellow ./internal/yellow ./pkg/wallet ./pkg/client
+      - name: Interactive shell, hidden input and cancellation
+        run: python3 scripts/test-yellow-terminal.py
+      - name: Build platform archives and checksums
+        env:
+          YELLOW_VERSION: ${{ github.event.release.tag_name || github.sha }}
+        run: ./scripts/build-yellow.sh "$YELLOW_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yellow-cli
+          path: dist/yellow/*
+
+  # Cross-language contract test: the TypeScript SDK and the CLI both drive the
+  # same clearbox gateway, so their wire, EIP-712 and recovery rules must agree.
+  clearbox-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdk/ts/package-lock.json
+      - name: Go simulator, CLI recovery and TS client against one gateway
+        run: make test-clearbox

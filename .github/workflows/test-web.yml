@@ -1,0 +1,40 @@
+name: Test (Yellow Web)
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdk/ts/package-lock.json
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.7
+          run_install: false
+      - name: Install and build the linked SDK
+        run: npm ci --prefix sdk/ts && npm --prefix sdk/ts run build
+      - name: Install web dependencies from the lockfile
+        run: pnpm install --frozen-lockfile
+        working-directory: web
+      - name: Web unit tests
+        run: pnpm test
+        working-directory: web
+      - name: Web typecheck
+        run: pnpm typecheck
+        working-directory: web
+      - name: Web lint
+        run: pnpm lint
+        working-directory: web
+      - name: Build web and linked SDK
+        run: pnpm build
+        working-directory: web

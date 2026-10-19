@@ -1,0 +1,51 @@
+name: Publish Yellow CLI binaries
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    uses: ./.github/workflows/yellow.yml
+
+  # docs/releasing.md requires normal SDK validation before publication, so the
+  # release attaches binaries only when the tagged commit passes both suites.
+  unit:
+    uses: ./.github/workflows/test-go.yml
+
+  typescript:
+    uses: ./.github/workflows/test-ts.yml
+
+  web:
+    uses: ./.github/workflows/test-web.yml
+
+  forge:
+    uses: ./.github/workflows/test-forge.yml
+
+  integration:
+    uses: ./.github/workflows/test-integration.yml
+
+  artifacts:
+    uses: ./.github/workflows/check-release-artifacts.yml
+
+  publish:
+    needs: [cli, unit, typescript, web, forge, integration, artifacts]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: yellow-cli
+          path: dist/yellow
+      - name: Attach binaries to the published SDK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          YELLOW_TAG: ${{ github.event.release.tag_name }}
+        # --clobber keeps a re-run after a partial upload idempotent; the assets
+        # are deterministic builds of an immutable tag.
+        run: gh release upload "$YELLOW_TAG" dist/yellow/* --clobber

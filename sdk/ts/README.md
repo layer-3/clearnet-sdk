@@ -1,7 +1,8 @@
 # Clearnet TypeScript SDK
 
-TypeScript SDK for Clearnet integration. This package currently exposes EVM,
-Solana, XRPL, and Bitcoin vault depositors. EVM supports native ETH and ERC-20
+TypeScript SDK for Clearnet integration. This package exposes a public gateway
+client (balances, transfer history, EIP-712 transfers and operation recovery)
+and EVM, Solana, XRPL, and Bitcoin vault depositors. EVM supports native ETH and ERC-20
 deposits. Solana supports native SOL and SPL token deposits. XRPL supports
 native XRP and issued-currency deposits. Bitcoin supports native BTC deposits.
 Deposits credit a `destination` account. EVM, Solana, XRPL, and Bitcoin can
@@ -28,6 +29,112 @@ Solana signer adapters use the `@solana/web3.js` v1 transaction API.
 Import Solana client helpers from the SDK's `solana` namespace so transactions
 and RPC clients share the same constructors. Mixing transactions with a
 separately installed client can break methods such as `simulateTransaction`.
+
+## Gateway Client
+
+`GatewayClient` is the TypeScript counterpart of the Go `pkg/client` used by
+the `yellow` CLI. It reads balances and recent transfers, and prepares, signs
+and submits EIP-712 transfers through a public gateway. It depends only on
+`viem`; import it from the `/gateway` entry point to keep chain depositors out
+of browser bundles.
+
+```ts
+import { GatewayClient, toBaseUnits } from "@yellow-org/clearnet-sdk/gateway";
+
+const gateway = new GatewayClient({
+  baseUrl: "https://gateway.example.org",
+  networkId: "YTES",          // the gateway must serve this network
+  // fingerprint: "…",        // optional: pin the identity `yellow network show` prints
+});
+
+const balance = await gateway.balance(address);              // live, includes the nonce
+const page = await gateway.transfers(address, { limit: 20 }); // recent cache, cursor paging
+
+const intent = await gateway.prepareTransfer({
+  from: address,
+  recipient: "0x…",                                          // or yellow://ynet/user/0x…
+  assets: [{ asset: "USDC", amount: "125.5" }, { asset: "YELLOW", amount: "2" }],
+  maxFee: "0.5",                                              // explicit YELLOW ceiling
+});
+
+// Any EIP-712 signer works: wagmi signTypedDataAsync, a viem WalletClient, or a local account.
+const signed = await gateway.signTransfer(intent, (typedData) => walletClient.signTypedData({ account, ...typedData }));
+const result = await gateway.submitTransfer(signed, { firstSubmission: true }); // sealed or pending
+```
+
+Prepared intents retain a `catalogueFingerprint` covering the signing domain,
+asset decimals and backing-asset identities. Both signing and submission check
+fresh metadata against it, including when the client has no configured trust pin.
+Persist that field with signed intents. Missing or changed catalogue metadata
+requires preparation and review again; this local guard does not change the
+EIP-712 schema or revoke signatures already issued. The Go client uses the same
+fingerprint through `client.NetworkFingerprint`.
+
+Pool `spotPrice` is a base-unit reserve ratio multiplied by `10^18`, not a human
+price string. The optional `transferPrice` is the effective integer YELLOW
+base-unit ratio used for transfer fees (EMA after bootstrap). Older gateways
+without `transferPrice` need an explicit user-approved fee cap.
+
+
+Wallets that enforce "domain chain ID equals active chain" (MetaMask) need the
+Yellow chain active before signing. Its chain ID is `networkChainId(networkId)`.
+`prepareTransfer` resolves a pasted user URI to its account address before
+signing. For an externally prepared Go intent that retains a canonical
+`yellow://` recipient, `transferTypedData` instead signs the first 20 bytes of
+`keccak256(uri)` in the EIP-712 `to` slot, exactly like the Go SDK, while the
+routed request keeps the original URI. If your app signs one of these raw URI
+intents, show the full URI to the user before requesting the wallet signature:
+the wallet displays the derived address, not the human-readable URI.
+
+Submission never retries automatically: a timeout can happen after the network
+included the transfer. Persist the signed transfer before posting and follow
+the CLI's recovery rules, which are exported as pure functions:
+
+```ts
+import { applySubmission, markSubmitting, newOperationRecord, observeOperation, retryDecision } from "@yellow-org/clearnet-sdk/gateway";
+
+let record = newOperationRecord(signed, gateway.baseUrl);   // save it
+const submitting = markSubmitting(record);                  // save it BEFORE the POST
+try {
+  record = applySubmission(record, submitting, {
+    result: await gateway.submitTransfer(signed, { firstSubmission: record.submittedAt === undefined }),
+  });
+} catch (error) {
+  record = applySubmission(record, submitting, { error });  // rejected, unresolved, or restored
+}
+// Later: observeOperation(record, await gateway.operation(record.id)).
+// Replay record.signed only when retryDecision(record, status).allowed.
+```
+
+Set `firstSubmission` only when the authorization has never been submitted.
+Omitting it conservatively keeps POST errors unknown, including a stale-nonce
+409 after an earlier execution. `definiteRejection` therefore applies only to
+recognized rejections of a known first submission. A preflight `submitted: false`
+describes this call only. Pass an abort signal as `{ signal }`; the existing
+`submitTransfer(signed, signal)` form also remains supported.
+
+Before signing another transfer, check `unexplainedRejectedOperation(records,
+networkId, sender, prepared.nonce)` as well as `blockingOperation` and
+`staleNonceOperation`. An advanced nonce after a locally rejected authorization
+needs reconciliation unless a local seal at that same nonce explains it. Call
+`await reconcileRejectedOperation(record, originalGatewayClient)` for that
+record, and persist the returned record under the account lock before signing.
+If it becomes `sealed`, stop the replacement send and review the actual payment.
+Otherwise `nonceConsumedBy` retains a different outgoing transfer sealed at the
+exact sender nonce, so `unexplainedRejectedOperation` no longer blocks it. The
+rejection and signed authorization remain intact. The web wallet performs this
+automatically during preparation and again under its signing lock.
+
+`gateway.sealedTransferAtNonce(sender, nonce)` searches up to 1,000 recent
+activity entries. It relies on the trusted gateway's verified history index,
+without verifying validator quorum locally. Missing, expired, unavailable or
+inconsistent evidence keeps new sends blocked; ask the original gateway operator
+to restore its verified index. An advanced nonce alone never clears the guard.
+
+Amounts are exact decimal strings (`toBaseUnits`, `fromBaseUnits`,
+`formatBaseUnits`); floats are never used. Errors are `GatewayError` (with a
+`kind`), `APIError` (REST envelope) and `SubmissionError` (always carries the
+operation ID; `outcomeUnknown` is never permission to re-sign).
 
 ## Bitcoin Quick Start
 

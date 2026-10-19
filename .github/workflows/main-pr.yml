@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: sdk-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   unit:
     name: Unit
@@ -20,6 +24,10 @@ jobs:
     name: TypeScript
     uses: ./.github/workflows/test-ts.yml
 
+  web:
+    name: Yellow Web
+    uses: ./.github/workflows/test-web.yml
+
   integration:
     name: Integration
     uses: ./.github/workflows/test-integration.yml
@@ -27,3 +35,7 @@ jobs:
   artifacts:
     name: Artifacts
     uses: ./.github/workflows/check-release-artifacts.yml
+
+  cli:
+    name: Yellow CLI
+    uses: ./.github/workflows/yellow.yml
