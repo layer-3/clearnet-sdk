@@ -31,6 +31,17 @@ func TestNetworkFingerprintMatchesTypeScript(t *testing.T) {
 	}
 }
 
+func TestNetworkFingerprintEscapingGolden(t *testing.T) {
+	var info client.NetworkInfo
+	if err := json.Unmarshal([]byte(`{"networkId":"YDEV","chainId":1497646422,"virtualRouter":"0x00000000000000000000000000000000434C5200","assets":[{"symbol":"YELLOW","address":"<>&\u2028\u2029","decimals":18}]}`), &info); err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.NetworkFingerprint(info)
+	if err != nil || got != "7ce75d8e8477b20bf1bff4bbb4d813153fc21aadf9c2181ce5f9205f179ce0cf" {
+		t.Fatalf("escaped fingerprint = %s, %v", got, err)
+	}
+}
+
 func TestPreparedTransferRejectsCatalogueDrift(t *testing.T) {
 	changes := map[string]func(*client.NetworkInfo){
 		"decimals":      func(i *client.NetworkInfo) { i.Assets[0].Decimals = 6 },

@@ -59,7 +59,7 @@ const intent = await gateway.prepareTransfer({
 
 // Any EIP-712 signer works: wagmi signTypedDataAsync, a viem WalletClient, or a local account.
 const signed = await gateway.signTransfer(intent, (typedData) => walletClient.signTypedData({ account, ...typedData }));
-const result = await gateway.submitTransfer(signed);         // sealed (receipt) or pending
+const result = await gateway.submitTransfer(signed, { firstSubmission: true }); // sealed or pending
 ```
 
 Prepared intents retain a `catalogueFingerprint` covering the signing domain,
@@ -96,13 +96,27 @@ import { applySubmission, markSubmitting, newOperationRecord, observeOperation, 
 let record = newOperationRecord(signed, gateway.baseUrl);   // save it
 const submitting = markSubmitting(record);                  // save it BEFORE the POST
 try {
-  record = applySubmission(record, submitting, { result: await gateway.submitTransfer(signed) });
+  record = applySubmission(record, submitting, {
+    result: await gateway.submitTransfer(signed, { firstSubmission: record.submittedAt === undefined }),
+  });
 } catch (error) {
   record = applySubmission(record, submitting, { error });  // rejected, unresolved, or restored
 }
 // Later: observeOperation(record, await gateway.operation(record.id)).
 // Replay record.signed only when retryDecision(record, status).allowed.
 ```
+
+Set `firstSubmission` only when the authorization has never been submitted.
+Omitting it conservatively keeps POST errors unknown, including a stale-nonce
+409 after an earlier execution. `definiteRejection` therefore applies only to
+recognized rejections of a known first submission. A preflight `submitted: false`
+describes this call only. Pass an abort signal as `{ signal }`; the existing
+`submitTransfer(signed, signal)` form also remains supported.
+
+Before signing another transfer, check `unexplainedRejectedOperation(records,
+networkId, sender, prepared.nonce)` as well as `blockingOperation` and
+`staleNonceOperation`. An advanced nonce after a locally rejected authorization
+needs reconciliation unless a local seal at that same nonce explains it.
 
 Amounts are exact decimal strings (`toBaseUnits`, `fromBaseUnits`,
 `formatBaseUnits`); floats are never used. Errors are `GatewayError` (with a

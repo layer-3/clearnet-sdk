@@ -27,10 +27,11 @@ type operationView struct {
 	Receipt     *client.Receipt `json:"receipt,omitempty"`
 	Idempotency string          `json:"idempotencyKey,omitempty"`
 	Message     string          `json:"message,omitempty"`
+	Reason      string          `json:"reason,omitempty"`
 }
 
 func viewOperation(op operation) operationView {
-	v := operationView{ID: op.ID, Account: op.Account, Network: op.Profile.Name, NetworkID: op.Profile.NetworkID, Gateway: op.Profile.Gateway, Fingerprint: op.Profile.Fingerprint, Sender: op.Sender, Nonce: op.Nonce, State: op.State, Created: op.Created, Updated: op.Updated, Submitted: op.Submitted, Receipt: op.Receipt, Idempotency: op.IdempotencyKey}
+	v := operationView{ID: op.ID, Account: op.Account, Network: op.Profile.Name, NetworkID: op.Profile.NetworkID, Gateway: op.Profile.Gateway, Fingerprint: op.Profile.Fingerprint, Sender: op.Sender, Nonce: op.Nonce, State: op.State, Created: op.Created, Updated: op.Updated, Submitted: op.Submitted, Receipt: op.Receipt, Idempotency: op.IdempotencyKey, Reason: clean(op.Reason)}
 	switch op.State {
 	case "signed_unsubmitted":
 		v.Message = "Saved safely; not submitted. Use operation retry to submit the saved authorization."
@@ -59,8 +60,11 @@ func (a *app) operationResult(op operation) error {
 			fmt.Fprintf(a.out, "Block     %s\nEntry     %d\nSealed at %s\n", clean(op.Receipt.BlockHash), op.Receipt.EntryIndex, time.Unix(op.Receipt.SealedAt, 0).UTC().Format(time.RFC3339))
 		}
 		fmt.Fprintln(a.out, v.Message)
+		if v.Reason != "" {
+			fmt.Fprintln(a.out, "Reason   ", v.Reason)
+		}
 		if op.State != "sealed" && op.State != "rejected" {
-			fmt.Fprintf(a.out, "Check: yellow operation show %s\n", op.ID)
+			fmt.Fprintf(a.out, "Next: %s\n", operationNextCommand(op))
 		}
 	}); err != nil {
 		return err
@@ -79,6 +83,15 @@ func (a *app) operationResult(op operation) error {
 	}
 	return nil
 }
+
+func operationNextCommand(op operation) string {
+	action := "show"
+	if op.State == "signed_unsubmitted" {
+		action = "retry"
+	}
+	return fmt.Sprintf("yellow operation %s %s", action, op.ID)
+}
+
 func observe(op *operation, status *client.OperationStatus) error {
 	switch status.Status {
 	case "sealed":
@@ -87,12 +100,14 @@ func observe(op *operation, status *client.OperationStatus) error {
 		}
 		op.State = "sealed"
 		op.Receipt = status.Receipt
+		op.Reason = ""
 	case "rejected":
 		if status.Reason == "" {
 			return fail(ExitNetwork, "gateway rejection has no reason; outcome remains unresolved")
 		}
 		if op.State != "sealed" {
 			op.State = "rejected"
+			op.Reason = clean(status.Reason)
 		}
 	case "pending":
 		if op.State != "sealed" && op.State != "rejected" {

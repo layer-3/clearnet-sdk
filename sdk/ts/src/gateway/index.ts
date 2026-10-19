@@ -4,7 +4,7 @@
 // (Solana, XRPL, Bitcoin) out of your bundle.
 
 export { GatewayClient, normalizeUserAccount } from "./client.js";
-export type { GatewayClientOptions, PrepareTransferInput, TypedDataSigner } from "./client.js";
+export type { GatewayClientOptions, PrepareTransferInput, SubmitTransferOptions, TypedDataSigner } from "./client.js";
 export {
   AmountError,
   displayParts,
@@ -48,6 +48,7 @@ export {
   observeOperation,
   retryDecision,
   staleNonceOperation,
+  unexplainedRejectedOperation,
 } from "./operations.js";
 export type { OperationRecord, OperationState } from "./operations.js";
 export {

@@ -7,6 +7,8 @@ import {
   markSubmitting,
   newOperationRecord,
   observeOperation,
+  staleNonceOperation,
+  unexplainedRejectedOperation,
   type TransferIntent,
 } from "@yellow-org/clearnet-sdk/gateway";
 import { useQueryClient } from "@tanstack/react-query";
@@ -57,8 +59,15 @@ export function useSendTransfer() {
       cancelled.current = false;
       try {
         return await withAccountLock(`${network.networkId}:${address.toLowerCase()}`, async () => {
-          const open = blockingOperation(await journal.all(), network.networkId, address);
+          const records = await journal.all();
+          const open = blockingOperation(records, network.networkId, address);
           if (open) return { ok: false, error: "An earlier transfer from this account isn't settled yet. Check it in Activity first." };
+          if (staleNonceOperation(records, network.networkId, address, intent.nonce)) {
+            return { ok: false, error: "The network is still catching up with your last transfer. Review again in a few seconds." };
+          }
+          if (unexplainedRejectedOperation(records, network.networkId, address, intent.nonce)) {
+            return { ok: false, error: "The network shows activity after a transfer marked rejected. Check that transfer in Activity before sending again to avoid paying twice." };
+          }
 
           // 1. Wallets like MetaMask only sign when the EIP-712 domain chain is active.
           if (chainId !== network.chainId) {
@@ -109,7 +118,7 @@ export function useSendTransfer() {
           let final: JournalEntry;
           let error: unknown;
           try {
-            final = applySubmission(record, submitting, { result: await client.submitTransfer(signed) });
+            final = applySubmission(record, submitting, { result: await client.submitTransfer(signed, { firstSubmission: true }) });
           } catch (e) {
             error = e;
             final = applySubmission(record, submitting, { error: e });

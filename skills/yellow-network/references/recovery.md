@@ -25,7 +25,11 @@ transaction hash. Query failure leaves the last saved state intact.
 
 Fields: `operationId`, `account`, `network` (saved profile name), `networkId`,
 `gateway`, `profileFingerprint`, `sender`, `nonce`, `state`, `createdAt`,
-`updatedAt`, optional `submittedAt`, `receipt`, `idempotencyKey`, `message`.
+`updatedAt`, optional `submittedAt`, `receipt`, `idempotencyKey`, `reason`, `message`.
+`reason` retains a submission error or the gateway's rejection explanation.
+Pre-submit check failures exit 6 while retaining the prior journal state; a first
+attempt stays unsubmitted. Use `operation retry` after correcting the cause. Cancellation after submission
+retains pending/unresolved exit 3/4 and does not establish that nothing happened.
 Journal timestamps are RFC3339 strings. Receipt fields include `operationId`,
 `blockHash`, `entryIndex`, `sealedAt` (Unix seconds), `stateRoot`, `entryHash?`.
 Neither signed payloads nor payment asset/recipient details are exposed by this
@@ -112,3 +116,9 @@ Never clear the journal, reimport a key under another alias, restore an older
 backup, change gateway, or re-sign at a fresh nonce to unblock an uncertain
 payment. A changed balance or advanced nonce does not establish this payment's
 outcome. After a refusal, preserve the state and explain the specific blocker.
+
+The CLI and web wallet have separate local journals. Resolve uncertain operations
+in the original tool before sending from the same account through another wallet,
+browser or machine. A new send is also blocked when the live nonce advanced past
+a rejected authorization without a local seal at that nonce; reconcile with the
+original gateway rather than bypassing this guard.

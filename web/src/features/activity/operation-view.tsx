@@ -106,7 +106,7 @@ function Operation({ entry }: { entry: JournalEntry }) {
     }
     let final: JournalEntry;
     try {
-      final = applySubmission(entry, submitting, { result: await client.submitTransfer(entry.signed) });
+      final = applySubmission(entry, submitting, { result: await client.submitTransfer(entry.signed, { firstSubmission: entry.submittedAt === undefined }) });
     } catch (e) {
       final = applySubmission(entry, submitting, { error: e });
       const rejection = submissionRejection(e);

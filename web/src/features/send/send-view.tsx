@@ -5,6 +5,7 @@ import {
   isFinalOperationState,
   normalizeAmountInput,
   staleNonceOperation,
+  unexplainedRejectedOperation,
   type AssetInfo,
   type PoolSummary,
   type TransferIntent,
@@ -115,6 +116,10 @@ function Send({ address, portfolio, assets, pools }: { address: `0x${string}`; p
       const stale = staleNonceOperation(ops, network.networkId, address, prepared.nonce);
       if (stale) {
         setError("The network is still catching up with your last transfer. Wait a few seconds and review again.");
+        return;
+      }
+      if (unexplainedRejectedOperation(ops, network.networkId, address, prepared.nonce)) {
+        setError("The network shows activity after a transfer marked rejected. Check that transfer in Activity before sending again to avoid paying twice.");
         return;
       }
       setIntent(prepared);

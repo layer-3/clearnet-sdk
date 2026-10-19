@@ -40,8 +40,7 @@ import {
 
 const MAX_RESPONSE_BYTES = 2 << 20;
 const INFO_TTL_MS = 20_000;
-// 409 is a pre-admission conflict (-32009/-32002): the gateway refused the
-// intent before changing any state, so the outcome is definite, not unknown.
+// These statuses refuse this attempt, but cannot resolve earlier submissions.
 const DEFINITE_REJECTION_STATUSES = new Set([400, 401, 403, 409, 422, 429]);
 
 export interface GatewayClientOptions {
@@ -64,6 +63,12 @@ export interface PrepareTransferInput {
   assets: TransferAmount[];
   /** Explicit YELLOW fee ceiling in decimal units. "0" authorizes no fee. */
   maxFee: string;
+  signal?: AbortSignal;
+}
+
+export interface SubmitTransferOptions {
+  /** True only when this authorization has never been submitted. Omit for replay or uncertain history. */
+  firstSubmission?: boolean;
   signal?: AbortSignal;
 }
 
@@ -358,9 +363,11 @@ export class GatewayClient {
   /**
    * Submits a signed transfer unchanged, exactly once. There is no automatic
    * retry: a timeout may happen after the network included it. Persist the
-   * signed transfer before calling this.
+   * signed transfer before calling this. Only explicit firstSubmission permits
+   * a recognized 4xx to establish rejection; otherwise the outcome stays unknown.
    */
-  async submitTransfer(signed: SignedTransfer, signal?: AbortSignal): Promise<SubmitResult> {
+  async submitTransfer(signed: SignedTransfer, options: SubmitTransferOptions | AbortSignal = {}): Promise<SubmitResult> {
+    const { signal, firstSubmission = false } = "aborted" in options ? { signal: options } : options;
     const id = signed.operationId;
     const preflightError = (cause: unknown) => new SubmissionError({ submitted: false, operationId: id, outcomeUnknown: false, cause });
     if (!validOperationId(id)) throw preflightError(new Error("Invalid operation ID."));
@@ -392,7 +399,7 @@ export class GatewayClient {
     try {
       response = await this.request("POST", "/v1/transfers", body, signal);
     } catch (cause) {
-      const definite = cause instanceof APIError && DEFINITE_REJECTION_STATUSES.has(cause.httpStatus);
+      const definite = firstSubmission && cause instanceof APIError && cause.recognized && cause.code !== 0 && DEFINITE_REJECTION_STATUSES.has(cause.httpStatus);
       throw new SubmissionError({ submitted: true, operationId: id, outcomeUnknown: !definite, cause });
     }
     const unknown = (message: string) => new SubmissionError({ submitted: true, operationId: id, outcomeUnknown: true, cause: new Error(message) });

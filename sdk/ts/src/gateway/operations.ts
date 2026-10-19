@@ -146,3 +146,10 @@ export function staleNonceOperation<T extends OperationRecord>(records: readonly
     (r) => r.networkId === networkId && r.sender.toLowerCase() === sender.toLowerCase() && r.state === "sealed" && r.nonce >= nonce,
   );
 }
+
+/** A rejected authorization whose nonce was consumed without a locally known seal. */
+export function unexplainedRejectedOperation<T extends OperationRecord>(records: readonly T[], networkId: string, sender: string, nonce: number): T | undefined {
+  const scoped = records.filter((r) => r.networkId === networkId && r.sender.toLowerCase() === sender.toLowerCase());
+  const sealed = new Set(scoped.filter((r) => r.state === "sealed").map((r) => r.nonce));
+  return scoped.find((r) => r.state === "rejected" && r.nonce < nonce && !sealed.has(r.nonce));
+}

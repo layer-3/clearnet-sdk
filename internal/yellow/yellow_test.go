@@ -85,6 +85,7 @@ type gatewayFixture struct {
 	posted      [][]byte
 	infoHook    func(int)
 	postHook    func()
+	statusHook  func()
 	infoCalls   int
 	delay       time.Duration
 	historyCode int
@@ -150,6 +151,9 @@ func newGateway(t *testing.T) *gatewayFixture {
 				fmt.Fprint(w, `{"error":{"code":-32006,"message":"outcome unknown"}}`)
 			}
 		case strings.HasPrefix(r.URL.Path, "/v1/operations/"):
+			if g.statusHook != nil {
+				g.statusHook()
+			}
 			status := g.status
 			status.OperationID = strings.TrimPrefix(r.URL.Path, "/v1/operations/")
 			status.Kind = "transfer"
@@ -450,14 +454,17 @@ func TestJournalCommitFailurePreventsPOST(t *testing.T) {
 func TestOutcomeCommitFailureRetainsSubmissionMarker(t *testing.T) {
 	g := newGateway(t)
 	dir, _ := setup(t, g)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	g.postHook = func() {
 		if err := os.Rename(filepath.Join(dir, "accounts"), filepath.Join(dir, "saved")); err != nil {
 			t.Error(err)
 		}
 		_ = os.WriteFile(filepath.Join(dir, "accounts"), []byte("blocked"), 0600)
+		cancel()
 	}
 	a, out, _ := newTestApp(dir, &scriptedPrompt{approve: true})
-	if code := a.execute(context.Background(), sendArgs()); code != 4 {
+	if code := a.execute(ctx, sendArgs()); code != 4 {
 		t.Fatal(code, out)
 	}
 	_ = os.Remove(filepath.Join(dir, "accounts"))
@@ -805,7 +812,7 @@ func TestSubmissionPreflightFailureIsUnsubmitted(t *testing.T) {
 		}
 	}
 	a, out, _ := newTestApp(dir, &scriptedPrompt{approve: true})
-	if code := a.execute(context.Background(), sendArgs()); code != ExitUnknown {
+	if code := a.execute(context.Background(), sendArgs()); code != ExitNetwork {
 		t.Fatal(code, out)
 	}
 	if len(g.posted) != 0 {
@@ -817,6 +824,9 @@ func TestSubmissionPreflightFailureIsUnsubmitted(t *testing.T) {
 	}
 	if ac.Operations[0].State != "signed_unsubmitted" || ac.Operations[0].Submitted != nil {
 		t.Fatal("known unsubmitted authorization was mislabeled unresolved")
+	}
+	if ac.Operations[0].Reason == "" || !strings.Contains(out.String(), "catalogue changed") || !strings.Contains(out.String(), "operation retry") {
+		t.Fatal("preflight failure lost its cause or recovery command", out)
 	}
 	g.infoHook = nil
 	a, out, _ = newTestApp(dir, &scriptedPrompt{approve: true})

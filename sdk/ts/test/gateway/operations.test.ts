@@ -9,6 +9,7 @@ import {
   retryDecision,
   staleNonceOperation as staleNonceEntry,
   SubmissionError,
+  unexplainedRejectedOperation,
   type OperationRecord,
 } from "../../src/gateway/index.js";
 
@@ -91,6 +92,20 @@ describe("journal rules", () => {
     const unknown = new SubmissionError({ submitted: true, operationId: ID, outcomeUnknown: true, cause: new Error("timeout") });
     expect(applySubmission(base, sending, { error: unknown }).state).toBe("unresolved");
     expect(applySubmission(base, sending, { result: { operationId: ID, status: "pending" } }).state).toBe("pending");
+  });
+
+  it("blocks nonce advances past a rejected transfer unless a seal explains that same nonce", () => {
+    const rejected = { ...base, state: "rejected" as const, submittedAt: 10 };
+    const check = (records: OperationRecord[], nonce = 4) => unexplainedRejectedOperation(records, "YDEV", base.sender.toLowerCase(), nonce);
+    expect(check([rejected])).toBe(rejected);
+    expect(check([rejected], 3)).toBeUndefined();
+    expect(check([{ ...rejected, networkId: "YTES" }])).toBeUndefined();
+    expect(check([{ ...rejected, sender: "0x00000000000000000000000000000000000000bb" }])).toBeUndefined();
+    const sealed = { ...base, state: "sealed" as const };
+    expect(check([rejected, sealed])).toBeUndefined();
+    expect(check([rejected, { ...sealed, nonce: 2 }])).toBe(rejected);
+    expect(check([rejected, { ...sealed, nonce: 4 }], 5)).toBe(rejected);
+    expect(check([rejected, { ...sealed, networkId: "YTES" }])).toBe(rejected);
   });
 
   it("keeps a refused replay unresolved instead of rejecting it", () => {

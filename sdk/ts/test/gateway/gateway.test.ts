@@ -108,6 +108,14 @@ describe("amounts", () => {
 });
 
 describe("fingerprint", () => {
+  it("matches Go escaping and zero values for omitted asset fields", () => {
+    const info = JSON.parse('{"networkId":"YDEV","chainId":1497646422,"virtualRouter":"0x00000000000000000000000000000000434C5200","assets":[{"symbol":"YELLOW","address":"<>&\\u2028\\u2029","decimals":18}]}') as NetworkInfo;
+    const expected = "7ce75d8e8477b20bf1bff4bbb4d813153fc21aadf9c2181ce5f9205f179ce0cf";
+    expect(networkFingerprint(info)).toBe(expected);
+    const explicit = { ...info, assets: info.assets.map((a) => ({ ...a, chainId: 0, native: false })) };
+    expect(networkFingerprint(explicit)).toBe(expected);
+  });
+
   it("matches the CLI reviewed identity hash", () => {
     const info: NetworkInfo = {
       networkId: "YDEV",
@@ -228,10 +236,37 @@ describe("GatewayClient", () => {
         fetch: fakeFetch((url) => (url.includes("/balances") ? { status: 200, body: { nonce: 0, balances: [] } } : { status, body })),
       });
       const signed = await signedFor(c);
-      const err = await c.submitTransfer(signed).catch((e) => e);
+      const err = await c.submitTransfer(signed, { firstSubmission: true }).catch((e) => e);
       expect(err).toBeInstanceOf(SubmissionError);
       expect(err.submitted).toBe(true);
       check(err);
+    }
+  });
+
+  it("keeps every refused replay unknown without an explicit first-submission assertion", async () => {
+    for (const status of [400, 401, 403, 409, 422, 429]) {
+      const posted: string[] = [];
+      const c = new GatewayClient({
+        baseUrl: "https://gw.test", networkId: "YDEV",
+        fetch: fakeFetch((url, init) => {
+          if (url.includes("/balances")) return { status: 200, body: { nonce: 7, balances: [] } };
+          posted.push(String(init?.body));
+          return posted.length === 1
+            ? { status: 504, body: { error: { code: -32006, message: "outcome unknown" } } }
+            : { status, body: { error: { code: -32002, message: "stale nonce" } } };
+        }),
+      });
+      const signed = await signedFor(c);
+      const first = await c.submitTransfer(signed, { firstSubmission: true }).catch((e: unknown) => e);
+      expect(first).toMatchObject({ submitted: true, outcomeUnknown: true });
+      for (const options of [undefined, { firstSubmission: false }]) {
+        const replay = await c.submitTransfer(signed, options).catch((e: unknown) => e);
+        expect(replay).toBeInstanceOf(SubmissionError);
+        expect(replay).toMatchObject({ submitted: true, outcomeUnknown: true, operationId: signed.operationId });
+        expect((replay as SubmissionError).definiteRejection).toBeUndefined();
+      }
+      expect(posted).toHaveLength(3);
+      expect(new Set(posted).size).toBe(1);
     }
   });
 

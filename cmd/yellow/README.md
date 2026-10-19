@@ -95,6 +95,12 @@ and import the key as an Ethereum account. Verify that its address matches
 Importing the key gives MetaMask the same account identity; use Yellow to view
 your Clearnet balances and send Clearnet transfers.
 
+The CLI and web wallet keep separate local operation journals. An unresolved CLI
+transfer does not block sends from MetaMask, the web wallet or another client.
+Resolve any uncertain transfer in its original tool before sending from the same
+account elsewhere; otherwise you could pay twice. Resolve uncertain web-wallet
+transfers before using that account in the CLI as well.
+
 Anyone with this key can control your account. The key remains in your terminal
 scrollback after export; keep your terminal private and clear your scrollback
 after importing it. Yellow displays it directly in the terminal, never in
@@ -241,6 +247,17 @@ transfer at a new nonce. Gateways released with the v0.9.0 companion gateway
 changes supply `pendingUntil`. Older deployments without it require an operator
 upgrade or restoration of the verified seal before the CLI can recover. Do not
 edit or delete the journal: losing the local record does not revoke the signature.
+
+This protection covers the current CLI journal only. Other wallets, browsers and
+machines do not share it; reconcile uncertain operations in every tool using the
+same account before sending elsewhere. A live nonce that advanced past a locally
+rejected operation also blocks new sends unless a local seal at that nonce
+explains the advance. Reconcile that discrepancy with the original gateway.
+
+Submission errors are retained as the operation's `reason`, visible in text and
+JSON. A failed pre-submit check exits 6 and preserves the prior journal state;
+a first attempt stays unsubmitted. Cancellation after a POST preserves the pending/unresolved exit
+code (3/4), rather than reporting that nothing happened.
 
 ```sh
 yellow operation list

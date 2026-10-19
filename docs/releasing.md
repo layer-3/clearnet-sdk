@@ -6,6 +6,12 @@ or the [TypeScript guide](../sdk/ts/README.md).
 
 ## GitHub / Go release
 
+The v0.9.0 public Go signing surface includes `eip712.SwapDigest`,
+`WithdrawalDigest`, `SignSwap` and `SignWithdrawal`, alongside the transfer
+helpers. These are low-level digest/signature APIs for integrations; they do not
+submit transactions. Swaps and withdrawals remain outside `pkg/client`, the CLI
+and the web wallet. Preserve these exported signatures as compatibility surface.
+
 Before tagging, confirm normal SDK CI passes on the release commit: Go and
 TypeScript tests, SDK-owned contract compilation, generated EVM bindings,
 devnet integration, and shipped artifact checks. Run

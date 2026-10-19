@@ -55,7 +55,13 @@ func TransferDigest(chainID *big.Int, to common.Address, assets []TransferAsset,
 	if maxFee == nil || maxFee.Sign() < 0 || maxFee.BitLen() > 256 {
 		return [32]byte{}, fmt.Errorf("transfer maxFee must be a uint256 YELLOW-wei ceiling")
 	}
+	if len(assets) == 0 {
+		return [32]byte{}, fmt.Errorf("transfer assets must not be empty")
+	}
 	for i, asset := range assets {
+		if asset.Asset == "" || (i > 0 && assets[i-1].Asset >= asset.Asset) {
+			return [32]byte{}, fmt.Errorf("transfer assets must be nonempty, sorted and unique")
+		}
 		if asset.Amount == nil || asset.Amount.Sign() <= 0 || asset.Amount.BitLen() > 256 {
 			return [32]byte{}, fmt.Errorf("transfer asset %d amount must be a positive uint256", i)
 		}

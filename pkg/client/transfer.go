@@ -173,7 +173,13 @@ func (c *Client) SignTransfer(ctx context.Context, signer sign.Signer, prepared 
 
 // SubmitTransfer submits an already-signed request unchanged. There is no
 // automatic POST retry: an HTTP timeout may happen after network inclusion.
-func (c *Client) SubmitTransfer(ctx context.Context, signed *SignedTransfer) (*SubmitResult, error) {
+// Only an explicit FirstSubmission permits a recognized 4xx to establish
+// rejection. Otherwise a refused request cannot resolve earlier submissions.
+func (c *Client) SubmitTransfer(ctx context.Context, signed *SignedTransfer, options ...SubmitOptions) (*SubmitResult, error) {
+	if len(options) > 1 {
+		return nil, fmt.Errorf("at most one submission option is supported")
+	}
+	firstSubmission := len(options) == 1 && options[0].FirstSubmission
 	if signed == nil || !validOperationID(signed.OperationID) {
 		return nil, fmt.Errorf("valid signed transfer and operation ID required")
 	}
@@ -221,12 +227,10 @@ func (c *Client) SubmitTransfer(ctx context.Context, signed *SignedTransfer) (*S
 	if err != nil {
 		unknown := true
 		var apiErr *APIError
-		if errors.As(err, &apiErr) {
+		if firstSubmission && errors.As(err, &apiErr) && apiErr.Code != 0 && apiErr.Message != "unrecognized gateway error" {
 			switch apiErr.HTTPStatus {
-			// The gateway answers a conflicting signed intent (code -32009) and
-			// a stale nonce (code -32002) with 409 before admitting anything, so
-			// the submission is a definite rejection rather than an unknown
-			// outcome. Callers must not treat the operation as possibly executed.
+			// These statuses refuse this attempt. Only a known first submission
+			// can rule out execution of the authorization by an earlier request.
 			case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
 				http.StatusConflict, http.StatusUnprocessableEntity, http.StatusTooManyRequests:
 				unknown = false

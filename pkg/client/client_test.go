@@ -236,8 +236,7 @@ func preparedSignedTransfer(t *testing.T, c *client.Client) *client.SignedTransf
 	return signed
 }
 
-// A conflicting intent is refused before admission, so it is a definite
-// rejection: callers must not keep the operation in an unknown-outcome state.
+// A conflicting intent establishes rejection only for a known first submission.
 func TestSubmitTransferTreatsConflictAsDefiniteRejection(t *testing.T) {
 	server := sdkTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)
@@ -248,10 +247,48 @@ func TestSubmitTransferTreatsConflictAsDefiniteRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = c.SubmitTransfer(context.Background(), preparedSignedTransfer(t, c))
+	_, err = c.SubmitTransfer(context.Background(), preparedSignedTransfer(t, c), client.SubmitOptions{FirstSubmission: true})
 	var subErr *client.SubmissionError
 	if !errors.As(err, &subErr) || !subErr.Submitted || subErr.OutcomeUnknown {
 		t.Fatalf("409 conflict = %v, want a definite rejection", err)
+	}
+}
+
+func TestRefusedReplayPreservesUnknownOutcome(t *testing.T) {
+	for _, code := range []int{400, 401, 403, 409, 422, 429} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			var bodies []string
+			server := sdkTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				var body json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				bodies = append(bodies, string(body))
+				if len(bodies) == 1 {
+					w.WriteHeader(http.StatusGatewayTimeout)
+					fmt.Fprint(w, `{"error":{"code":-32006,"message":"outcome unknown"}}`)
+					return
+				}
+				w.WriteHeader(code)
+				fmt.Fprint(w, `{"error":{"code":-32002,"message":"stale nonce"}}`)
+			})
+			defer server.Close()
+			c, err := client.New(server.URL, "YDEV")
+			if err != nil {
+				t.Fatal(err)
+			}
+			signed := preparedSignedTransfer(t, c)
+			for _, options := range [][]client.SubmitOptions{{{FirstSubmission: true}}, nil, {{FirstSubmission: false}}} {
+				_, err := c.SubmitTransfer(context.Background(), signed, options...)
+				var sub *client.SubmissionError
+				if !errors.As(err, &sub) || !sub.Submitted || !sub.OutcomeUnknown || sub.OperationID != signed.OperationID {
+					t.Fatalf("refused replay lost unknown outcome: %v", err)
+				}
+			}
+			if len(bodies) != 3 || bodies[0] != bodies[1] || bodies[0] != bodies[2] {
+				t.Fatal("retained authorization changed between submissions")
+			}
+		})
 	}
 }
 

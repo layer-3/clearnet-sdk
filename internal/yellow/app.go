@@ -260,11 +260,11 @@ func (a *app) executeCommand(ctx context.Context, args []string, root *cobra.Com
 	if errors.As(err, &f) {
 		code = f.code
 	}
-	if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-		code = ExitCancelled
-	}
 	if f != nil && f.reported {
 		return code
+	}
+	if (errors.Is(err, context.Canceled) || ctx.Err() != nil) && (f == nil || (f.code != ExitPending && f.code != ExitUnknown && f.code != ExitRejected)) {
+		code = ExitCancelled
 	}
 	if a.json {
 		_ = json.NewEncoder(a.out).Encode(map[string]any{"version": 1, "error": clean(err.Error()), "exitCode": code})

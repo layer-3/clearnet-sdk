@@ -139,7 +139,7 @@ signed, err := c.SignTransfer(ctx, signer, intent)
 if err != nil { return err }
 // Persist this signed authorization safely before submitting; it can spend
 // funds, and retrying with a NEW nonce after a timeout can pay twice.
-result, err := c.SubmitTransfer(ctx, signed)
+result, err := c.SubmitTransfer(ctx, signed, client.SubmitOptions{FirstSubmission: true})
 if err != nil {
     var uncertain *client.SubmissionError
     if errors.As(err, &uncertain) && uncertain.OutcomeUnknown {
@@ -152,6 +152,11 @@ _ = result
 page, err := c.Transfers(ctx, accountAddress, client.TransferPageOptions{Limit: 20})
 _ = page; _ = err
 ```
+
+Set `FirstSubmission` only when the authorization has never been submitted.
+Omit it for replay or uncertain history: a refused request then leaves the outcome
+unknown because an earlier request may have executed. `Submitted: false` describes
+only a failed preflight in the current call, not the fate of earlier submissions.
 
 `Transfers` is a recent, sender-sealed transfer feed (30-day gateway retention
 by default), not an archive or proof of recipient credit. `Operation` is

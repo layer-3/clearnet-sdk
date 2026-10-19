@@ -81,3 +81,34 @@ func TestSignTransferURIRecovers(t *testing.T) {
 		t.Fatalf("invalid operation ID %q", id)
 	}
 }
+
+func TestTransferProducersRejectNoncanonicalAssets(t *testing.T) {
+	private, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := sign.NewKeySignerFromECDSA(private)
+	defer signer.Close()
+	from := crypto.PubkeyToAddress(private.PublicKey)
+	to := common.HexToAddress("0x00000000000000000000000000000000000000bb")
+	chain := eip712.NetworkChainID("YDEV")
+	fee := big.NewInt(0)
+	for name, assets := range map[string][]eip712.TransferAsset{
+		"empty":        nil,
+		"empty symbol": {{Asset: "", Amount: big.NewInt(1)}},
+		"duplicate":    {{Asset: "ETH", Amount: big.NewInt(1)}, {Asset: "ETH", Amount: big.NewInt(2)}},
+		"unsorted":     {{Asset: "YELLOW", Amount: big.NewInt(1)}, {Asset: "ETH", Amount: big.NewInt(2)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := eip712.TransferDigest(chain, to, assets, fee, 7); err == nil {
+				t.Fatal("digest accepted noncanonical assets")
+			}
+			if _, err := eip712.TransferOperationID(chain, from, to.Hex(), assets, fee, 7); err == nil {
+				t.Fatal("operation ID accepted noncanonical assets")
+			}
+			if _, _, err := eip712.SignTransfer(context.Background(), signer, chain, to.Hex(), assets, fee, 7); err == nil {
+				t.Fatal("signer accepted noncanonical assets")
+			}
+		})
+	}
+}

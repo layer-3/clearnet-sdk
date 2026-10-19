@@ -157,8 +157,8 @@ type TransferPageOptions struct {
 	Cursor string
 }
 
-// APIError is a definite gateway HTTP error only when OutcomeUnknown is false
-// on its enclosing SubmissionError. Numeric codes match the REST error body.
+// APIError describes the gateway's response to this request, not the outcome
+// of an earlier submission of the same authorization. Numeric codes match REST.
 type APIError struct {
 	HTTPStatus int
 	Code       int
@@ -176,10 +176,18 @@ func (e *APIError) Error() string {
 type SubmissionError struct {
 	// Submitted records whether the POST was attempted. False establishes that
 	// this call failed during preflight; it says nothing about earlier submissions.
-	Submitted      bool
-	OperationID    string
+	Submitted   bool
+	OperationID string
+	// After a POST, false requires a recognized rejection and an explicit
+	// FirstSubmission assertion. A preflight failure describes this call only.
 	OutcomeUnknown bool
 	Err            error
+}
+
+// SubmitOptions records whether the caller can establish that this authorization
+// has never been submitted. Omit it for replay or uncertain submission history.
+type SubmitOptions struct {
+	FirstSubmission bool
 }
 
 func (e *SubmissionError) Error() string {

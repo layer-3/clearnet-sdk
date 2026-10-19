@@ -64,7 +64,7 @@ export class SubmissionError extends Error {
     this.outcomeUnknown = init.outcomeUnknown;
   }
 
-  /** The gateway's definite rejection, if this was one (CLI: !OutcomeUnknown with a recognized code). */
+  /** Rejection of a known first submission. A refused replay never qualifies. */
   get definiteRejection(): APIError | undefined {
     const api = this.cause instanceof APIError ? this.cause : undefined;
     if (this.submitted && !this.outcomeUnknown && api && api.code !== 0 && api.recognized) return api;

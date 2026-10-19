@@ -298,7 +298,7 @@ func (a *app) transferCommands() *cobra.Command {
 		}
 		for _, op := range ac.Operations {
 			if op.Profile.NetworkID == p.NetworkID && op.State != "sealed" && op.State != "rejected" {
-				return fail(ExitUnknown, "operation %s is %s; reconcile it with yellow operation show %s before sending again", op.ID, op.State, op.ID)
+				return fail(ExitUnknown, "operation %s is %s; reconcile it with %s before sending again", op.ID, op.State, operationNextCommand(op))
 			}
 		}
 		signer, key, close, err := a.unlock(ac)
@@ -310,9 +310,18 @@ func (a *app) transferCommands() *cobra.Command {
 		if err != nil {
 			return netError(err)
 		}
+		sealedNonces := make(map[uint64]bool)
 		for _, existing := range ac.Operations {
+			if existing.Profile.NetworkID == p.NetworkID && existing.State == "sealed" {
+				sealedNonces[existing.Nonce] = true
+			}
 			if existing.Profile.NetworkID == p.NetworkID && existing.State == "sealed" && existing.Nonce >= intent.Nonce {
 				return fail(ExitNetwork, "gateway nonce %d has not advanced beyond sealed operation %s; wait for the live account index to catch up", intent.Nonce, existing.ID)
+			}
+		}
+		for _, existing := range ac.Operations {
+			if existing.Profile.NetworkID == p.NetworkID && existing.State == "rejected" && existing.Nonce < intent.Nonce && !sealedNonces[existing.Nonce] {
+				return fail(ExitUnknown, "gateway nonce %d advanced past rejected operation %s at nonce %d without a locally known seal; reconcile this nonce with the original gateway before sending again", intent.Nonce, existing.ID, existing.Nonce)
 			}
 		}
 		a.reviewTransfer(p, name, intent)
@@ -444,14 +453,17 @@ func (a *app) submit(ctx context.Context, c *client.Client, name string, ac *acc
 	if err := a.store.saveAccount(name, ac); err != nil {
 		return fail(ExitUnknown, "operation %s saved; could not commit submission marker, so no POST was made: %s", op.ID, err)
 	}
-	result, err := c.SubmitTransfer(ctx, signed)
+	result, err := c.SubmitTransfer(ctx, signed, client.SubmitOptions{FirstSubmission: priorSubmitted == nil})
+	preflightFailed := false
 	if err != nil {
+		op.Reason = clean(err.Error())
 		var se *client.SubmissionError
 		var api *client.APIError
 		// Local preflight failures are not evidence of gateway rejection.
 		if errors.As(err, &se) && !se.Submitted {
 			op.State = priorState
 			op.Submitted = priorSubmitted
+			preflightFailed = true
 		} else if priorSubmitted == nil && errors.As(err, &se) && !se.OutcomeUnknown && errors.As(err, &api) && api.Code != 0 && api.Message != "unrecognized gateway error" {
 			// Only a first submission can be a definite rejection. A refused
 			// replay of an authorization that was already sent proves nothing
@@ -461,10 +473,17 @@ func (a *app) submit(ctx context.Context, c *client.Client, name string, ac *acc
 	} else {
 		op.State = result.Status
 		op.Receipt = result.Receipt
+		op.Reason = ""
 	}
 	op.Updated = time.Now().UTC()
 	if saveErr := a.store.saveAccount(name, ac); saveErr != nil {
 		return fail(ExitUnknown, "operation %s may have executed; failed to save the observed outcome: %s; run yellow operation show %s", op.ID, saveErr, op.ID)
+	}
+	if preflightFailed {
+		return fail(ExitNetwork, "operation %s saved as %s; this attempt made no POST: %s; next: %s", op.ID, op.State, op.Reason, operationNextCommand(*op))
+	}
+	if err != nil {
+		fmt.Fprintln(a.diag, "Submission:", op.Reason)
 	}
 	if op.State == "pending" && wait > 0 {
 		pollctx, cancel := context.WithTimeout(ctx, wait)

@@ -64,6 +64,7 @@ type operation struct {
 	Updated        time.Time       `json:"updatedAt"`
 	Submitted      *time.Time      `json:"submittedAt,omitempty"`
 	State          string          `json:"state"`
+	Reason         string          `json:"reason,omitempty"`
 	Receipt        *client.Receipt `json:"receipt,omitempty"`
 	IdempotencyKey string          `json:"idempotencyKey,omitempty"`
 	RequestHash    string          `json:"requestHash,omitempty"`
