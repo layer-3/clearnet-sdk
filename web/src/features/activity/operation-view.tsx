@@ -164,6 +164,7 @@ function Operation({ entry }: { entry: JournalEntry }) {
             <DetailRow label="Operation" value={shortAddress(entry.id, 10, 8)} copy={entry.id} mono />
             {entry.receipt && <DetailRow label="Block" value={shortAddress(entry.receipt.blockHash, 10, 8)} copy={entry.receipt.blockHash} mono />}
             {entry.receipt && <DetailRow label="Entry" value={`#${entry.receipt.entryIndex}`} />}
+            {entry.nonceConsumedBy?.operationId && <DetailRow label="Nonce used by" value={shortAddress(entry.nonceConsumedBy.operationId, 10, 8)} copy={entry.nonceConsumedBy.operationId} mono />}
           </dl>
         </section>
 

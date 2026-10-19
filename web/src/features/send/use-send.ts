@@ -8,13 +8,13 @@ import {
   newOperationRecord,
   observeOperation,
   staleNonceOperation,
-  unexplainedRejectedOperation,
   type TransferIntent,
 } from "@yellow-org/clearnet-sdk/gateway";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 import { useAccount, useSignTypedData, useSwitchChain } from "wagmi";
 import type { JournalEntry } from "@/lib/journal/copy";
+import { reconcileSendOperations } from "@/lib/journal/reconcile";
 import { journal, LockBusyError, withAccountLock } from "@/lib/journal/store";
 import { useNetwork } from "@/lib/network-context";
 import { isChainMismatch, isUserRejection, rejectionMessage, submissionRejection } from "./errors";
@@ -59,14 +59,11 @@ export function useSendTransfer() {
       cancelled.current = false;
       try {
         return await withAccountLock(`${network.networkId}:${address.toLowerCase()}`, async () => {
-          const records = await journal.all();
+          const records = await reconcileSendOperations(network.networkId, address, intent.nonce);
           const open = blockingOperation(records, network.networkId, address);
           if (open) return { ok: false, error: "An earlier transfer from this account isn't settled yet. Check it in Activity first." };
           if (staleNonceOperation(records, network.networkId, address, intent.nonce)) {
             return { ok: false, error: "The network is still catching up with your last transfer. Review again in a few seconds." };
-          }
-          if (unexplainedRejectedOperation(records, network.networkId, address, intent.nonce)) {
-            return { ok: false, error: "The network shows activity after a transfer marked rejected. Check that transfer in Activity before sending again to avoid paying twice." };
           }
 
           // 1. Wallets like MetaMask only sign when the EIP-712 domain chain is active.

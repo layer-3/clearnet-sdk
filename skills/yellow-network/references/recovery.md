@@ -25,15 +25,18 @@ transaction hash. Query failure leaves the last saved state intact.
 
 Fields: `operationId`, `account`, `network` (saved profile name), `networkId`,
 `gateway`, `profileFingerprint`, `sender`, `nonce`, `state`, `createdAt`,
-`updatedAt`, optional `submittedAt`, `receipt`, `idempotencyKey`, `reason`, `message`.
+`updatedAt`, optional `submittedAt`, `receipt`, `idempotencyKey`, `reason`, `message`,
+`nonceConsumedBy` (sealed activity for a different outgoing transfer at this nonce).
 `reason` retains a submission error or the gateway's rejection explanation.
 Pre-submit check failures exit 6 while retaining the prior journal state; a first
 attempt stays unsubmitted. Use `operation retry` after correcting the cause. Cancellation after submission
 retains pending/unresolved exit 3/4 and does not establish that nothing happened.
 Journal timestamps are RFC3339 strings. Receipt fields include `operationId`,
 `blockHash`, `entryIndex`, `sealedAt` (Unix seconds), `stateRoot`, `entryHash?`.
-Neither signed payloads nor payment asset/recipient details are exposed by this
-view; retain the user's public payment intent alongside the ID when available.
+Signed payloads and the original payment's asset/recipient details are not
+exposed by this view; retain the user's public payment intent alongside the ID
+when available. `nonceConsumedBy` contains the other transfer's public history
+entry, including its sender, recipient, nonce, assets and seal location.
 
 | `state` | Meaning | Next step |
 | --- | --- | --- |
@@ -119,6 +122,17 @@ outcome. After a refusal, preserve the state and explain the specific blocker.
 
 The CLI and web wallet have separate local journals. Resolve uncertain operations
 in the original tool before sending from the same account through another wallet,
-browser or machine. A new send is also blocked when the live nonce advanced past
-a rejected authorization without a local seal at that nonce; reconcile with the
-original gateway rather than bypassing this guard.
+browser or machine. If the live nonce advanced past a rejected authorization,
+the CLI automatically checks the original gateway's operation status and recent
+sealed history. A matching seal for the original payment updates its state and
+stops a new send for review. A different outgoing transfer at that exact sender
+nonce is retained as `nonceConsumedBy`, clearing this rejected operation's block
+without deleting history or requiring acknowledgement. `operation show` can do
+the same reconciliation; an operation with `nonceConsumedBy` remains rejected
+and exits 5, not sealed or paid.
+
+The lookup covers up to 1,000 recent activity entries. Missing/expired evidence,
+index outages or contradictory reports keep sends blocked. Report the blocker
+and ask the original gateway operator to restore verified history. Do not work
+around it by signing again or editing the journal; an advanced nonce and an
+empty history are not proof of non-execution.

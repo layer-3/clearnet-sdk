@@ -77,24 +77,27 @@ func newTestApp(dir string, prompt prompter) (*app, *bytes.Buffer, *bytes.Buffer
 }
 
 type gatewayFixture struct {
-	mu          sync.Mutex
-	info        client.NetworkInfo
-	server      *httptest.Server
-	postCode    int
-	status      client.OperationStatus
-	posted      [][]byte
-	infoHook    func(int)
-	postHook    func()
-	statusHook  func()
-	infoCalls   int
-	delay       time.Duration
-	historyCode int
-	cursor      string
+	mu           sync.Mutex
+	info         client.NetworkInfo
+	server       *httptest.Server
+	postCode     int
+	status       client.OperationStatus
+	posted       [][]byte
+	infoHook     func(int)
+	postHook     func()
+	statusHook   func()
+	infoCalls    int
+	delay        time.Duration
+	historyCode  int
+	historyPages map[string]client.TransferPage
+	historyCalls int
+	nonce        uint64
+	cursor       string
 }
 
 func newGateway(t *testing.T) *gatewayFixture {
 	t.Helper()
-	g := &gatewayFixture{postCode: 200, info: client.NetworkInfo{NetworkID: "YDEV", ChainID: eip712.NetworkChainID("YDEV").Uint64(), VirtualRouter: eip712.RouterHex, Capabilities: []string{client.CapabilityTransferStatus, client.CapabilityRecentTransfers}, Assets: []client.AssetInfo{{Symbol: "YELLOW", Decimals: 18}, {Symbol: "ETH", Decimals: 6}}}}
+	g := &gatewayFixture{nonce: 7, postCode: 200, info: client.NetworkInfo{NetworkID: "YDEV", ChainID: eip712.NetworkChainID("YDEV").Uint64(), VirtualRouter: eip712.RouterHex, Capabilities: []string{client.CapabilityTransferStatus, client.CapabilityRecentTransfers}, Assets: []client.AssetInfo{{Symbol: "YELLOW", Decimals: 18}, {Symbol: "ETH", Decimals: 6}}}}
 	g.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
@@ -106,7 +109,7 @@ func newGateway(t *testing.T) *gatewayFixture {
 			}
 			_ = json.NewEncoder(w).Encode(g.info)
 		case strings.HasSuffix(r.URL.Path, "/balances"):
-			fmt.Fprintf(w, `{"address":%q,"nonce":7,"balances":[{"symbol":"YELLOW","clearnetBalance":"1250000000000000000"}]}`, crypto.PubkeyToAddress(mustTestPrivate(t).PublicKey).Hex())
+			fmt.Fprintf(w, `{"address":%q,"nonce":%d,"balances":[{"symbol":"YELLOW","clearnetBalance":"1250000000000000000"}]}`, crypto.PubkeyToAddress(mustTestPrivate(t).PublicKey).Hex(), g.nonce)
 		case r.Method == "POST" && r.URL.Path == "/v1/transfers":
 			raw, _ := io.ReadAll(r.Body)
 			g.posted = append(g.posted, raw)
@@ -167,12 +170,17 @@ func newGateway(t *testing.T) *gatewayFixture {
 			}
 			_ = json.NewEncoder(w).Encode(status)
 		case strings.HasSuffix(r.URL.Path, "/transfers"):
+			g.historyCalls++
 			if g.historyCode != 0 {
 				w.WriteHeader(g.historyCode)
 				fmt.Fprint(w, `{"error":{"code":-32001,"message":"backfilling"}}`)
 				return
 			}
 			g.cursor = r.URL.Query().Get("cursor")
+			if g.historyPages != nil {
+				_ = json.NewEncoder(w).Encode(g.historyPages[g.cursor])
+				return
+			}
 			next := "next-page"
 			_ = json.NewEncoder(w).Encode(client.TransferPage{RetentionDays: 30, NextCursor: &next, Items: []client.TransferActivity{{Direction: "incoming", From: recipient, To: recipient, Assets: []client.TransferAsset{{Asset: "YELLOW", Amount: "100"}}, BlockHash: "block"}}})
 		default:

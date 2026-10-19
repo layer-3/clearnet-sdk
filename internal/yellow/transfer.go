@@ -319,9 +319,23 @@ func (a *app) transferCommands() *cobra.Command {
 				return fail(ExitNetwork, "gateway nonce %d has not advanced beyond sealed operation %s; wait for the live account index to catch up", intent.Nonce, existing.ID)
 			}
 		}
-		for _, existing := range ac.Operations {
-			if existing.Profile.NetworkID == p.NetworkID && existing.State == "rejected" && existing.Nonce < intent.Nonce && !sealedNonces[existing.Nonce] {
-				return fail(ExitUnknown, "gateway nonce %d advanced past rejected operation %s at nonce %d without a locally known seal; reconcile this nonce with the original gateway before sending again", intent.Nonce, existing.ID, existing.Nonce)
+		for i := range ac.Operations {
+			existing := &ac.Operations[i]
+			if existing.Profile.NetworkID == p.NetworkID && existing.State == "rejected" && existing.Nonce < intent.Nonce && !sealedNonces[existing.Nonce] && existing.NonceConsumedBy == nil {
+				original, err := a.gateway(a.recoveryProfile(existing.Profile), true)
+				if err != nil {
+					return err
+				}
+				if err := reconcileRejectedNonce(ctx, original, existing); err != nil {
+					return fail(ExitUnknown, "gateway nonce %d advanced past rejected operation %s at nonce %d; automatic reconciliation could not establish what consumed it: %s. No new transfer signed; check yellow operation show %s", intent.Nonce, existing.ID, existing.Nonce, err, existing.ID)
+				}
+				if err := a.store.saveAccount(name, ac); err != nil {
+					return fail(ExitUnknown, "could not save nonce reconciliation for %s; no new transfer signed: %s", existing.ID, err)
+				}
+				if existing.State == "sealed" {
+					return fail(ExitUnknown, "previously rejected operation %s actually sealed; no new transfer signed. Review yellow operation show %s before making another payment", existing.ID, existing.ID)
+				}
+				fmt.Fprintf(a.diag, "Nonce %d was consumed by sealed transfer %s from another wallet; reconciliation saved\n", existing.Nonce, existing.NonceConsumedBy.OperationID)
 			}
 		}
 		a.reviewTransfer(p, name, intent)

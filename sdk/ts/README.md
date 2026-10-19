@@ -116,7 +116,20 @@ describes this call only. Pass an abort signal as `{ signal }`; the existing
 Before signing another transfer, check `unexplainedRejectedOperation(records,
 networkId, sender, prepared.nonce)` as well as `blockingOperation` and
 `staleNonceOperation`. An advanced nonce after a locally rejected authorization
-needs reconciliation unless a local seal at that same nonce explains it.
+needs reconciliation unless a local seal at that same nonce explains it. Call
+`await reconcileRejectedOperation(record, originalGatewayClient)` for that
+record, and persist the returned record under the account lock before signing.
+If it becomes `sealed`, stop the replacement send and review the actual payment.
+Otherwise `nonceConsumedBy` retains a different outgoing transfer sealed at the
+exact sender nonce, so `unexplainedRejectedOperation` no longer blocks it. The
+rejection and signed authorization remain intact. The web wallet performs this
+automatically during preparation and again under its signing lock.
+
+`gateway.sealedTransferAtNonce(sender, nonce)` searches up to 1,000 recent
+activity entries. It relies on the trusted gateway's verified history index,
+without verifying validator quorum locally. Missing, expired, unavailable or
+inconsistent evidence keeps new sends blocked; ask the original gateway operator
+to restore its verified index. An advanced nonce alone never clears the guard.
 
 Amounts are exact decimal strings (`toBaseUnits`, `fromBaseUnits`,
 `formatBaseUnits`); floats are never used. Errors are `GatewayError` (with a

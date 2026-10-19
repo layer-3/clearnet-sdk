@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   APIError,
   applySubmission,
@@ -6,11 +6,14 @@ import {
   markSubmitting,
   newOperationRecord,
   observeOperation,
+  reconcileRejectedOperation,
+  GatewayClient,
   retryDecision,
   staleNonceOperation as staleNonceEntry,
   SubmissionError,
   unexplainedRejectedOperation,
   type OperationRecord,
+  type TransferActivity,
 } from "../../src/gateway/index.js";
 
 const observe = (r: OperationRecord, s: Parameters<typeof observeOperation>[1]) => {
@@ -106,6 +109,38 @@ describe("journal rules", () => {
     expect(check([rejected, { ...sealed, nonce: 2 }])).toBe(rejected);
     expect(check([rejected, { ...sealed, nonce: 4 }], 5)).toBe(rejected);
     expect(check([rejected, { ...sealed, networkId: "YTES" }])).toBe(rejected);
+  });
+
+  it("persists external nonce evidence without changing the rejected authorization", async () => {
+    const rejected = { ...base, state: "rejected" as const, reason: "insufficient balance" };
+    const client = new GatewayClient({ baseUrl: base.gateway, networkId: base.networkId });
+    vi.spyOn(client, "operation").mockResolvedValue({ operationId: ID, kind: "transfer", status: "unknown" });
+    const activity: TransferActivity = { operationId: `0x${"cd".repeat(32)}`, from: base.sender, to: base.sender, nonce: 3, direction: "out", delivery: "sender_sealed", blockHash: "block", entryHash: "entry", entryIndex: 0, sealedAt: 42, assets: [] };
+    vi.spyOn(client, "sealedTransferAtNonce").mockResolvedValue(activity);
+    const updated = await reconcileRejectedOperation(rejected, client, 5_000);
+    expect(updated).toMatchObject({ state: "rejected", reason: rejected.reason, nonceConsumedBy: activity, updatedAt: 5_000 });
+    expect(updated.signed).toBe(base.signed);
+    expect(rejected).not.toHaveProperty("nonceConsumedBy");
+    expect(unexplainedRejectedOperation([updated], "YDEV", base.sender, 4)).toBeUndefined();
+    expect(unexplainedRejectedOperation([rejected, updated], "YDEV", base.sender, 4)).toBe(rejected);
+  });
+
+  it("updates an original payment found sealed and rejects missing or contradictory evidence", async () => {
+    const rejected: OperationRecord = { ...base, state: "rejected", reason: "not admitted" };
+    const client = new GatewayClient({ baseUrl: base.gateway, networkId: base.networkId });
+    const status = vi.spyOn(client, "operation").mockResolvedValue({ operationId: ID, kind: "transfer", status: "sealed", receipt: { operationId: ID, blockHash: "block", entryIndex: 0, sealedAt: 42, stateRoot: "root" } });
+    const history = vi.spyOn(client, "sealedTransferAtNonce");
+    const sealed = await reconcileRejectedOperation(rejected, client);
+    expect(sealed.state).toBe("sealed");
+    expect(sealed.reason).toBeUndefined();
+    expect(history).not.toHaveBeenCalled();
+    status.mockResolvedValue({ operationId: ID, kind: "transfer", status: "rejected", reason: "not admitted" });
+    history.mockResolvedValue(undefined);
+    await expect(reconcileRejectedOperation(rejected, client)).rejects.toThrow(/No matching outgoing seal/);
+    history.mockResolvedValue({ operationId: ID } as TransferActivity);
+    await expect(reconcileRejectedOperation(rejected, client)).rejects.toThrow(/disagrees/);
+    const other = new GatewayClient({ baseUrl: "/other", networkId: base.networkId });
+    await expect(reconcileRejectedOperation(rejected, other)).rejects.toThrow(/original gateway/);
   });
 
   it("keeps a refused replay unresolved instead of rejecting it", () => {

@@ -12,26 +12,28 @@ import (
 )
 
 type operationView struct {
-	ID          string          `json:"operationId"`
-	Account     string          `json:"account"`
-	Network     string          `json:"network"`
-	NetworkID   string          `json:"networkId"`
-	Gateway     string          `json:"gateway"`
-	Fingerprint string          `json:"profileFingerprint"`
-	Sender      string          `json:"sender"`
-	Nonce       uint64          `json:"nonce"`
-	State       string          `json:"state"`
-	Created     time.Time       `json:"createdAt"`
-	Updated     time.Time       `json:"updatedAt"`
-	Submitted   *time.Time      `json:"submittedAt,omitempty"`
-	Receipt     *client.Receipt `json:"receipt,omitempty"`
-	Idempotency string          `json:"idempotencyKey,omitempty"`
-	Message     string          `json:"message,omitempty"`
-	Reason      string          `json:"reason,omitempty"`
+	ID              string                   `json:"operationId"`
+	Account         string                   `json:"account"`
+	Network         string                   `json:"network"`
+	NetworkID       string                   `json:"networkId"`
+	Gateway         string                   `json:"gateway"`
+	Fingerprint     string                   `json:"profileFingerprint"`
+	Sender          string                   `json:"sender"`
+	Nonce           uint64                   `json:"nonce"`
+	State           string                   `json:"state"`
+	Created         time.Time                `json:"createdAt"`
+	Updated         time.Time                `json:"updatedAt"`
+	Submitted       *time.Time               `json:"submittedAt,omitempty"`
+	Receipt         *client.Receipt          `json:"receipt,omitempty"`
+	Idempotency     string                   `json:"idempotencyKey,omitempty"`
+	Message         string                   `json:"message,omitempty"`
+	Reason          string                   `json:"reason,omitempty"`
+	NonceConsumedBy *client.TransferActivity `json:"nonceConsumedBy,omitempty"`
 }
 
 func viewOperation(op operation) operationView {
 	v := operationView{ID: op.ID, Account: op.Account, Network: op.Profile.Name, NetworkID: op.Profile.NetworkID, Gateway: op.Profile.Gateway, Fingerprint: op.Profile.Fingerprint, Sender: op.Sender, Nonce: op.Nonce, State: op.State, Created: op.Created, Updated: op.Updated, Submitted: op.Submitted, Receipt: op.Receipt, Idempotency: op.IdempotencyKey, Reason: clean(op.Reason)}
+	v.NonceConsumedBy = op.NonceConsumedBy
 	switch op.State {
 	case "signed_unsubmitted":
 		v.Message = "Saved safely; not submitted. Use operation retry to submit the saved authorization."
@@ -41,6 +43,9 @@ func viewOperation(op operation) operationView {
 		v.Message = "This transfer may have executed. Keep this operation ID; do not send the transfer again at a new nonce."
 	case "rejected":
 		v.Message = "The original gateway definitively rejected this authorization."
+		if op.NonceConsumedBy != nil {
+			v.Message = "Another sealed transfer consumed this nonce. The rejected authorization and its seal evidence remain saved."
+		}
 	case "sealed":
 		v.Message = "Sealed by the network."
 	}
@@ -62,6 +67,9 @@ func (a *app) operationResult(op operation) error {
 		fmt.Fprintln(a.out, v.Message)
 		if v.Reason != "" {
 			fmt.Fprintln(a.out, "Reason   ", v.Reason)
+		}
+		if op.NonceConsumedBy != nil {
+			fmt.Fprintln(a.out, "Nonce used by", op.NonceConsumedBy.OperationID)
 		}
 		if op.State != "sealed" && op.State != "rejected" {
 			fmt.Fprintf(a.out, "Next: %s\n", operationNextCommand(op))
@@ -222,6 +230,20 @@ func (a *app) operationCommands() *cobra.Command {
 		}
 		if err := a.store.saveAccount(name, ac); err != nil {
 			return fail(ExitUnknown, "could not save status for operation %s: %s", op.ID, err)
+		}
+		if op.State == "rejected" && op.NonceConsumedBy == nil {
+			balance, err := c.Balance(ctx, op.Sender)
+			if err != nil {
+				return netError(err)
+			}
+			if balance.Nonce > op.Nonce {
+				if err := reconcileRejectedNonce(ctx, c, op); err != nil {
+					return fail(ExitUnknown, "operation %s remains rejected but its nonce was consumed; automatic reconciliation is blocked: %s", op.ID, err)
+				}
+				if err := a.store.saveAccount(name, ac); err != nil {
+					return fail(ExitUnknown, "could not save nonce reconciliation for %s: %s", op.ID, err)
+				}
+			}
 		}
 		return a.operationResult(*op)
 	})

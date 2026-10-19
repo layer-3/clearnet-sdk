@@ -46,6 +46,7 @@ export {
   markSubmitting,
   newOperationRecord,
   observeOperation,
+  reconcileRejectedOperation,
   retryDecision,
   staleNonceOperation,
   unexplainedRejectedOperation,

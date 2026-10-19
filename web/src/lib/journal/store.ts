@@ -81,6 +81,7 @@ export const journal = {
     await update<JournalEntry>(entry.id, (stored) => {
       if (stored?.state === "sealed" && entry.state !== "sealed") return stored;
       if (stored && isFinalOperationState(stored.state) && !isFinalOperationState(entry.state)) return stored;
+      if (stored?.nonceConsumedBy && !entry.nonceConsumedBy) return { ...entry, nonceConsumedBy: stored.nonceConsumedBy };
       return entry;
     }, db());
     const check = await get<JournalEntry>(entry.id, db());

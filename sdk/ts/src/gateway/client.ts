@@ -36,6 +36,7 @@ import {
   type TransferAsset,
   type TransferIntent,
   type TransferPage,
+  type TransferActivity,
 } from "./types.js";
 
 const MAX_RESPONSE_BYTES = 2 << 20;
@@ -244,6 +245,37 @@ export class GatewayClient {
     const qs = q.toString();
     const { data } = await this.request<TransferPage>("GET", `/v1/accounts/${encodeURIComponent(address)}/transfers${qs ? `?${qs}` : ""}`, undefined, options.signal);
     return { ...data, items: Array.isArray(data?.items) ? data.items : [] };
+  }
+
+  /** Searches up to 1,000 recent entries for a sender-sealed transfer at this
+   * exact nonce. Trusts the gateway's verified history index; does not verify
+   * validator quorum locally. Missing evidence never proves non-execution. */
+  async sealedTransferAtNonce(sender: string, nonce: number, signal?: AbortSignal): Promise<TransferActivity | undefined> {
+    const address = normalizeUserAccount(sender);
+    if (!Number.isSafeInteger(nonce) || nonce < 0) throw new GatewayError("input", "Nonce must be a nonnegative safe integer.");
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+      const page = await this.transfers(address, { limit: 100, ...(cursor && { cursor }), ...(signal && { signal }) });
+      if (page.items.length > 100) throw new GatewayError("network", "Transfer history exceeded the requested page limit.");
+      for (const entry of page.items) {
+        let from: string;
+        try { from = normalizeUserAccount(entry.from); } catch { continue; }
+        if (from.toLowerCase() !== address.toLowerCase() || entry.nonce !== nonce) continue;
+        if (entry.delivery !== "sender_sealed" || !["out", "self"].includes(entry.direction) ||
+            !validOperationId(entry.operationId ?? "") || !/^0x[0-9a-fA-F]{64}$/.test(entry.blockHash) ||
+            !/^0x[0-9a-fA-F]{64}$/.test(entry.entryHash) || !Number.isSafeInteger(entry.entryIndex) || entry.entryIndex < 0 ||
+            !Number.isSafeInteger(entry.sealedAt) || entry.sealedAt <= 0) {
+          throw new GatewayError("network", `Transfer history has incomplete seal evidence at nonce ${nonce}.`);
+        }
+        return entry;
+      }
+      if (!page.nextCursor) return undefined;
+      cursor = page.nextCursor;
+      if (seen.has(cursor)) throw new GatewayError("network", "Transfer history repeated a pagination cursor.");
+      seen.add(cursor);
+    }
+    throw new GatewayError("network", `No seal found at nonce ${nonce} in the latest 1,000 activity entries.`);
   }
 
   /**

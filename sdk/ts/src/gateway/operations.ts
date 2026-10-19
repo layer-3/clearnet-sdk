@@ -9,7 +9,8 @@
 //   4. poll operation() -> observeOperation until sealed or rejected
 
 import { SubmissionError } from "./errors.js";
-import type { OperationStatus, Receipt, SignedTransfer, SubmitResult } from "./types.js";
+import type { GatewayClient } from "./client.js";
+import type { OperationStatus, Receipt, SignedTransfer, SubmitResult, TransferActivity } from "./types.js";
 
 export type OperationState = "signed_unsubmitted" | "pending" | "unresolved" | "sealed" | "rejected";
 
@@ -28,6 +29,8 @@ export interface OperationRecord {
   submittedAt?: number;
   receipt?: Receipt;
   reason?: string;
+  /** A different sender-sealed transfer proven by the original gateway's history at this nonce. */
+  nonceConsumedBy?: TransferActivity;
   signed: SignedTransfer;
 }
 
@@ -151,5 +154,28 @@ export function staleNonceOperation<T extends OperationRecord>(records: readonly
 export function unexplainedRejectedOperation<T extends OperationRecord>(records: readonly T[], networkId: string, sender: string, nonce: number): T | undefined {
   const scoped = records.filter((r) => r.networkId === networkId && r.sender.toLowerCase() === sender.toLowerCase());
   const sealed = new Set(scoped.filter((r) => r.state === "sealed").map((r) => r.nonce));
-  return scoped.find((r) => r.state === "rejected" && r.nonce < nonce && !sealed.has(r.nonce));
+  return scoped.find((r) => r.state === "rejected" && r.nonce < nonce && !sealed.has(r.nonce) && !r.nonceConsumedBy);
+}
+
+/** Reconciles a rejected authorization against its original gateway. Persist the
+ * returned record before allowing a new signature. If it becomes sealed, stop
+ * the replacement send and let the user review the actual payment outcome. */
+export async function reconcileRejectedOperation<T extends OperationRecord>(record: T, client: GatewayClient, now = Date.now()): Promise<T> {
+  if (record.state !== "rejected" || record.nonceConsumedBy) return record;
+  if (client.baseUrl !== record.gateway || client.networkId !== record.networkId) {
+    throw new Error("Nonce reconciliation must use the operation's original gateway and network.");
+  }
+  const status = await client.operation(record.id);
+  if (status.status === "sealed") {
+    const observed = observeOperation(record, status, now);
+    if (observed.error) throw new Error(observed.error);
+    delete observed.record.reason;
+    return observed.record;
+  }
+  const activity = await client.sealedTransferAtNonce(record.sender, record.nonce);
+  if (!activity) throw new Error("No matching outgoing seal is available in the original gateway's recent history.");
+  if (activity.operationId === record.id) {
+    throw new Error("History reports this payment sealed but its operation status disagrees. The original gateway must reconcile its index.");
+  }
+  return { ...record, nonceConsumedBy: activity, updatedAt: now };
 }

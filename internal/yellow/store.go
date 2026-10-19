@@ -55,20 +55,21 @@ type secret struct {
 	Value string `json:"value"`
 }
 type operation struct {
-	ID             string          `json:"operationId"`
-	Account        string          `json:"account"`
-	Sender         string          `json:"sender"`
-	Nonce          uint64          `json:"nonce"`
-	Profile        profile         `json:"profile"`
-	Created        time.Time       `json:"createdAt"`
-	Updated        time.Time       `json:"updatedAt"`
-	Submitted      *time.Time      `json:"submittedAt,omitempty"`
-	State          string          `json:"state"`
-	Reason         string          `json:"reason,omitempty"`
-	Receipt        *client.Receipt `json:"receipt,omitempty"`
-	IdempotencyKey string          `json:"idempotencyKey,omitempty"`
-	RequestHash    string          `json:"requestHash,omitempty"`
-	Payload        ciphertext      `json:"payload"`
+	ID              string                   `json:"operationId"`
+	Account         string                   `json:"account"`
+	Sender          string                   `json:"sender"`
+	Nonce           uint64                   `json:"nonce"`
+	Profile         profile                  `json:"profile"`
+	Created         time.Time                `json:"createdAt"`
+	Updated         time.Time                `json:"updatedAt"`
+	Submitted       *time.Time               `json:"submittedAt,omitempty"`
+	State           string                   `json:"state"`
+	Reason          string                   `json:"reason,omitempty"`
+	Receipt         *client.Receipt          `json:"receipt,omitempty"`
+	NonceConsumedBy *client.TransferActivity `json:"nonceConsumedBy,omitempty"`
+	IdempotencyKey  string                   `json:"idempotencyKey,omitempty"`
+	RequestHash     string                   `json:"requestHash,omitempty"`
+	Payload         ciphertext               `json:"payload"`
 }
 type accountFile struct {
 	Version int    `json:"version"`

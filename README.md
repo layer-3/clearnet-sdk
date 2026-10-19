@@ -158,6 +158,12 @@ Omit it for replay or uncertain history: a refused request then leaves the outco
 unknown because an earlier request may have executed. `Submitted: false` describes
 only a failed preflight in the current call, not the fate of earlier submissions.
 
+`SealedTransferAtNonce(ctx, sender, nonce)` can reconcile a nonce consumed by
+another wallet using the trusted gateway's verified outgoing history. It checks
+up to 1,000 recent entries; a missing result never proves non-execution. The
+[CLI automatically retains this evidence](cmd/yellow/README.md#understand-the-result)
+when a nonce advances past a rejected authorization, avoiding a manual override.
+
 `Transfers` is a recent, sender-sealed transfer feed (30-day gateway retention
 by default), not an archive or proof of recipient credit. `Operation` is
 transfer-only and relies on the gateway's locally persisted signed intent;

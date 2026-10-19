@@ -250,9 +250,19 @@ edit or delete the journal: losing the local record does not revoke the signatur
 
 This protection covers the current CLI journal only. Other wallets, browsers and
 machines do not share it; reconcile uncertain operations in every tool using the
-same account before sending elsewhere. A live nonce that advanced past a locally
-rejected operation also blocks new sends unless a local seal at that nonce
-explains the advance. Reconcile that discrepancy with the original gateway.
+same account before sending elsewhere. If the live nonce advanced past a rejected
+operation, Yellow automatically checks the original gateway. If that payment
+actually sealed, it saves the receipt and stops the new send so you can review
+the outcome. If another outgoing transfer sealed at exactly that sender nonce
+(for example, from the web wallet), Yellow saves its history evidence as
+`nonceConsumedBy` and allows new sends. The rejection and original authorization
+remain in the journal; no acknowledgement or journal editing is needed.
+
+This lookup checks up to 1,000 recent activity entries. Missing, expired,
+unavailable or inconsistent history keeps the block: ask the original gateway's
+operator to restore its verified index. Neither an advanced nonce nor an empty
+history proves the payment failed. `operation show` also performs this
+reconciliation for a rejected operation whose nonce has advanced.
 
 Submission errors are retained as the operation's `reason`, visible in text and
 JSON. A failed pre-submit check exits 6 and preserves the prior journal state;

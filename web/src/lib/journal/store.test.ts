@@ -43,4 +43,12 @@ describe("durable journal state transitions", () => {
     await journal.put(record("sealed"));
     expect((await journal.get(id))?.state).toBe("sealed");
   });
+
+  it("retains saved nonce evidence when another tab writes a stale rejection", async () => {
+    const rejected = record("rejected");
+    const evidence = { operationId: `0x${"cd".repeat(32)}`, blockHash: "block", entryHash: "entry", entryIndex: 0, sealedAt: 42, from: rejected.sender, to: rejected.sender, nonce: rejected.nonce, direction: "out", delivery: "sender_sealed", assets: [] };
+    await journal.put({ ...rejected, nonceConsumedBy: evidence });
+    await journal.put(rejected);
+    expect((await journal.get(id))?.nonceConsumedBy).toEqual(evidence);
+  });
 });

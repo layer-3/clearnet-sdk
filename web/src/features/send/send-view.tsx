@@ -5,7 +5,6 @@ import {
   isFinalOperationState,
   normalizeAmountInput,
   staleNonceOperation,
-  unexplainedRejectedOperation,
   type AssetInfo,
   type PoolSummary,
   type TransferIntent,
@@ -19,6 +18,8 @@ import { IconAlert, IconChevronLeft } from "@/components/ui/icons";
 import { ErrorPanel } from "@/components/ui/misc";
 import { useMyOperations, usePortfolio } from "@/hooks/gateway";
 import { STATE_COPY } from "@/lib/journal/copy";
+import { reconcileSendOperations } from "@/lib/journal/reconcile";
+import { withAccountLock } from "@/lib/journal/store";
 import { formatUnits } from "@/lib/format";
 import { useNetwork } from "@/lib/network-context";
 import { YELLOW, type Portfolio } from "@/lib/portfolio";
@@ -118,10 +119,7 @@ function Send({ address, portfolio, assets, pools }: { address: `0x${string}`; p
         setError("The network is still catching up with your last transfer. Wait a few seconds and review again.");
         return;
       }
-      if (unexplainedRejectedOperation(ops, network.networkId, address, prepared.nonce)) {
-        setError("The network shows activity after a transfer marked rejected. Check that transfer in Activity before sending again to avoid paying twice.");
-        return;
-      }
+      await withAccountLock(`${network.networkId}:${address.toLowerCase()}`, () => reconcileSendOperations(network.networkId, address, prepared.nonce));
       setIntent(prepared);
       setStep("review");
       window.scrollTo({ top: 0, behavior: "smooth" });

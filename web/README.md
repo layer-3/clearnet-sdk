@@ -87,6 +87,14 @@ The web app follows the CLI's operation journal rules (exported by the SDK):
    replays the identical signature only when the gateway confirms its window
    closed without a seal.
 
+If the nonce advanced past a rejected transfer, send preparation automatically
+checks the original gateway. A seal for the original payment updates the journal
+and stops the replacement send for review. A different outgoing transfer sealed
+at that exact sender nonce is retained as `nonceConsumedBy`, allowing new sends
+without acknowledgement. This is checked again under the account lock before
+wallet signing. Missing, expired or inconsistent history keeps the block; the
+lookup covers up to 1,000 recent entries and trusts the gateway's verified index.
+
 The current production gateway does not report `pendingUntil`. After a genuine
 submission timeout, its `unknown` status cannot prove that a replay or a fresh
 nonce is safe. The transfer remains unresolved and blocks new sends from that
